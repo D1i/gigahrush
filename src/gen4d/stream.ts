@@ -13,8 +13,11 @@
 // измерение занятости, как W (docs/LOCATIONS.md, docs/GENERATOR-4D.md §15.14).
 import { OPPOSITE } from '../model/cells';
 import { hashSeed, makeRng, type Rng } from '../model/rng';
-import type { FoldSettings, FoldStats, InstanceContent, Link, LocationSpec, MatchMode, Project, Room, Rot, Run } from '../model/types';
+import type {
+  FoldSettings, FoldStats, InstanceContent, LairSpec, LiftSide, LiftSpec, Link, LocationSpec, MatchMode, Project, Room, Rot, Run, StairwellSpec,
+} from '../model/types';
 import { locationSeedKey, rollStairwell, type StairwellRoll } from '../locations/stairwell';
+import { rollLift, type LiftRoll } from '../locations/lift';
 import { rollContent } from '../gen/generate';
 import { walkWarning } from '../gen/walk';
 import { compatible, facing, OUT_SIGN, segLine } from '../gen/geom';
@@ -106,6 +109,12 @@ export interface StreamStats {
   minFloor: number;
 }
 
+/** Спец-локация экземпляра и её розыгрыш (по виду; kind — как spec.kind, для сужения типа): lair — без розыгрыша. */
+export type LocationInfo =
+  | { kind: 'stairwell'; spec: StairwellSpec; roll: StairwellRoll }
+  | { kind: 'lift'; spec: LiftSpec; roll: LiftRoll }
+  | { kind: 'lair'; spec: LairSpec; roll: null };
+
 export interface StreamWorld {
   readonly settings: StreamSettings;
   /** id стартового экземпляра (null — в проекте нет ни одной комнаты для генерации) */
@@ -129,15 +138,23 @@ export interface StreamWorld {
   doorState(instId: string, connectorId: string): DoorState | null;
   /** адрес экземпляра — хэш пути дверей от старта (16 hex); от него — ГСЧ наполнения */
   addressOf(instId: string): string | null;
-  /** спец-локация экземпляра (Room.location) и её розыгрыш — один источник правды для движка и descend:
-   *  rollStairwell(spec, locationSeedKey(seedKey(seed, mods), адрес)). null — обычная комната */
-  locationOf(instId: string): { spec: LocationSpec; roll: StairwellRoll } | null;
+  /** спец-локация экземпляра (Room.location) и её розыгрыш — один источник правды для движка, descend и ascend:
+   *  rollStairwell / rollLift(spec, locationSeedKey(seedKey(seed, mods), адрес)); логово — roll null.
+   *  null — обычная комната */
+  locationOf(instId: string): LocationInfo | null;
   /** переход вниз из спец-локации (петля разомкнута): один раз и детерминированно по адресу создаёт комнату-выход
    *  на этаже floor − roll.floorsDown и связь kind 'descent'; дальше мир растёт от выхода как обычно (выход —
    *  на своей магистрали). Повторный вызов — тот же id. Ошибка, если у экземпляра нет спец-локации */
   descend(instId: string): string;
   /** комната-выход спец-локации, если descend уже был; иначе null */
   exitOf(instId: string): string | null;
+  /** выход лифта (docs/LOCATIONS.md, «Ржавый лифт»): один раз и детерминированно по адресу создаёт комнату за
+   *  выходом side на этаже floor(лифта) + floor (1…roll.floors) и связь kind 'lift' (floors, side); если это
+   *  логово по розыгрышу (roll.lair) — комнату с location.kind 'lair'. Повторный вызов — тот же id. Ошибка, если
+   *  экземпляр не лифт или этаж вне 1…roll.floors */
+  ascend(instId: string, floor: number, side: LiftSide): string;
+  /** комната за выходом лифта, если ascend уже был; иначе null */
+  liftExitOf(instId: string, floor: number, side: LiftSide): string | null;
   stats(): StreamStats;
   /** сохранение / подписка на изменения (для автосохранения и перерисовки) */
   save(): StreamSave;
@@ -773,14 +790,31 @@ class Stream implements StreamWorld {
 
   // ───────── спец-локации: переход вниз ─────────
 
-  locationOf(instId: string): { spec: LocationSpec; roll: StairwellRoll } | null {
+  locationOf(instId: string): LocationInfo | null {
     const n = this.byId.get(instId);
     const spec = n?.info.room.location;
-    return n && spec ? { spec, roll: this.rollOf(n, spec) } : null;
+    if (!n || !spec) return null;
+    if (spec.kind === 'stairwell') return { kind: 'stairwell', spec, roll: this.rollOf(n, spec) };
+    if (spec.kind === 'lift') return { kind: 'lift', spec, roll: rollLift(spec, this.locKey(n)) };
+    return { kind: 'lair', spec, roll: null };
   }
 
-  private rollOf(n: Node, spec: LocationSpec): StairwellRoll {
-    return rollStairwell(spec, locationSeedKey(seedKey(this.settings.seed, this.settings.mods), this.addr[n.inst.order]));
+  private locKey(n: Node): string {
+    return locationSeedKey(seedKey(this.settings.seed, this.settings.mods), this.addr[n.inst.order]);
+  }
+
+  private rollOf(n: Node, spec: StairwellSpec): StairwellRoll {
+    return rollStairwell(spec, this.locKey(n));
+  }
+
+  ascend(instId: string, floor: number, side: LiftSide): string {
+    void instId, floor, side;
+    throw new Error('ascend: TODO(логика лифта) — ещё не реализовано');
+  }
+
+  liftExitOf(instId: string, floor: number, side: LiftSide): string | null {
+    void instId, floor, side;
+    return null;
   }
 
   exitOf(instId: string): string | null {
@@ -793,6 +827,7 @@ class Stream implements StreamWorld {
     if (!L) throw new Error(`descend: нет экземпляра ${instId}`);
     const spec = L.info.room.location;
     if (!spec) throw new Error(`descend: у экземпляра ${instId} («${L.info.room.name}») нет спец-локации`);
+    if (spec.kind !== 'stairwell') throw new Error(`descend: у экземпляра ${instId} («${L.info.room.name}») не лестница, а ${spec.kind}`);
     const had = this.exitBy.get(L.inst.order);
     if (had) return had.inst.id;
     const v0 = this.version;
@@ -814,7 +849,7 @@ class Stream implements StreamWorld {
    * Метка прихода связана (связь kind 'descent', floors = k); адрес выхода — childAddr(адрес L, DESCENT_CONN);
    * выход — начало своей магистрали (ветка этажа ниже бесконечна сама по себе).
    */
-  private placeExit(L: Node, spec: LocationSpec): Node {
+  private placeExit(L: Node, spec: StairwellSpec): Node {
     const addr = this.addr[L.inst.order];
     const k = this.rollOf(L, spec).floorsDown;
     const floor = L.floor - k;

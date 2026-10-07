@@ -7,6 +7,8 @@
 // Пережил нужное число звуков подряд — петля размыкается, внизу выход.
 import { hashSeed, makeRng } from '../model/rng';
 import type { LocationSpec, StairwellSpec } from '../model/types';
+import { cloneLift, normLift } from './lift';
+import { normLair } from './lair';
 
 export const DEFAULT_STAIRWELL: StairwellSpec = {
   kind: 'stairwell',
@@ -96,7 +98,8 @@ export function cloneStairwell(s: StairwellSpec): StairwellSpec {
 
 /** Копия спецификации локации (для дублирования комнаты); null/undefined — как есть. */
 export function cloneLocation<T extends LocationSpec | null | undefined>(l: T): T {
-  return (l ? cloneStairwell(l) : l) as T;
+  if (!l) return l;
+  return (l.kind === 'stairwell' ? cloneStairwell(l) : l.kind === 'lift' ? cloneLift(l) : { ...l }) as T;
 }
 
 /** Допустимые рамки полей (нормализация и интерфейс). */
@@ -142,11 +145,15 @@ export function normStairwell(v: unknown): StairwellSpec | null {
 
 /** Разбор спец-локации комнаты (все виды); некорректное — null. */
 export function parseLocation(v: unknown): LocationSpec | null {
-  return normStairwell(v);
+  return normStairwell(v) ?? normLift(v) ?? normLair(v);
 }
 
 /** Виды спец-локаций — для интерфейса. */
-export const LOCATION_KINDS: { kind: LocationSpec['kind']; name: string }[] = [{ kind: 'stairwell', name: 'Бесконечная лестница' }];
+export const LOCATION_KINDS: { kind: LocationSpec['kind']; name: string }[] = [
+  { kind: 'stairwell', name: 'Бесконечная лестница' },
+  { kind: 'lift', name: 'Ржавый лифт' },
+  { kind: 'lair', name: 'Логово босса (заглушка)' },
+];
 
 // ───────────────────────── Формулы ─────────────────────────
 

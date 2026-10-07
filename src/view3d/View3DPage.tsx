@@ -372,7 +372,7 @@ export default function View3DPage() {
       if (!s || !d || v.hasOverlay) return;
       // спецификация и розыгрыш — из мира (тот же розыгрыш берёт descend)
       const L = s.world.locationOf(id);
-      if (!L || L.spec.kind !== 'stairwell') return;
+      if (!L || L.kind !== 'stairwell') return;
       const inst = s.rx.instances.find((i) => i.id === id);
       const cross = d.current.cross;
       const from = cross && cross.to === id ? cross.from : null;

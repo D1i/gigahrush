@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('./textures', () => ({ makeTexture: () => null }));
 
-import type { Project, Room, Segment } from '../model/types';
+import type { Project, Room, Segment, StairwellSpec } from '../model/types';
 import { cellKey, parseKey, SIDE_DELTA } from '../model/cells';
 import { tagsCompatible } from '../model/segments';
 import { finishChances, finishRuleFor } from '../model/ops';
@@ -267,7 +267,7 @@ describe('стартовый проект', () => {
     const r = p.rooms.find((x) => x.id === 'stair_loop')!;
     expect(r).toBeDefined();
     expect(r.location).toEqual(DEFAULT_STAIRWELL);
-    expect(r.location!.sounds).not.toBe(DEFAULT_STAIRWELL.sounds); // своя копия
+    expect((r.location as StairwellSpec).sounds).not.toBe(DEFAULT_STAIRWELL.sounds); // своя копия
     expect(r.tags).toEqual(expect.arrayContaining(['спец', 'лестница-петля']));
     expect(r.cells.size).toBe(29 * 55);
     expect(r.decor).toEqual([]);

@@ -3,7 +3,7 @@ import { applyShape, rectCells } from './cells';
 import { createItem, createProp, createRoom, duplicateRoom } from './ops';
 import { DEFAULT_STAIRWELL, newStairwell } from '../locations/stairwell';
 import { emptyProject, parseProject, parseRoom, serializeProject, serializeRoom } from './serialize';
-import type { Project } from './types';
+import type { Project, StairwellSpec } from './types';
 
 /** Проект со всеми видами сущностей и перекрёстных ссылок. */
 function sample(): Project {
@@ -179,7 +179,7 @@ describe('serialize/parse', () => {
     // null сохраняется как null
     expect(parseRoom({ name: 'R', cells: ['0:0-2'], location: null }).location).toBeNull();
     // мусор и неизвестные виды — null
-    for (const bad of [5, 'stairwell', [], { kind: 'lift' }, { sounds: [1, 2] }]) {
+    for (const bad of [5, 'stairwell', [], { kind: 'elevator' }, { sounds: [1, 2] }]) {
       expect(parseRoom({ name: 'R', cells: ['0:0-2'], location: bad }).location).toBeNull();
     }
     // диапазоны: перевёрнутые — по порядку, за рамками — зажаты, дробные звуки/этажи — целые
@@ -188,7 +188,7 @@ describe('serialize/parse', () => {
     // дублирование комнаты — своя копия спецификации
     const c = duplicateRoom(back, back.rooms[0].id);
     expect(c.location).toEqual(back.rooms[0].location);
-    c.location!.sounds[0] = 1;
-    expect(back.rooms[0].location!.sounds[0]).toBe(2);
+    (c.location as StairwellSpec).sounds[0] = 1;
+    expect((back.rooms[0].location as StairwellSpec).sounds[0]).toBe(2);
   });
 });

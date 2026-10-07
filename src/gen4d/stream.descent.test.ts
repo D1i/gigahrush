@@ -64,6 +64,13 @@ function withLoop(p: Project, s: StreamSettings): { w: StreamWorld; L: string } 
 
 const inst = (run: Run, id: string) => run.instances.find((i) => i.id === id)!;
 
+/** Розыгрыш «Бесконечной лестницы» экземпляра (ошибка, если там не лестница). */
+function stairRoll(w: StreamWorld, id: string) {
+  const L = w.locationOf(id);
+  if (L?.kind !== 'stairwell') throw new Error(`${id} — не лестница`);
+  return L.roll;
+}
+
 describe('бесконечный мир: спец-локации и переход вниз', { timeout: 300000 }, () => {
   const p = presets();
   const s = streamSettings('descent');
@@ -81,6 +88,7 @@ describe('бесконечный мир: спец-локации и перехо
     // розыгрыш локации — тот же, что посчитает движок сам
     const loc = w.locationOf(L)!;
     expect(loc.spec.kind).toBe('stairwell');
+    if (loc.kind !== 'stairwell') throw new Error('не лестница');
     expect(loc.roll).toEqual(rollStairwell(loc.spec, locationSeedKey(seedKey(s.seed, s.mods), w.addressOf(L)!)));
     expect(w.locationOf(w.startId!)).toBeNull();
     expect(() => w.descend(w.startId!)).toThrow(/нет спец-локации/);
@@ -100,7 +108,7 @@ describe('бесконечный мир: спец-локации и перехо
     expect(w.descend(L)).toBe(id);
     expect(got.length).toBe(1); // повторный вызов ничего не меняет
     expect(w.exitOf(L)).toBe(id);
-    const k = w.locationOf(L)!.roll.floorsDown;
+    const k = stairRoll(w, L).floorsDown;
     expect(k).toBeGreaterThanOrEqual(1);
     expect(k).toBeLessThanOrEqual(3);
     const run = w.run();
@@ -147,7 +155,7 @@ describe('бесконечный мир: спец-локации и перехо
     // на этаже ниже — ещё одна лестница: спуск с неё ещё ниже
     expect(found).not.toBeNull();
     const id2 = w.descend(found!);
-    const k2 = w.locationOf(found!)!.roll.floorsDown;
+    const k2 = stairRoll(w, found!).floorsDown;
     expect(inst(w.run(), id2).floor).toBe(f - k2);
     w.ensureAround(id2);
     expect(validateFoldRun(p, w.run())).toEqual([]);

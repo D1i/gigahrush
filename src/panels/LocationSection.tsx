@@ -1,18 +1,22 @@
 // Секция инспектора «Спец-локация»: вид локации комнаты и параметры «Бесконечной лестницы»
 // (механика — src/locations/stairwell.ts, правила и формулы — docs/LOCATIONS.md).
-import type { Room, StairwellSpec } from '../model/types';
+import type { LocationSpec, Room, StairwellSpec } from '../model/types';
 import { grabTime, LOCATION_KINDS, newStairwell, STAIRWELL_LIMITS, stairwellRule } from '../locations/stairwell';
+import { newLift } from '../locations/lift';
+import { newLair } from '../locations/lair';
 import { NumField, Section, Select } from '../ui/kit';
 import { mutRoom } from './util';
 
-type Kind = 'none' | StairwellSpec['kind'];
+type Kind = 'none' | LocationSpec['kind'];
+
+const NEW: Record<LocationSpec['kind'], () => LocationSpec> = { stairwell: newStairwell, lift: newLift, lair: newLair };
 
 export function LocationSection({ room }: { room: Room }) {
   const loc = room.location ?? null;
   const setKind = (k: Kind) =>
     mutRoom(room.id, (r) => {
       if (k === 'none') delete r.location;
-      else if (r.location?.kind !== k) r.location = newStairwell();
+      else if (r.location?.kind !== k) r.location = NEW[k]();
     });
   return (
     <Section title="Спец-локация">
@@ -22,8 +26,10 @@ export function LocationSection({ room }: { room: Room }) {
         options={[{ value: 'none', label: 'нет — обычная комната' }, ...LOCATION_KINDS.map((k) => ({ value: k.kind, label: k.name }))]}
         onChange={setKind}
       />
-      {loc ? (
+      {loc?.kind === 'stairwell' ? (
         <StairwellFields room={room} spec={loc} />
+      ) : loc ? (
+        <div className="hint">TODO(логика лифта): поля «{loc.kind}»</div>
       ) : (
         <div className="hint">
           Вход в такую комнату переводит игрока в особую сцену со своей механикой. В плане генератора это обычная комната
