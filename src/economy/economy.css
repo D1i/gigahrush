@@ -1,0 +1,115 @@
+/* Экономика: вкладки + разделы. */
+.eco { display: grid; grid-template-rows: 36px 1fr; height: 100%; min-height: 0; }
+.eco-tabs { display: flex; gap: 2px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.eco-tab {
+  background: none; border: 0; border-bottom: 2px solid transparent; padding: 0 12px; cursor: pointer;
+  color: var(--text-2); font-family: var(--font-c); font-size: 13px; display: inline-flex; align-items: center; gap: 6px;
+}
+.eco-tab:hover { color: var(--text); }
+.eco-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+.eco-tab-n { font-size: 10px; padding: 0 5px; border-radius: 8px; background: var(--panel-3); color: var(--muted); line-height: 16px; }
+.eco-tab.on .eco-tab-n { background: var(--accent-dim); color: var(--accent); }
+.eco-body { min-height: 0; overflow: hidden; }
+
+.eco-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); min-height: 44px; }
+.eco-title { font-family: var(--font-c); font-weight: 600; font-size: 16px; }
+.eco-link { color: var(--accent); cursor: pointer; }
+.eco-link:hover { text-decoration: underline; }
+
+/* значок уровня тира */
+.eco-lvl {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 18px; padding: 0 4px;
+  border-radius: 3px; color: #111; font-family: var(--mono); font-size: 11px; font-weight: 600; flex: none;
+}
+.eco-lvl.big { min-width: 30px; height: 28px; font-size: 15px; border-radius: 4px; }
+
+/* пустое состояние */
+.eco-empty { height: 100%; display: flex; align-items: center; justify-content: center; }
+.eco-empty-box { max-width: 420px; text-align: center; display: flex; flex-direction: column; gap: 10px; align-items: center; color: var(--text-2); }
+.eco-empty-box p { margin: 0; }
+
+/* ── тиры ── */
+.eco-tiers { display: grid; grid-template-columns: 240px 1fr 380px; height: 100%; min-height: 0; }
+.eco-main { overflow: auto; min-height: 0; min-width: 0; }
+.eco-tier-grid { display: grid; grid-template-columns: 1fr 90px 150px auto; gap: 8px; align-items: end; }
+.eco-row { border: 1px solid var(--line); border-left: 3px solid var(--line-2); border-radius: 4px; background: var(--panel-2); padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.eco-row-top { display: flex; gap: 8px; align-items: flex-end; }
+.eco-where { width: 190px; flex: none; }
+.eco-steps { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.eco-step { display: inline-flex; align-items: center; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 2px 2px 2px 8px; }
+.eco-step-n { width: 52px; }
+.eco-step-p { width: 78px; }
+.eco-row-foot { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; font-size: 12px; }
+.eco-rule { color: var(--text); }
+.eco-warn { font-size: 12px; color: var(--accent); background: #e8b04b12; border: 1px solid var(--accent-dim); border-radius: 4px; padding: 5px 8px; }
+.eco-warn-inline { font-size: 11px; color: var(--accent); }
+
+/* карточка для игрока — как записка на обороте календаря */
+.eco-player { background: #1d1b17; border: 1px solid var(--line-2); border-top: 4px solid var(--accent); border-radius: 4px; padding: 12px 14px; }
+.eco-player-h { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+.eco-player-t { font-family: var(--font-c); font-weight: 600; font-size: 18px; letter-spacing: 0.02em; }
+.eco-player-lines { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 15px; line-height: 1.35; }
+.eco-player-lines li::marker { color: var(--muted); }
+.eco-where-list { border: 1px solid var(--line); border-radius: 4px; max-height: 240px; overflow: auto; }
+.eco-where-list .li { padding: 4px 10px; }
+
+/* ── карта элитности ── */
+.eco-map { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.eco-map-hint { padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.eco-map-scroll { flex: 1; overflow: auto; min-height: 0; }
+.eco-matrix { width: auto; min-width: 640px; }
+.eco-matrix th { white-space: nowrap; }
+.eco-matrix th:first-child, .eco-matrix td:first-child { position: sticky; left: 0; background: var(--panel); z-index: 2; }
+.eco-matrix thead th:first-child { z-index: 3; }
+.eco-mname { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--text-2); }
+.eco-mcol { min-width: 120px; }
+.eco-mroom { white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.eco-mroom a { cursor: pointer; color: var(--text); }
+.eco-mroom a:hover { color: var(--accent); text-decoration: underline; }
+.eco-cell { position: relative; padding: 3px 6px 5px !important; }
+.eco-cell-in { display: flex; gap: 6px; align-items: center; }
+.eco-cell-in .input-wrap { width: 62px; flex: none; }
+.eco-cell-in .input { height: 24px; }
+.eco-cell:not(.on) .input { color: var(--muted); }
+.eco-pct { font-size: 11px; color: var(--muted); min-width: 42px; text-align: right; }
+.eco-bar-fill { position: absolute; left: 0; bottom: 0; height: 2px; opacity: 0.8; }
+.eco-mact { white-space: nowrap; }
+
+/* ── магазины / проходки ── */
+.eco-2col { display: grid; grid-template-columns: 380px 1fr; height: 100%; min-height: 0; }
+.eco-offer { display: flex; gap: 6px; align-items: center; }
+.eco-offer .select { flex: 1; min-width: 0; }
+.eco-branches { min-height: 100%; }
+.eco-branch { display: flex; align-items: stretch; gap: 10px; padding: 14px 12px; border-bottom: 1px solid var(--line); }
+.eco-cur {
+  width: 180px; flex: none; border: 1px solid var(--line-2); border-left: 4px solid; border-radius: 4px;
+  background: var(--panel-2); padding: 10px; display: flex; flex-direction: column; gap: 6px;
+}
+.lib-marker-sm { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #0008; }
+.eco-cur-name { font-family: var(--font-c); font-weight: 600; font-size: 15px; }
+.eco-cur-src { font-size: 11px; color: var(--text-2); display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+.eco-tier-chip { font-family: var(--font-c); font-weight: 600; font-size: 10px; border: 1px solid; border-radius: 3px; padding: 0 3px; }
+.eco-arrow { align-self: center; color: var(--muted); font-size: 20px; }
+.eco-branch-shops { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; flex: 1; min-width: 0; }
+.eco-shop { border: 1px solid var(--line); border-radius: 4px; background: var(--panel); padding: 8px; cursor: pointer; max-width: 100%; }
+.eco-shop:hover { border-color: var(--muted); }
+.eco-shop.on { border-color: var(--accent); }
+.eco-shop.pass { border-style: dashed; cursor: default; }
+.eco-shop-h { font-weight: 600; margin-bottom: 6px; font-size: 12px; }
+.eco-goods { display: flex; flex-wrap: wrap; gap: 6px; }
+.eco-good { width: 116px; background: var(--panel-2); border: 1px solid var(--line); border-top: 3px solid; border-radius: 3px; padding: 5px 7px; }
+.eco-good-n { font-size: 12px; line-height: 1.25; }
+.eco-good-p { font-size: 11px; color: var(--accent); margin-top: 3px; }
+
+.eco-pass { display: flex; flex-direction: column; }
+.eco-pass-grid { display: grid; grid-template-columns: 1fr 1fr; align-items: start; }
+.eco-pass-grid > .section { border-right: 1px solid var(--line); }
+.eco-explain { margin: 12px; padding: 12px 14px; background: #1d1b17; border: 1px solid var(--line-2); border-left: 4px solid var(--accent); border-radius: 4px; display: flex; flex-direction: column; gap: 6px; }
+.eco-explain-t { font-size: 15px; line-height: 1.4; }
+
+/* ── опасность ── */
+.eco-danger { display: grid; grid-template-columns: 1fr 420px; height: 100%; min-height: 0; }
+.eco-danger-l { overflow: auto; min-height: 0; }
+.eco-danger-r { overflow: auto; min-height: 0; }
+.eco-rule-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.4; }
+.eco-example { font-size: 13px; color: var(--text-2); }

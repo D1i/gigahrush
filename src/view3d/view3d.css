@@ -1,0 +1,125 @@
+/* Вкладка «3D»: холст Babylon и панели. Префикс v3-. */
+.v3-stage canvas { width: 100%; height: 100%; outline: none; touch-action: none; }
+.v3-tools { top: 10px; left: 10px; }
+.v3-hud { left: 10px; bottom: 10px; display: flex; flex-direction: column; gap: 2px; max-width: calc(100% - 20px); }
+.v3-hud b { color: var(--accent); font-weight: 500; }
+.v3-perf { right: 10px; bottom: 10px; }
+.v3-here { top: 10px; right: 10px; padding: 5px 12px; font-size: 13px; pointer-events: none; max-width: 50%; }
+.v3-here .muted { font-size: 11px; }
+
+/* подпись комнаты над полом: позицию пишет viewer (translate x,y), внутренний блок центрируется */
+.v3-label { position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none; }
+.v3-label > div {
+  transform: translate(-50%, calc(-100% - 6px));
+  background: #18191cf0; border: 1px solid var(--accent); border-radius: 4px;
+  padding: 4px 9px; white-space: nowrap; box-shadow: 0 4px 16px #000a;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.v3-label .t { font-weight: 600; }
+.v3-label .s { font-size: 11px; color: var(--text-2); font-family: var(--mono); }
+
+.v3-msg {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 6;
+  background: #0d0e10cc; padding: 24px;
+}
+.v3-msg > div {
+  max-width: 520px; background: var(--panel); border: 1px solid var(--line-2); border-left: 3px solid var(--danger);
+  border-radius: 6px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;
+}
+.v3-msg.info > div { border-left-color: var(--accent); }
+.v3-msg h3 { margin: 0; font-family: var(--font-c); font-size: 15px; font-weight: 600; }
+.v3-msg pre { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+
+.v3-seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; }
+.v3-seg .btn { padding: 0 4px; }
+.v3-src { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.v3-file input { display: none; }
+.v3-err { color: var(--danger); font-size: 12px; word-break: break-word; }
+
+.v3-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px 8px; }
+.v3-times { font-family: var(--mono); font-size: 11px; color: var(--text-2); display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.v3-ok { color: var(--ok); display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }
+.v3-list { display: flex; flex-direction: column; gap: 4px; font-size: 12px; max-height: 260px; overflow: auto; margin: 0; padding: 0 0 0 16px; }
+.v3-list.bad li::marker { color: var(--danger); }
+.v3-list.warn li::marker { color: var(--accent); }
+.v3-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12px; }
+.v3-kv > :nth-child(odd) { color: var(--muted); }
+.v3-kv .mono { font-size: 11px; }
+.v3-dl { display: flex; flex-direction: column; gap: 6px; }
+.v3-dl .btn { justify-content: flex-start; }
+
+/* отделка: образцы и список */
+.v3-sw { display: inline-block; width: 14px; height: 14px; border-radius: 2px; border: 1px solid #0008; background-size: 100% 100%; vertical-align: -2px; flex: none; }
+.v3-sw.big { width: 34px; height: 34px; border-radius: 3px; }
+.v3-fins { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
+.v3-fin { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.v3-fin-t { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.v3-fin-t .mono { font-size: 11px; }
+.v3-fin-n { display: inline-flex; gap: 6px; align-items: center; }
+
+/* складчатый (4D) прогон: слой W в HUD, вспышка на пороге, подписи слоёв и призраков детектора */
+.v3-w { margin-left: 8px; font-family: var(--mono); font-size: 12px; font-weight: 600; white-space: nowrap; }
+/* у складчатого прогона панель инструментов шире — подпись комнаты под ней */
+.v3-here.fold { top: 52px; }
+.v3-ghosts { margin-top: 4px; font-size: 11px; display: flex; flex-direction: column; gap: 1px; color: var(--text-2); }
+.v3-ghosts > span { font-family: var(--mono); }
+.v3-det { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; font-size: 12px; cursor: pointer; user-select: none; }
+.v3-wsel { height: 24px; padding: 0 4px; font-size: 12px; }
+.v3-flash {
+  position: absolute; left: 50%; top: 22%; transform: translate(-50%, -50%); z-index: 5; pointer-events: none;
+  font-family: var(--mono); font-size: 30px; font-weight: 700; letter-spacing: 0.04em;
+  padding: 6px 18px; border-radius: 6px; background: #0d0e10b0; border: 1px solid currentColor;
+  text-shadow: 0 0 12px currentColor; animation: v3-flash 1.6s ease-out forwards;
+}
+@keyframes v3-flash {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(1.25); }
+  12% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
+}
+/* позицию пишет FoldDriver (translate x,y); внутренний текст центрируется над точкой */
+.v3-tag {
+  position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; white-space: nowrap;
+  font-family: var(--mono); font-size: 11px; color: var(--c, #fff);
+}
+.v3-tag.layer, .v3-tag.ghost {
+  margin: 0; padding: 1px 6px; border-radius: 3px; background: #0d0e10c8; border: 1px solid var(--c, #fff);
+  translate: -50% -100%;
+}
+.v3-forced { opacity: 0.85; cursor: default; }
+.v3-forced input { cursor: default; }
+
+/* прогулка (бесконечный мир): сид, HUD поверх холста */
+.v3-seg.four { grid-template-columns: repeat(4, 1fr); }
+.v3-walk-seed { display: flex; gap: 4px; }
+.v3-walk-seed .input { flex: 1; min-width: 0; }
+.v3-walkhud { top: 52px; left: 10px; display: flex; gap: 12px; font-family: var(--mono); font-size: 12px; pointer-events: none; padding: 4px 10px; }
+
+/* спец-локация «Бесконечная лестница» (StairwellLayer): минималистичный HUD поверх своей сцены */
+.v3-loc { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+.v3-loc > * { pointer-events: auto; }
+.v3-loc-tools { top: 10px; right: 10px; display: flex; gap: 8px; align-items: center; padding: 3px 6px; font-size: 12px; opacity: 0.55; transition: opacity 0.2s; }
+.v3-loc-tools:hover { opacity: 1; }
+.v3-loc-debug {
+  top: 46px; right: 10px; display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; font-size: 11px;
+  color: var(--text-2); pointer-events: none; min-width: 280px;
+}
+.v3-loc-debug b { color: var(--accent); font-weight: 600; }
+.v3-loc-meter { height: 4px; background: #ffffff14; border-radius: 2px; overflow: hidden; margin-top: 3px; }
+.v3-loc-meter > span { display: block; height: 100%; background: #b3342a; transition: width 0.15s; }
+.v3-loc-center {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); text-align: center;
+  display: flex; flex-direction: column; gap: 8px; align-items: center; color: #c9c4b8; font-size: 13px;
+}
+.v3-loc-center.prompt { cursor: pointer; padding: 18px 28px; border-radius: 6px; background: #000000a0; border: 1px solid #ffffff14; }
+.v3-loc-center.prompt .t { font-family: var(--font-c); font-size: 18px; letter-spacing: 0.08em; text-transform: uppercase; color: #ddd6c6; }
+.v3-loc-center .muted { font-size: 11px; }
+.v3-loc-hint { left: 50%; bottom: 14px; transform: translateX(-50%); cursor: pointer; pointer-events: auto; }
+.v3-loc-hint b { color: var(--accent); font-weight: 500; }
+.v3-loc-dead {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
+  background: radial-gradient(ellipse at center, #1a0504e8 0%, #000000f5 70%); animation: v3-dead 1.2s ease-out;
+}
+.v3-loc-dead h2 { margin: 0 0 14px; font-family: var(--font-c); font-weight: 500; font-size: 24px; letter-spacing: 0.04em; color: #c9b8a8; }
+.v3-loc-dead .hint { margin: 0 0 18px; color: #a08a70; font-size: 13px; }
+@keyframes v3-dead { from { opacity: 0; } to { opacity: 1; } }

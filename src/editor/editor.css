@@ -1,0 +1,51 @@
+/* Редактор комнаты: список, слои, плавающие панели холста. */
+
+/* ── список комнат ── */
+.rl-list { margin: 0 -12px; max-height: 46vh; overflow: auto; }
+.rl-item { align-items: flex-start; }
+.rl-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.rl-sub { display: flex; gap: 8px; align-items: baseline; font-size: 11px; color: var(--muted); min-width: 0; }
+.rl-tags { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--green); }
+.rl-counts { margin-left: auto; font-size: 10px; color: var(--muted); letter-spacing: 0.02em; }
+.rl-chip { height: 16px; padding: 0 5px; font-size: 10px; }
+
+/* ── слои ── */
+.lt-list { margin: 0 -12px; }
+.lt-item { padding: 4px 12px; }
+.lt-item.off .name { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line-2); }
+.lt-item .swatch { border-width: 2px; border-style: solid; }
+
+/* ── холст ── */
+.rc-toolbar { left: 10px; top: 10px; align-items: center; }
+.rc-toolbar .btn { font-family: var(--font-c); }
+.rc-tool { min-width: 30px; padding: 0 12px 0 8px; position: relative; }
+.rc-tool .n {
+  position: absolute; right: 3px; top: 2px; font-family: var(--mono); font-size: 8px;
+  color: var(--muted); line-height: 1;
+}
+.rc-tool.on .n { color: var(--accent); }
+.rc-ctx {
+  left: 10px; top: 50px; display: flex; gap: 10px; align-items: center;
+  padding: 5px 8px; font-size: 12px;
+}
+.rc-ctx .lbl { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.rc-ctx .input, .rc-ctx .select { height: 24px; }
+.rc-ctx .num-w { width: 74px; }
+.rc-ctx .tag-w { width: 96px; }
+.rc-ctx .sel-w { width: 170px; }
+.rc-seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--r); overflow: hidden; }
+.rc-seg button {
+  background: var(--panel-2); border: 0; height: 22px; padding: 0 9px; cursor: pointer; color: var(--text-2);
+  font-size: 12px;
+}
+.rc-seg button + button { border-left: 1px solid var(--line-2); }
+.rc-seg button.on.add { background: #8fb86f2e; color: var(--ok); }
+.rc-seg button.on.sub { background: var(--danger-dim); color: var(--danger); }
+.rc-hud { left: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 2px 14px; max-width: calc(100% - 20px); }
+.rc-hud span { white-space: nowrap; }
+.rc-hud b { font-weight: 400; color: var(--text); }
+.rc-fit { right: 10px; top: 10px; padding: 4px; display: flex; gap: 2px; }
+.rc-empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--muted); pointer-events: none;
+}

@@ -17,4 +17,9 @@ export const CANVAS = {
   ghostSub: '#d8604a',
   text: '#dcd8cf',
   textDark: '#2a2620',
+  /** слой «Проходимость»: проём достижим / отрезан, заливка недоступного пола */
+  walkOk: '#4caf6a',
+  walkBad: '#e0483a',
+  walkBlocked: 'rgba(140, 45, 35, 0.2)',
+  walkCut: 'rgba(235, 140, 30, 0.45)',
 };

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Room Forge — бесшовная плитка обоев</title>
+    <style>
+      body { margin: 0; padding: 12px; background: #1d1f22; color: #ddd; font: 12px/1.35 monospace; }
+      h2 { font-size: 13px; margin: 14px 0 6px; }
+      canvas, img { display: block; image-rendering: auto; }
+      .row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+      .cell { background: #2a2d31; padding: 6px; border-radius: 4px; }
+      #info { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="info">…</div>
+    <div id="out"></div>
+    <script type="module">
+      // Рецепт плитки обоев «Дамаск» из фото пользователя (tmp/wallpaper-damask-src.png, 800×680).
+      // Запуск: node tools/make-seamless.mjs (страница открывается на dev-сервере, результат — src/data/assets/wallpaper-damask.jpg).
+      // ?gallery — дополнительно показать все процедурные текстуры отделки 3×3.
+      import { averageColor, findPeriod, makeSeamlessEx, resizeWrapped, tilePreview, toJpeg } from '/src/render/seamless.ts';
+
+      const q = new URLSearchParams(location.search);
+      const SRC = q.get('src') ?? '/tmp/wallpaper-damask-src.png';
+      const out = document.getElementById('out');
+      const info = document.getElementById('info');
+
+      const img = new Image();
+      img.src = SRC;
+      await img.decode();
+
+      // 1. Период узора — автокорреляцией по чистой середине кадра (без виньетки и водяного знака).
+      //    Решётка дамаска: прямоугольный период X × Y, внутри него второй мотив со сдвигом на полпериода (half-drop).
+      const clean = [230, 400, 450, 240];
+      const px = findPeriod(img, 'x', 60, 200, clean).period;
+      const py = findPeriod(img, 'y', 60, 200, clean).period;
+
+      // 2. Плитка 4 × 3 периода из участка без пятен у правого края; водяной знак стока по центру
+      //    закрывается заплаткой из того же места узора на один период ниже (сдвиг кратен периоду — рисунок совпадает).
+      const REP = { x: 4, y: 3 };
+      const BLEND = 0.2;
+      const x0 = 122, y0 = 80;
+      const rect = [x0, y0, Math.ceil(REP.x * px * (1 + BLEND)) + 2, Math.ceil(REP.y * py * (1 + BLEND)) + 2];
+      const { canvas: tile, info: si } = makeSeamlessEx(img, {
+        rect,
+        period: { x: px, y: py },
+        repeats: REP,
+        blend: BLEND,
+        flatten: 0.85,
+        // потёки и пятна фото повторялись бы в каждой плитке полосами — ослабляем непериодическую грязь на 70%
+        degrunge: q.has('degrunge') ? Number(q.get('degrunge')) : 0.7,
+        patches: [{ rect: [238, 316, 312, 78], from: [0, py], feather: 12 }],
+      });
+
+      // 3. Длинная сторона ≤ 1024 (тут и так меньше), JPEG 0.82.
+      const k = Math.min(1, 1024 / Math.max(tile.width, tile.height));
+      const fin = k < 1 ? resizeWrapped(tile, tile.width * k, tile.height * k) : tile;
+      const jpeg = toJpeg(fin, 0.82);
+
+      // 4. Реальный размер: вертикальный раппорт (период Y) = 0.20 м — мотив дамаска ~20 см.
+      const RAPPORT_M = 0.2;
+      const tileH = +(REP.y * RAPPORT_M).toFixed(4);
+      const tileW = +(tileH * (si.dx / si.dy)).toFixed(4);
+      const res = {
+        period: { x: +px.toFixed(3), y: +py.toFixed(3) },
+        tilePx: [fin.width, fin.height],
+        tileM: [tileW, tileH],
+        color: averageColor(fin),
+        bytes: Math.round(((jpeg.length - jpeg.indexOf(',') - 1) * 3) / 4),
+      };
+      info.textContent = JSON.stringify(res, null, 1);
+
+      const show = (title, el) => {
+        const d = document.createElement('div');
+        d.className = 'cell';
+        d.innerHTML = `<h2>${title}</h2>`;
+        d.appendChild(el);
+        out.appendChild(d);
+        return d;
+      };
+      const asImg = (url, w) => {
+        const im = new Image();
+        im.src = url;
+        if (w) im.style.width = w + 'px';
+        return im;
+      };
+
+      // 3×3 из итогового JPEG (так же, как его увидит движок)
+      const jimg = asImg(jpeg);
+      await jimg.decode();
+      const jc = document.createElement('canvas');
+      jc.width = jimg.naturalWidth;
+      jc.height = jimg.naturalHeight;
+      jc.getContext('2d').drawImage(jimg, 0, 0);
+      const t33 = tilePreview(jc, 3, 3);
+      const row = document.createElement('div');
+      row.className = 'row';
+      out.appendChild(row);
+      const a = show('Дамаск 3×3 (50%)', asImg(t33.toDataURL(), t33.width / 2));
+      row.appendChild(a);
+      // стык четырёх плиток 1:1 — швы видны лучше всего
+      const cr = document.createElement('canvas');
+      cr.width = 560;
+      cr.height = 560;
+      cr.getContext('2d').drawImage(t33, jc.width - 280, jc.height - 280, 560, 560, 0, 0, 560, 560);
+      row.appendChild(show('Стык 4 плиток, 1:1 (центр — угол плитки)', cr));
+
+      if (q.has('gallery')) {
+        const mod = '/src/data/finishes.ts'; // путь в переменной — модуль грузится только в режиме галереи
+        const { finishGallery } = await import(/* @vite-ignore */ mod);
+        const g2 = document.createElement('div');
+        g2.className = 'row';
+        g2.id = 'gallery';
+        out.appendChild(g2);
+        for (const f of finishGallery()) {
+          if (!f.tex) continue;
+          const im = asImg(f.tex);
+          await im.decode();
+          const c = document.createElement('canvas');
+          // 3×3 в масштабе: 1 м = 160 px, чтобы сравнить размеры повторов
+          const s = 160;
+          c.width = Math.round(3 * f.tileW * s);
+          c.height = Math.round(3 * f.tileH * s);
+          const g = c.getContext('2d');
+          // повтор узором с масштабом — как текстура с wrap на GPU (без зазоров округления)
+          const pat = g.createPattern(im, 'repeat');
+          pat.setTransform(new DOMMatrix().scale((f.tileW * s) / im.naturalWidth, (f.tileH * s) / im.naturalHeight));
+          g.fillStyle = pat;
+          g.fillRect(0, 0, c.width, c.height);
+          const kb = Math.round(((f.tex.length - f.tex.indexOf(',') - 1) * 3) / 4 / 1024);
+          g2.appendChild(show(`${f.name} — ${f.tileW}×${f.tileH} м, ${im.naturalWidth}×${im.naturalHeight}, ${kb} КБ`, c));
+        }
+      }
+
+      window.__result = { jpeg, info: res };
+    </script>
+  </body>
+</html>

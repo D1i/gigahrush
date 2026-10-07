@@ -1,0 +1,5 @@
+# Все текстовые файлы — с окончаниями LF (агенты и редакторы на Windows иначе смешивают CRLF/LF).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.zip binary

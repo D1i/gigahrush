@@ -30,7 +30,7 @@ export interface UIState {
   /** выделенный экземпляр в предпросмотре */
   runInst: string | null;
   /** выбранный элемент в библиотеке */
-  libSel: { kind: 'prop' | 'item'; id: string } | null;
+  libSel: { kind: 'prop' | 'item' | 'finish'; id: string } | null;
 }
 
 let state: UIState = {
@@ -44,7 +44,7 @@ let state: UIState = {
   connectorTag: 'door',
   decorPropId: null,
   spotGroupId: null,
-  layers: { grid: true, doors: true, connectors: true, decor: true, spots: true },
+  layers: { grid: true, doors: true, connectors: true, decor: true, spots: true, walk: false },
   selection: null,
   variantsGroupId: null,
   run: null,

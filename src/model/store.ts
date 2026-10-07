@@ -23,6 +23,8 @@ function load(): Project {
 }
 
 project = load();
+// первый запуск: сразу кладём пресеты в хранилище
+if (typeof localStorage !== 'undefined' && !localStorage.getItem(LS_KEY)) setTimeout(() => saveNow(), 0);
 
 function emit() {
   version++;
@@ -83,6 +85,16 @@ export function undo() {
   const snap = undoStack.pop();
   if (!snap) return;
   redoStack.push(serializeProject(project));
+  project = parseProject(snap);
+  lastKey = undefined;
+  scheduleSave();
+  emit();
+}
+
+/** Откат к последнему снимку без записи в redo — отмена незавершённого жеста (Esc). */
+export function revert() {
+  const snap = undoStack.pop();
+  if (!snap) return;
   project = parseProject(snap);
   lastKey = undefined;
   scheduleSave();

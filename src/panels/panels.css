@@ -1,0 +1,86 @@
+/* Инспектор и редактор вариантов. Префиксы: pn- (панели), ve- (варианты). */
+
+.pn-insp { display: flex; flex-direction: column; }
+.pn-big { font-size: 14px; color: var(--text); }
+.pn-ro {
+  height: var(--h); display: flex; align-items: center; gap: 6px; padding: 0 8px;
+  border: 1px dashed var(--line); border-radius: var(--r); color: var(--text-2);
+}
+.pn-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.pn-link { cursor: pointer; font: inherit; font-size: 11px; }
+.pn-link:hover { border-color: var(--muted); color: var(--text); }
+.pn-warn { color: var(--accent); }
+.pn-ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.pn-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.pn-stat {
+  display: flex; flex-direction: column; align-items: center; gap: 0;
+  padding: 4px 2px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r);
+  font-size: 10px; color: var(--muted);
+}
+.pn-stat .mono { font-size: 14px; color: var(--text); }
+
+/* компактные таблицы в инспекторе */
+.pn-table td { padding: 3px 4px; }
+.pn-table th { padding: 3px 4px; }
+.pn-table .input, .pn-table .select { height: 24px; padding: 0 5px; }
+.pn-table .input-wrap .input { padding-right: 5px; }
+.pn-table tr.pn-off td { color: var(--muted); }
+.pn-table tr.pn-off .swatch { opacity: 0.5; }
+
+.pn-group {
+  display: flex; flex-direction: column; gap: 6px; padding: 6px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2);
+}
+.pn-group.on { border-color: var(--accent-dim); box-shadow: inset 2px 0 0 var(--accent); }
+
+/* ───── редактор вариантов ───── */
+.pn-title-input { width: 220px; height: 28px; font-family: var(--font-c); font-weight: 600; font-size: 14px; }
+.ve { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ve-scroll { overflow: auto; max-height: calc(100vh - 330px); border: 1px solid var(--line); border-radius: var(--r); }
+.ve-table { border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.ve-table th, .ve-table td { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); padding: 5px 6px; vertical-align: middle; background: var(--panel); }
+.ve-table thead th { position: sticky; top: 0; z-index: 2; background: var(--panel-2); text-align: left; }
+.ve-table tfoot td { position: sticky; bottom: 0; z-index: 2; background: var(--panel-2); border-bottom: 0; }
+.ve-table .ve-first { position: sticky; left: 0; z-index: 3; min-width: 150px; max-width: 190px; background: var(--panel-2); }
+.ve-table thead .ve-first, .ve-table tfoot .ve-first { z-index: 4; }
+.ve-first { font-family: var(--font-c); font-weight: 600; font-size: 11px; color: var(--muted); text-transform: none; }
+.ve-spot { color: var(--text); font-family: var(--font); font-weight: 500; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ve-col-h { min-width: 212px; }
+.ve-vh { display: flex; flex-direction: column; gap: 4px; border-top: 3px solid transparent; margin: -5px -6px 0; padding: 4px 6px 0; }
+.ve-vname { font-family: var(--font-c); font-weight: 600; font-size: 13px; color: var(--text); }
+.ve-pct { color: var(--accent); font-size: 12px; }
+.ve-cell { display: flex; gap: 4px; align-items: center; }
+.ve-cell .input, .ve-select { height: 24px; }
+.ve-cell .input-wrap .input { padding-right: 18px; padding-left: 5px; }
+.ve-cell .input-wrap .suffix { right: 5px; }
+.ve-select { flex: 1; min-width: 0; padding: 0 4px; }
+.ve-empty .ve-select { color: var(--muted); }
+.ve-full { background: #e8b04b0a !important; }
+.ve-foot { font-size: 11px; color: var(--text-2); white-space: nowrap; }
+
+.ve-dist { display: flex; flex-direction: column; gap: 4px; }
+.ve-dist-bar { display: flex; height: 24px; border-radius: var(--r); overflow: hidden; border: 1px solid var(--line); background: var(--panel-2); }
+.ve-dist-seg {
+  flex-basis: 0; min-width: 2px; display: flex; align-items: center; justify-content: center; gap: 4px;
+  font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; border-right: 1px solid #0006;
+}
+.ve-dist-seg:last-child { border-right: 0; }
+.ve-dist-none { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 11px; }
+.pn-nowrap { white-space: nowrap; }
+.row.pn-end { align-items: flex-end; }
+.row.pn-end > .btn.sm { height: var(--h); }
+
+/* ───── отделка комнаты ───── */
+.pn-fin-pick .row { gap: 6px; }
+.pn-fin-mode { color: var(--accent); }
+.pn-fin-sw { display: inline-flex; cursor: pointer; flex: none; }
+.pn-fin-chip { max-width: 100%; padding-left: 4px; }
+.pn-fin-chip .fin-sw { border-radius: 2px; }
+.pn-fin-p { color: var(--accent); font-size: 10px; }
+
+/* ───── спец-локация ───── */
+.pn-loc-rule {
+  font-size: 11px; line-height: 1.45; color: var(--text-2);
+  padding: 6px 8px; border-left: 2px solid var(--accent); background: var(--panel-2); border-radius: 0 var(--r) var(--r) 0;
+}

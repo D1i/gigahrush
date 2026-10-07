@@ -207,3 +207,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .stat { display: flex; flex-direction: column; gap: 2px; }
 .stat .v { font-family: var(--mono); font-size: 18px; color: var(--text); }
 .stat .k { font-size: 11px; color: var(--muted); }
+
+/* ───── диагностика остановки роста ───── */
+.stopdx { border: 1px solid var(--danger); background: var(--danger-dim); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.stopdx-h { font-weight: 600; color: var(--text); }
+.stopdx-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; gap: 1px; background: var(--panel-3); }
+.stopdx-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.stopdx-fix { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; padding-top: 6px; border-top: 1px solid #d8604a44; font-size: 12px; }
+.stopdx a { color: var(--accent); cursor: pointer; text-decoration: underline dotted; }

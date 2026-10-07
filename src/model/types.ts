@@ -73,7 +73,15 @@ export interface Connector extends Segment {
   name: string;
   /** текстовая метка стыковки */
   tag: string;
+  /**
+   * Порог в складчатом (4D) генераторе: может ли этот проём сдвигать координату W.
+   * 'auto' (по умолчанию) — по настройкам генератора; 'always' — всегда сдвиг (напр. входные
+   * двери квартир: за каждой — своё измерение); 'never' — обычный порог. Евклидов генератор игнорирует.
+   */
+  shift?: ShiftMode;
 }
+
+export type ShiftMode = 'auto' | 'always' | 'never';
 
 export interface Decor {
   id: string;
@@ -152,7 +160,38 @@ export interface Room {
   elite: RoomElite[];
   /** Заметка автора (тип квартиры, серия дома и т.п.) */
   note: string;
+  /** Отделка, заданная комнате явно (id из Project.finishes); null — по правилам FinishRule. */
+  finish: { wall: string | null; floor: string | null };
+  /** Спец-локация: вход в эту комнату переводит игрока в особую сцену со своей механикой
+   *  (см. src/locations/). Нет поля / null — обычная комната. */
+  location?: LocationSpec | null;
 }
+
+/**
+ * «Бесконечная лестница»: зацикленный тёмный подъезд. Спуск по петле бесконечен. Время от времени
+ * снизу раздаётся страшный звук — нужно подняться на этаж, потом можно снова вниз; шаг вниз после
+ * звука — Хвататель утаскивает вглубь подъезда (смерть). Чем дольше медлишь после звука, тем ближе
+ * Хвататель и тем меньше времени. Пережил подряд нужное число звуков — петля размыкается,
+ * лестница становится обычной и выводит на этаж(и) ниже.
+ */
+export interface StairwellSpec {
+  kind: 'stairwell';
+  /** сколько звуков подряд нужно пережить: случайное целое в [min, max] (по сиду экземпляра) */
+  sounds: [number, number];
+  /** пауза между звуками, с: случайно в [min, max] */
+  interval: [number, number];
+  /** «база»: за сколько секунд Хвататель дошёл бы до игрока без ускорения. С ускорением, если после звука
+   *  стоять на месте, — за t* = accelS·(√(1 + 2·grabS/accelS) − 1) (по умолчанию 9 и 6 → 6 с), см. grabTime */
+  grabS: number;
+  /** ускорение приближения: темп растёт как (1 + t / accelS), t — время после звука */
+  accelS: number;
+  /** на сколько этажей ниже выводит разомкнутая лестница: случайное целое в [min, max] */
+  floorsDown: [number, number];
+  /** темнота 0..1 (1 — свет только от фонарика) */
+  darkness: number;
+}
+
+export type LocationSpec = StairwellSpec;
 
 export type MatchMode =
   /** стыкуются метки с одинаковым tag и одинаковой длиной */
@@ -173,6 +212,50 @@ export interface GeneratorSettings {
   startRoomId: string | null;
   /** активная проходка (Economy.passes) или null */
   passId: string | null;
+  /**
+   * Предел дальности прямой видимости, м; 0 — без ограничения.
+   * Самая длинная прямая линия обзора по проходимому пространству (пол комнат + проёмы связанных
+   * дверей) — по горизонтали, вертикали и диагоналям 45°. Чем меньше предел, тем извилистее карта.
+   */
+  sightM: number;
+  /**
+   * Достраивать тупики: после набора count закрыть оставшиеся открытые метки «листовыми»
+   * комнатами (без ростовых меток — кухни, санузлы, жилые, балконы), чтобы квартиры не
+   * обрывались на прихожей. Хабы при этом не ставятся; count может быть превышен.
+   */
+  fill: boolean;
+  /** 'euclid' (по умолчанию) — обычный генератор; 'fold' — складчатый 4D (см. FoldSettings) */
+  mode?: GeneratorMode;
+  /** настройки складчатого генератора (используются при mode = 'fold') */
+  fold?: FoldSettings;
+}
+
+export type GeneratorMode = 'euclid' | 'fold';
+
+/**
+ * Складчатый (4D) генератор: у каждой комнаты есть координата W («слой»). Пороги могут сдвигать W,
+ * поэтому комнаты разных слоёв занимают одно и то же место в 3D. Гарантии:
+ *  • в одном слое комнаты не пересекаются (каждый слой — обычный евклидов план, по нему можно
+ *    считать физику);
+ *  • комнаты на расстоянии ≤ localRadius по графу связей не пересекаются в 3D, в каком бы слое
+ *    ни были, — поэтому «текущая комната + соседи за дверями» всегда выглядят непротиворечиво.
+ */
+export interface FoldSettings {
+  /** вероятность сдвига на пороге 'auto', даже когда место в слое есть (0..1) */
+  shiftChance: number;
+  /** максимальный |ΔW| одного порога */
+  maxShift: number;
+  /** радиус локальной евклидовости по графу (1 — только соседи; 2 — безопасно для рендера «комната + соседи») */
+  localRadius: number;
+  /** допустимый диапазон слоёв: |W| ≤ maxLayer */
+  maxLayer: number;
+  /**
+   * Запрет пересечений внутри видимого набора (по умолчанию false). Нужен, только если движок рисует
+   * потенциально видимый набор (PVS) комнаты целиком: тогда комнаты одного PVS не пересекаются в 3D
+   * и смена набора на пороге незаметна. С портальным рендером (каждая комната видна только сквозь
+   * свой проём) пересечения в поле зрения допустимы — складок больше, переходы всё равно бесшовны.
+   */
+  seamless?: boolean;
 }
 
 // ───────────────────────── Экономика (расширение ТЗ по переписке) ─────────────────────────
@@ -251,6 +334,35 @@ export interface Economy {
   dangerLimit: number;
 }
 
+// ───────────────────────── Отделка (обои, кафель, покраска, полы) ─────────────────────────
+
+export type FinishSurface = 'wall' | 'floor';
+
+export interface Finish {
+  id: string;
+  name: string;
+  /** где применима: стены или пол */
+  surface: FinishSurface;
+  /** цвет без текстуры / средний цвет текстуры (для превью и простых движков) */
+  color: string;
+  /** бесшовная текстура (JPEG/PNG data:URI, длинная сторона ≤ 1024) или null */
+  tex: string | null;
+  /** размер одного повтора текстуры на поверхности, м (обои: ширина ~0.5–1.4, кафель 0.15) */
+  tileW: number;
+  tileH: number;
+  /** нижняя панель стены: другая отделка до высоты heightM (подъезд — краска до 1.5 м, санузел — кафель до 1.5 м) */
+  dado: { finishId: string; heightM: number } | null;
+  tags: string[];
+}
+
+/** Правило по тегу комнаты: какие отделки разыгрываются (по весам) для стен и пола. */
+export interface FinishRule {
+  /** тег комнаты; правило берётся по первому тегу комнаты, у которого есть правило */
+  tag: string;
+  wall: { finishId: string; weight: number }[];
+  floor: { finishId: string; weight: number }[];
+}
+
 export interface Project {
   settings: Settings;
   props: Prop[];
@@ -258,6 +370,8 @@ export interface Project {
   rooms: Room[];
   generator: GeneratorSettings;
   economy: Economy;
+  finishes: Finish[];
+  finishRules: FinishRule[];
 }
 
 // ───────────────────────── Прогон (результат генерации) ─────────────────────────
@@ -278,11 +392,22 @@ export interface Instance {
   parent: string | null;
   /** глубина по графу от старта */
   depth: number;
+  /** координата W (слой) — только в складчатом генераторе; нет поля — 0 */
+  w?: number;
+  /** этаж (0 — этаж старта, вниз — отрицательные); меняется только переходом спец-локации */
+  floor?: number;
 }
 
 export interface Link {
   a: { inst: string; connector: string };
   b: { inst: string; connector: string };
+  /** сдвиг порога по W: w(b) − w(a); нет поля — 0 (обычный порог) */
+  dw?: number;
+  /** 'descent' — переход спец-локации на этаж(и) ниже: без геометрической стыковки, меток лицом
+   *  к лицу нет (a — экземпляр локации, b — комната, куда выводит). Нет поля — обычная дверь. */
+  kind?: 'door' | 'descent';
+  /** для 'descent': на сколько этажей вниз */
+  floors?: number;
 }
 
 export interface SpawnedSpot {
@@ -316,9 +441,12 @@ export interface InstanceContent {
   danger: number;
   /** накопленная опасность по пути от старта (включая эту комнату) */
   dangerAcc: number;
-  groups: { groupId: string; variantId: string }[];
+  /** fallback — выпавший вариант перегораживал проход и был подменён (см. src/gen/walk.ts) */
+  groups: { groupId: string; variantId: string; fallback?: true }[];
   spots: SpawnedSpot[];
   loot: SpawnedLoot[];
+  /** разыгранная отделка экземпляра (id отделок или null — нет правила) */
+  finish: { wall: string | null; floor: string | null };
 }
 
 export interface Run {
@@ -333,8 +461,47 @@ export interface Run {
   totals: Record<string, number>;
   /** предупреждения генератора (не выполнен min, не хватило места и т.п.) */
   warnings: string[];
+  /** самая длинная линия прямой видимости в прогоне: длина в метрах и отрезок в мировых клетках */
+  sight: { maxM: number; line: [number, number, number, number] | null };
+  /** диагностика остановки роста — есть, только если count не набран */
+  stop?: RunStop;
+  /** сводка складчатого генератора (только mode = 'fold') */
+  fold?: FoldStats;
+  /** потенциально видимые наборы: id экземпляра → id экземпляров, которые надо рендерить, стоя в нём
+   *  (включая его самого). Только складчатый режим с seamless и sightM > 0. */
+  pvs?: Record<string, string[]>;
   /** время генерации, мс */
   ms: number;
+}
+
+export interface FoldStats {
+  /** диапазон занятых слоёв */
+  minW: number;
+  maxW: number;
+  /** сколько разных слоёв занято */
+  layers: number;
+  /** пар экземпляров, пересекающихся в 3D (они всегда в разных слоях и дальше localRadius по графу) */
+  overlaps: number;
+  /** порогов со сдвигом W (dw ≠ 0) */
+  shifted: number;
+}
+
+/** Почему рост остановился раньше count: тупиковые метки по причинам последней неудачи. */
+export interface RunStop {
+  /** всего открытых меток (тупиков) */
+  open: number;
+  /** нет ни одной совместимой комнаты в пуле */
+  noMatch: number;
+  /** совместимые комнаты есть, но все упёрлись в max */
+  atMax: number;
+  /** совместимые комнаты не помещаются (коллизии) */
+  noSpace: number;
+  /** помещаются, но нарушают предел обзора */
+  sight: number;
+  /** id комнат, упёршихся в max на тупиках */
+  maxRooms: string[];
+  /** теги тупиковых меток, для которых нет совместимых комнат */
+  noMatchTags: string[];
 }
 
 // ───────────────────────── Состояние интерфейса (не сериализуется) ─────────────────────────
@@ -349,10 +516,10 @@ export type Tool =
   | 'decor'
   | 'spot';
 
-export type LayerKey = 'grid' | 'doors' | 'connectors' | 'decor' | 'spots';
+export type LayerKey = 'grid' | 'doors' | 'connectors' | 'decor' | 'spots' | 'walk';
 
 export type Selection =
   | { kind: 'decor' | 'spot' | 'door' | 'connector'; id: string }
   | null;
 
-export type Page = 'editor' | 'library' | 'economy' | 'generator' | 'data';
+export type Page = 'editor' | 'library' | 'economy' | 'spawn' | 'generator' | 'view3d' | 'data';

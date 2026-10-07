@@ -1,19 +1,26 @@
-import { useEffect } from 'react';
-import { redo, undo } from './model/store';
-import { setUI, useToasts, useUI } from './model/ui';
+import { Suspense, lazy, useEffect } from 'react';
+import { getProject, redo, undo } from './model/store';
+import { missingPresets, outdatedPresets } from './model/mergePresets';
+import { notify, setUI, useToasts, useUI } from './model/ui';
 import type { Page } from './model/types';
 import { EditorPage } from './pages/EditorPage';
 import { LibraryPage } from './pages/LibraryPage';
 import { EconomyPage } from './pages/EconomyPage';
 import { GeneratorPage } from './pages/GeneratorPage';
+import { SpawnPage } from './pages/SpawnPage';
 import { DataPage } from './pages/DataPage';
+
+// Babylon тяжёлый — грузится только при открытии вкладки «3D»
+const View3DPage = lazy(() => import('./view3d/View3DPage'));
 import { SaveIndicator } from './ui/SaveIndicator';
 
 const TABS: { id: Page; label: string }[] = [
   { id: 'editor', label: 'Комнаты' },
   { id: 'library', label: 'Библиотеки' },
   { id: 'economy', label: 'Экономика' },
+  { id: 'spawn', label: 'Спавн' },
   { id: 'generator', label: 'Генератор' },
+  { id: 'view3d', label: '3D' },
   { id: 'data', label: 'Данные / JSON' },
 ];
 
@@ -22,6 +29,14 @@ const isTyping = (t: EventTarget | null) =>
 
 export function App() {
   const ui = useUI();
+
+  // сохранённый проект старше пресетов — подсказать, что есть новые комнаты
+  useEffect(() => {
+    const m = missingPresets(getProject());
+    const old = outdatedPresets(getProject());
+    if (m.rooms + m.props + m.finishes > 0 || old > 0)
+      notify(`Пресеты обновились (новых комнат ${m.rooms}, отделок ${m.finishes}, изменённых ${old}) — «Данные / JSON» → «Пресеты»`, 'info');
+  }, []);
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
@@ -60,7 +75,13 @@ export function App() {
         {ui.page === 'editor' && <EditorPage />}
         {ui.page === 'library' && <LibraryPage />}
         {ui.page === 'economy' && <EconomyPage />}
+        {ui.page === 'spawn' && <SpawnPage />}
         {ui.page === 'generator' && <GeneratorPage />}
+        {ui.page === 'view3d' && (
+          <Suspense fallback={<div className="empty">Загрузка 3D…</div>}>
+            <View3DPage />
+          </Suspense>
+        )}
         {ui.page === 'data' && <DataPage />}
       </main>
       <Toasts />
