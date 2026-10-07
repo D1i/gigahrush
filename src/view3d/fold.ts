@@ -334,6 +334,50 @@ export class FoldDriver {
   }
 
   /**
+   * Закрытый проём (тупик болванки) метки connector комнаты inst — в Babylon: центр на полу комнаты и единичное
+   * направление внутрь комнаты. Так выглядит метка прихода перехода спец-локации (выход лифта, спуск лестницы):
+   * проёма в мир нет, игрок приходит в комнату у этой стены и уходит в локацию через неё. null — нет куска / тупика.
+   */
+  deadEndAt(inst: string, connector: string): { center: Vector3; u: Vector3; depth: number } | null {
+    if (this.render !== 'portal' || !this.ensurePortal()) return null;
+    const piece = this.pieces!.get(inst);
+    const d = piece?.model.deadEnds.find((x) => x.inst === inst && x.connector === connector);
+    if (!piece || !d) return null;
+    const floor = piece.model.floors.find((f) => f.inst === inst);
+    const [x1, y1, x2, y2] = d.line;
+    // план (x вправо, y вниз) → Babylon (x, −y); высота пола комнаты → y
+    const center = new Vector3((x1 + x2) / 2, floor?.z ?? 0, -(y1 + y2) / 2);
+    const u = new Vector3(d.normal[0], 0, -d.normal[1]);
+    // глубина комнаты от проёма (до противоположной стены) — по прямоугольникам её пола
+    let depth = 0;
+    for (const r of floor?.rects ?? []) {
+      for (const [x, y] of [[r.x0, r.y0], [r.x1, r.y0], [r.x0, r.y1], [r.x1, r.y1]]) {
+        depth = Math.max(depth, (x - center.x) * u.x + (-y - center.z) * u.z);
+      }
+    }
+    return { center, u, depth };
+  }
+
+  /** Поставить игрока (от первого лица) в комнату inst у закрытого проёма метки connector, лицом в комнату —
+   *  выход из спец-локации в комнату за её переходом. Нет такого тупика — просто в комнату. */
+  placeAtDeadEnd(inst: string, connector: string): boolean {
+    if (!this.wOf.has(inst) || this.v.mode !== 'fps') return false;
+    const d = this.deadEndAt(inst, connector);
+    if (!d) {
+      this.goTo(inst);
+      return true;
+    }
+    if (inst !== this.center) this.onPortalCross(this.center ?? inst, inst);
+    const p = d.center.add(d.u.scale(0.8));
+    const c = this.v.fps;
+    c.position.set(p.x, d.center.y + 1.65, p.z);
+    c.rotation.set(0.05, Math.atan2(d.u.x, d.u.z), 0);
+    c.cameraDirection.setAll(0);
+    c.cameraRotation.set(0, 0);
+    return true;
+  }
+
+  /**
    * Сменить текущую комнату так же, как при шаге на её пол (камера не трогается): набор строится
    * скрытым и подменяется, когда готов. Promise — после подмены (следующий кадр — уже новый набор).
    * Для QA-проверки бесшовности (вместе с autoCross = false).

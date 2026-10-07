@@ -86,12 +86,16 @@ export function layerRun(run: RunExport, w: number): RunExport {
 
 const adjCache = new WeakMap<RunExport, Map<string, string[]>>();
 
-/** Соседи по связям (кэш на объект прогона; прогон после этого не мутировать). */
+/** Переход спец-локации на другой этаж ('descent' — вниз, 'lift' — выход лифта): не проём, не соседство. */
+const transit = (l: RunExport['links'][number]): boolean => l.kind === 'descent' || l.kind === 'lift';
+
+/** Соседи по связям-дверям (кэш на объект прогона; прогон после этого не мутировать). */
 export function adjacencyOf(run: RunExport): Map<string, string[]> {
   let adj = adjCache.get(run);
   if (adj) return adj;
   adj = new Map((run.instances ?? []).map((i) => [i.id, [] as string[]]));
   for (const l of run.links ?? []) {
+    if (transit(l)) continue;
     adj.get(l.a?.inst)?.push(l.b.inst);
     adj.get(l.b?.inst)?.push(l.a.inst);
   }
@@ -137,9 +141,10 @@ export function pvsIds(run: RunExport, instId: string, depth = safeDepth(run)): 
   return out;
 }
 
-/** Связь между двумя экземплярами (первая найденная) и сдвиг W при переходе from → to. */
+/** Связь-дверь между двумя экземплярами (первая найденная) и сдвиг W при переходе from → to. */
 export function linkBetween(run: RunExport, from: string, to: string): { link: RunExport['links'][number]; dw: number } | null {
   for (const l of run.links ?? []) {
+    if (transit(l)) continue;
     const dw = typeof l.dw === 'number' ? l.dw : 0;
     if (l.a.inst === from && l.b.inst === to) return { link: l, dw };
     if (l.b.inst === from && l.a.inst === to) return { link: l, dw: dw ? -dw : 0 };

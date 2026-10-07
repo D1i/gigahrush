@@ -8,19 +8,21 @@
 //  • ГСЧ — свой поток на каждую дверь по её «адресу» (путь дверей от старта), наполнение — по адресу
 //    экземпляра: содержимое комнаты не зависит от того, в каком порядке игрок ходил;
 //  • тупики по шансу (deadEndChance) с резервом роста, ветвистость, max — «в окрестности пути».
-// Спец-локации (Room.location, src/locations/): экземпляр локации вниз сам не раскрывается — переход на этаж(и)
-// ниже создаёт только descend() (комната-выход на этаже floor − k и связь kind 'descent'); этаж — ещё одно
+// Спец-локации (Room.location, src/locations/): экземпляр локации сам на другие этажи не раскрывается — переход на
+// этаж(и) ниже создаёт только descend() (комната-выход на этаже floor − k и связь kind 'descent'), выход лифта на
+// этаже выше — только ascend() (комната за выходом на этаже floor + k и связь kind 'lift'); этаж — ещё одно
 // измерение занятости, как W (docs/LOCATIONS.md, docs/GENERATOR-4D.md §15.14).
 import { OPPOSITE } from '../model/cells';
 import { hashSeed, makeRng, type Rng } from '../model/rng';
 import type {
-  FoldSettings, FoldStats, InstanceContent, LairSpec, LiftSide, LiftSpec, Link, LocationSpec, MatchMode, Project, Room, Rot, Run, StairwellSpec,
+  Connector, FoldSettings, FoldStats, InstanceContent, LairSpec, LiftSide, LiftSpec, Link, MatchMode, Project, Room, Rot, Run, Side,
+  StairwellSpec,
 } from '../model/types';
 import { locationSeedKey, rollStairwell, type StairwellRoll } from '../locations/stairwell';
-import { rollLift, type LiftRoll } from '../locations/lift';
+import { isLair, rollLift, type LiftRoll } from '../locations/lift';
 import { rollContent } from '../gen/generate';
 import { walkWarning } from '../gen/walk';
-import { compatible, facing, OUT_SIGN, segLine } from '../gen/geom';
+import { compatible, dockTarget, facing, OUT_SIGN, rotFor, segLine, turnSide, type SegGeom } from '../gen/geom';
 import { sightLimits } from '../gen/sight';
 import {
   addPvs, around, buildPool, growFrom, growOthers, layerFree, LIMIT, newLay, normFold, pickWeighted, place, PVS_TOL_M, RESERVE_MAX, tryLink,
@@ -103,10 +105,13 @@ export interface StreamStats {
   expandMsAvg: number;
   expandMsP95: number;
   expandMsMax: number;
-  /** переходов вниз из спец-локаций (descend); этажей с комнатами; самый нижний этаж */
+  /** переходов вниз из спец-локаций (descend); выходов лифтов (ascend); этажей с комнатами; самый нижний и самый
+   *  верхний этаж */
   descents: number;
+  lifts: number;
   floors: number;
   minFloor: number;
+  maxFloor: number;
 }
 
 /** Спец-локация экземпляра и её розыгрыш (по виду; kind — как spec.kind, для сужения типа): lair — без розыгрыша. */
@@ -257,6 +262,34 @@ export const DESCENT_CONN = '@descent';
 export const ARRIVAL_TAG = 'stair';
 /** Теги комнат-выходов (площадки и коридоры). */
 export const EXIT_TAGS: readonly string[] = ['лестница', 'коридор'];
+/** Тег метки, через которую в комнату за выходом лифта приходят из кабины: проём выхода кабины 1.3 м — как
+ *  двустворчатые двери коридоров и площадок. */
+export const LIFT_ARRIVAL_TAG = 'corridor';
+
+/** Псевдо-метка адреса комнаты за выходом лифта: адрес = childAddr(адрес лифта, liftConn(floor, side)). */
+export function liftConn(floor: number, side: LiftSide): string {
+  return `@lift:${floor}:${side}`;
+}
+
+/** Мировая сторона шахты лифта для выхода side (по ассету rusted_lift_v2): «прямо» — узкий проём над входом, та же
+ *  стена, что входная метка лифта (первая метка с длиной; у пресета — S); «направо» — правая рука, если войти в кабину
+ *  и стоять лицом от входа: по часовой от стены напротив входа (у пресета — E). Поворот экземпляра rot учтён через
+ *  мировые метки. */
+export function liftWall(conns: readonly Pick<Connector, 'side' | 'len'>[], rot: Rot, side: LiftSide): Side {
+  const entry = conns.find((c) => c.len >= 1)?.side ?? turnSide('S', rot);
+  return side === 'straight' ? entry : turnSide(OPPOSITE[entry], 90);
+}
+
+/** Виртуальная метка на всю сторону wall габарита экземпляра (мировые клетки): к ней стыкуется комната за выходом
+ *  лифта (dockTarget — по центру стороны, через gap). */
+function shaftSide(n: Pick<Node, 'x0' | 'y0' | 'x1' | 'y1'>, wall: Side): SegGeom {
+  switch (wall) {
+    case 'N': return { side: wall, cx: n.x0, cy: n.y0, len: n.x1 - n.x0 };
+    case 'S': return { side: wall, cx: n.x0, cy: n.y1 - 1, len: n.x1 - n.x0 };
+    case 'W': return { side: wall, cx: n.x0, cy: n.y0, len: n.y1 - n.y0 };
+    case 'E': return { side: wall, cx: n.x1 - 1, cy: n.y0, len: n.y1 - n.y0 };
+  }
+}
 
 /** Адрес двери connId экземпляра с адресом parent (= адрес комнаты, которая встанет за ней): 64-битный
  *  хэш пути «старт → … → дверь». */
@@ -329,13 +362,16 @@ class Stream implements StreamWorld {
   private deadChance = 0;
   private deadFail = 0;
   private best: { m: number; line: Run['sight']['line'] } = { m: 0, line: null };
-  /** связи-переходы спец-локаций (kind 'descent'): отдельно от lay.links — индексы lay.links = индексы проёмов в
-   *  пространстве лучей; в Run.links идут после дверей */
-  private readonly descents: Link[] = [];
+  /** связи-переходы спец-локаций (kind 'descent' и 'lift'): отдельно от lay.links — индексы lay.links = индексы
+   *  проёмов в пространстве лучей; в Run.links идут после дверей, в порядке создания */
+  private readonly trans: Link[] = [];
   /** экземпляр локации (order) → комната-выход */
   private readonly exitBy = new Map<number, Node>();
+  /** выход лифта: "order:этаж:сторона" → комната за выходом */
+  private readonly liftBy = new Map<string, Node>();
   private readonly floorSet = new Set<number>([0]);
   private minFloor = 0;
+  private maxFloor = 0;
   private readonly dirty = new Set<number>();
   private pvsRec: Record<string, string[]> = {};
   private ms = 0;
@@ -419,7 +455,7 @@ class Stream implements StreamWorld {
   // ───────── постановка и двери ─────────
 
   /** Учёт нового экземпляра (место, связь с родителем и PVS уже в Lay). portal = false — пришли не через дверь
-   *  (комната-выход спец-локации): проёма к родителю нет. */
+   *  (комната-выход спец-локации, комната за выходом лифта): проёма к родителю нет. */
   private onPlaced(n: Node, parent: Node | null, addr: string, portal = true): void {
     const lay = this.lay;
     const i = n.inst.order;
@@ -448,10 +484,15 @@ class Stream implements StreamWorld {
     this.all.add(n);
     if (n.w < this.minW) this.minW = n.w;
     if (n.w > this.maxW) this.maxW = n.w;
-    this.floorSet.add(n.floor);
-    if (n.floor < this.minFloor) this.minFloor = n.floor;
+    this.addFloor(n.floor);
     if (parent && portal && n.w !== parent.w) this.shifted++;
     this.content.push(this.rollFor(n, parent));
+  }
+
+  private addFloor(f: number): void {
+    this.floorSet.add(f);
+    if (f < this.minFloor) this.minFloor = f;
+    if (f > this.maxFloor) this.maxFloor = f;
   }
 
   private conflictsOf(n: Node): number {
@@ -788,7 +829,7 @@ class Stream implements StreamWorld {
     return n ? this.addr[n.inst.order] : null;
   }
 
-  // ───────── спец-локации: переход вниз ─────────
+  // ───────── спец-локации: переход вниз и выходы лифта ─────────
 
   locationOf(instId: string): LocationInfo | null {
     const n = this.byId.get(instId);
@@ -805,16 +846,6 @@ class Stream implements StreamWorld {
 
   private rollOf(n: Node, spec: StairwellSpec): StairwellRoll {
     return rollStairwell(spec, this.locKey(n));
-  }
-
-  ascend(instId: string, floor: number, side: LiftSide): string {
-    void instId, floor, side;
-    throw new Error('ascend: TODO(логика лифта) — ещё не реализовано');
-  }
-
-  liftExitOf(instId: string, floor: number, side: LiftSide): string | null {
-    void instId, floor, side;
-    return null;
   }
 
   exitOf(instId: string): string | null {
@@ -854,15 +885,17 @@ class Stream implements StreamWorld {
     const k = this.rollOf(L, spec).floorsDown;
     const floor = L.floor - k;
     const E = this.root.sub(`descent:${addr}`);
-    const pick = this.pickExit(E);
+    const pick = this.pickExit(E, ARRIVAL_TAG);
     if (!pick) throw new Error(`descend: в проекте нет комнаты-выхода для «${L.info.room.name}» (нужна комната с меткой)`);
     const { info, arrive } = pick;
     const ci = arrive[E.int(0, arrive.length - 1)];
     const rot = (E.int(0, 3) * 90) as Rot;
-    const { dx, dy, w } = this.exitSpot(L, info, rot, floor);
+    const sh = this.ctx.shapes.get(info.room, rot);
+    const cx = Math.round((L.x0 + L.x1 - sh.x0 - sh.x1) / 2), cy = Math.round((L.y0 + L.y1 - sh.y0 - sh.y1) / 2);
+    const { dx, dy, w } = this.spotNear(info, rot, cx, cy, L.w, floor, 'descend');
     const n = place(this.ctx, this.lay, info, rot, dx, dy, w, L, floor);
     n.linked[ci] = true;
-    this.descents.push({ a: { inst: L.inst.id, connector: '' }, b: { inst: n.inst.id, connector: info.room.connectors[ci].id }, kind: 'descent', floors: k });
+    this.trans.push({ a: { inst: L.inst.id, connector: '' }, b: { inst: n.inst.id, connector: info.room.connectors[ci].id }, kind: 'descent', floors: k });
     this.exitBy.set(L.inst.order, n);
     this.onPlaced(n, L, childAddr(addr, DESCENT_CONN), false);
     if (this.canGrow(n)) this.setSpine(n);
@@ -872,18 +905,19 @@ class Stream implements StreamWorld {
   /**
    * Выбор комнаты-выхода (один взвешенный бросок): кандидаты — комнаты пула без спец-локации (unique — если ещё
    * не стоит), по ступеням, первая непустая:
-   *  1) тег из EXIT_TAGS и марш (метка ARRIVAL_TAG), кроме которого есть ростовая метка — приходят по маршу;
-   *  2) то же без требования тега;
+   *  1) тег из EXIT_TAGS и метка прихода с тегом tag, кроме которой есть ростовая метка — приходят через неё
+   *     (спуск: tag = ARRIVAL_TAG — марш; лифт: tag = LIFT_ARRIVAL_TAG — проём 1.3 м);
+   *  2) то же без требования тега комнаты;
    *  3) тег из EXIT_TAGS или 'start' и ≥ 2 меток — приходят через любую, кроме которой есть ростовая;
    *  4) любая комната с меткой.
    * Вес — как при росте (weight × ветвистость × модификаторы). arrive — индексы меток прихода.
    */
-  private pickExit(E: Rng): { info: Info; arrive: number[] } | null {
+  private pickExit(E: Rng, tag: string): { info: Info; arrive: number[] } | null {
     const ok = (i: Info) => !i.room.location && !(i.room.unique && this.uniqueUsed.has(i)) && i.room.connectors.some((c) => c.len >= 1);
     const tagged = (i: Info, extra: string[] = []) => i.room.tags.some((t) => EXIT_TAGS.includes(t) || extra.includes(t));
     // метки прихода ci: кроме ci есть ростовая метка (мир пойдёт дальше)
-    const via = (i: Info, stair: boolean) => i.room.connectors
-      .map((c, ci) => (c.len >= 1 && (!stair || c.tag === ARRIVAL_TAG) && i.grow.some((g, j) => g && j !== ci) ? ci : -1))
+    const via = (i: Info, need: boolean) => i.room.connectors
+      .map((c, ci) => (c.len >= 1 && (!need || c.tag === tag) && i.grow.some((g, j) => g && j !== ci) ? ci : -1))
       .filter((ci) => ci >= 0);
     const any = (i: Info) => {
       const v = via(i, false);
@@ -904,18 +938,21 @@ class Stream implements StreamWorld {
     return null;
   }
 
-  /** Место и слой комнаты-выхода: центр — под центром локации; слой — первый свободный на этаже floor. */
-  private exitSpot(L: Node, info: Info, rot: Rot, floor: number): { dx: number; dy: number; w: number } {
+  /**
+   * Место и слой комнаты на этаже floor: сначала сдвиг (cx, cy) — слой w0, затем ±1, ±2… (при равном |ΔW| —
+   * сначала к 0); если весь столбец слоёв занят — то же по кольцам сдвигов в плане (шаг — габарит комнаты + gap).
+   * Спуск: (cx, cy) — центр выхода под центром лестницы; лифт — комната, пристыкованная к стороне шахты.
+   */
+  private spotNear(info: Info, rot: Rot, cx: number, cy: number, w0: number, floor: number, who: string): { dx: number; dy: number; w: number } {
     const sh = this.ctx.shapes.get(info.room, rot);
     const g = this.settings.gap;
     const M = this.settings.fold.maxLayer;
-    const ws = [L.w];
+    const ws = [w0];
     for (let k = 1; k <= 2 * M + 1; k++) {
-      const a = L.w <= 0 ? k : -k;
-      ws.push(L.w + a, L.w - a);
+      const a = w0 <= 0 ? k : -k;
+      ws.push(w0 + a, w0 - a);
     }
     const layers = ws.filter((w) => Math.abs(w) <= M);
-    const cx = Math.round((L.x0 + L.x1 - sh.x0 - sh.x1) / 2), cy = Math.round((L.y0 + L.y1 - sh.y0 - sh.y1) / 2);
     const sx = sh.x1 - sh.x0 + g, sy = sh.y1 - sh.y0 + g;
     const inside = (dx: number, dy: number) => sh.x0 + dx - g >= -LIMIT && sh.y0 + dy - g >= -LIMIT && sh.x1 + dx + g <= LIMIT && sh.y1 + dy + g <= LIMIT;
     for (let r = 0; r <= 64; r++) {
@@ -929,7 +966,109 @@ class Stream implements StreamWorld {
         }
       }
     }
-    throw new Error(`descend: на этаже ${floor} нет места для «${info.room.name}»`);
+    throw new Error(`${who}: на этаже ${floor} нет места для «${info.room.name}»`);
+  }
+
+  // ───────── выходы лифта (ascend) ─────────
+
+  /** Розыгрыш лифта L (ошибка, если L не лифт). */
+  private liftOf(L: Node, who: string): LiftRoll {
+    const spec = L.info.room.location;
+    if (spec?.kind !== 'lift') {
+      throw new Error(`${who}: у экземпляра ${L.inst.id} («${L.info.room.name}») ${spec ? `не лифт, а ${spec.kind}` : 'нет спец-локации'}`);
+    }
+    return rollLift(spec, this.locKey(L));
+  }
+
+  liftExitOf(instId: string, floor: number, side: LiftSide): string | null {
+    const n = this.byId.get(instId);
+    return n ? this.liftBy.get(`${n.inst.order}:${floor}:${side}`)?.inst.id ?? null : null;
+  }
+
+  ascend(instId: string, floor: number, side: LiftSide): string {
+    const L = this.byId.get(instId);
+    if (!L) throw new Error(`ascend: нет экземпляра ${instId}`);
+    const roll = this.liftOf(L, 'ascend');
+    if (side !== 'straight' && side !== 'right') throw new Error(`ascend: выход «${String(side)}» — бывает только 'straight' (прямо) или 'right' (направо)`);
+    if (!Number.isInteger(floor) || floor < 1 || floor > roll.floors) {
+      throw new Error(`ascend: у лифта ${instId} этажи с выходами 1…${roll.floors}, а запрошен ${floor}`);
+    }
+    const had = this.liftBy.get(`${L.inst.order}:${floor}:${side}`);
+    if (had) return had.inst.id;
+    const v0 = this.version;
+    const t0 = now();
+    const exit = this.placeLiftExit(L, roll, floor, side);
+    this.version++;
+    this.ms += now() - t0;
+    this.notify([exit.inst.id], v0);
+    return exit.inst.id;
+  }
+
+  /**
+   * Комната за выходом side лифта L на этаже floor над входом (docs/LOCATIONS.md, «Переход вверх»). Поток ГСЧ
+   * E = root.sub("lift:" + адрес L + ":" + floor + ":" + side) — свой на каждый выход, поэтому порядок вызовов для
+   * разных (floor, side) ни на что не влияет:
+   * 1) этаж комнаты — floor(L) + floor;
+   * 2) комната: если (floor, side) — логово по розыгрышу (roll.lair) — pickLair(E); нет комнаты-логова в проекте —
+   *    обычный выход (предупреждение). Обычный выход — pickExit(E, LIFT_ARRIVAL_TAG): коридор/площадка с проёмом
+   *    1.3 м ('corridor'), кроме которого есть куда расти; по весу;
+   * 3) метка прихода — E.int по списку меток прихода;
+   * 4) место — комната пристыкована к стороне шахты (liftWall): метка прихода лицом к стороне, по её центру, через
+   *    gap (как обычная стыковка); слой — первый свободный на этаже: W(L), затем ±1, ±2… (сначала к 0); весь
+   *    столбец занят — кольца сдвигов вокруг пристыкованного места (тогда комната не у шахты — это допустимо:
+   *    игрока всё равно переводит сцена лифта).
+   * Метка прихода связана (связь kind 'lift', floors, side); адрес — childAddr(адрес L, liftConn(floor, side));
+   * комната — ребёнок лифта, начало своей магистрали (если может расти).
+   */
+  private placeLiftExit(L: Node, roll: LiftRoll, floor: number, side: LiftSide): Node {
+    const addr = this.addr[L.inst.order];
+    const fl = L.floor + floor;
+    const E = this.root.sub(`lift:${addr}:${floor}:${side}`);
+    let pick: { info: Info; arrive: number[] } | null = null;
+    if (isLair(roll, floor, side)) {
+      pick = this.pickLair(E);
+      if (!pick) {
+        this.warnings.push(`Лифт ${L.inst.id} («${L.info.room.name}»): за выходом ${side === 'straight' ? 'прямо' : 'направо'} на этаже +${floor} ` +
+          'по розыгрышу логово, но в проекте нет комнаты-логова (спец-локация «Логово босса» с меткой) — поставлен обычный выход.');
+      }
+    }
+    pick ??= this.pickExit(E, LIFT_ARRIVAL_TAG);
+    if (!pick) throw new Error(`ascend: в проекте нет комнаты для выхода лифта «${L.info.room.name}» (нужна комната с меткой)`);
+    const { info, arrive } = pick;
+    const ci = arrive[E.int(0, arrive.length - 1)];
+    // стыковка к стороне шахты: виртуальная метка на всю сторону, метка прихода — лицом к ней, по центру, через gap
+    const wall = liftWall(L.conns, L.inst.rot, side);
+    const rot = rotFor(info.room.connectors[ci].side, OPPOSITE[wall]);
+    const sh = this.ctx.shapes.get(info.room, rot);
+    const B = sh.conns[ci];
+    const t = dockTarget(shaftSide(L, wall), B.len, this.settings.gap);
+    const { dx, dy, w } = this.spotNear(info, rot, t.cx - B.cx, t.cy - B.cy, L.w, fl, 'ascend');
+    const n = place(this.ctx, this.lay, info, rot, dx, dy, w, L, fl);
+    n.linked[ci] = true;
+    this.trans.push({ a: { inst: L.inst.id, connector: '' }, b: { inst: n.inst.id, connector: info.room.connectors[ci].id }, kind: 'lift', floors: floor, side });
+    this.liftBy.set(`${L.inst.order}:${floor}:${side}`, n);
+    this.onPlaced(n, L, childAddr(addr, liftConn(floor, side)), false);
+    if (this.canGrow(n)) this.setSpine(n);
+    return n;
+  }
+
+  /**
+   * Комната-логово: комнаты проекта со спец-локацией kind 'lair' (вес роста у них обычно 0 — сами не растут) и
+   * меткой; unique — если ещё не стоит. Несколько — взвешенно по весу роста (у всех 0 — поровну), одна — без броска.
+   * Метки прихода — с тегом LIFT_ARRIVAL_TAG, нет таких — любые.
+   */
+  private pickLair(E: Rng): { info: Info; arrive: number[] } | null {
+    const c: { info: Info; arrive: number[] }[] = [];
+    for (const info of this.infos) {
+      if (!info || info.room.location?.kind !== 'lair' || (info.room.unique && this.uniqueUsed.has(info))) continue;
+      const idx = (f: (x: Connector) => boolean) => info.room.connectors.map((x, i) => (x.len >= 1 && f(x) ? i : -1)).filter((i) => i >= 0);
+      const tagged = idx((x) => x.tag === LIFT_ARRIVAL_TAG);
+      const arrive = tagged.length ? tagged : idx(() => true);
+      if (arrive.length) c.push({ info, arrive });
+    }
+    if (c.length <= 1) return c[0] ?? null;
+    const ws = c.map((x) => x.info.weight);
+    return c[pickWeighted(E, ws.some((v) => v > 0) ? ws : ws.map(() => 1))];
   }
 
   stats(): StreamStats {
@@ -940,6 +1079,8 @@ class Stream implements StreamWorld {
     }
     // время раскрытия — по последним 500 раскрытиям (на большом мире интересно текущее, а не прогрев)
     const t = this.times.slice(-500).sort((a, b) => a - b);
+    let lifts = 0;
+    for (const l of this.trans) if (l.kind === 'lift') lifts++;
     return {
       instances: this.lay.nodes.length,
       expanded: this.expandedF.filter(Boolean).length,
@@ -950,9 +1091,11 @@ class Stream implements StreamWorld {
       expandMsAvg: t.length ? t.reduce((a, b) => a + b, 0) / t.length : 0,
       expandMsP95: t.length ? t[Math.min(t.length - 1, Math.floor(t.length * 0.95))] : 0,
       expandMsMax: t.length ? t[t.length - 1] : 0,
-      descents: this.descents.length,
+      descents: this.trans.length - lifts,
+      lifts,
       floors: this.floorSet.size,
       minFloor: this.minFloor,
+      maxFloor: this.maxFloor,
     };
   }
 
@@ -962,7 +1105,9 @@ class Stream implements StreamWorld {
     return `Бесконечный мир: комнат ${st.instances} (раскрыто ${st.expanded}), нераскрытых дверей ${st.pending} (ростовых ${st.pendingGrow}), ` +
       `тупиков ${st.deadChance + st.deadFail} (по шансу ${st.deadChance}, не встало ${st.deadFail}), петель ${st.loops}; ` +
       `слоёв ${st.layers} (W от ${sg(st.minW)} до ${sg(st.maxW)}), пар комнат в одном месте 3D — ${st.overlaps}.` +
-      (st.descents ? ` Переходов вниз из спец-локаций ${st.descents}, этажей ${st.floors} (нижний ${st.minFloor}).` : '') +
+      (st.descents || st.lifts
+        ? ` Переходов на другие этажи: вниз из спец-локаций ${st.descents}, выходов лифтов ${st.lifts}; этажей ${st.floors} (от ${sg(st.minFloor)} до ${sg(st.maxFloor)}).`
+        : '') +
       (st.pendingGrow === 0 && st.instances > 0 ? ' Мир заглох: ростовых дверей не осталось, заколоченных по шансу нет — все отказали по месту/обзору.' : '');
   }
 
@@ -982,8 +1127,8 @@ class Stream implements StreamWorld {
       seed: this.settings.seed,
       settings: { ...this.gen, count: Math.max(1, lay.instances.length), fold: { ...this.settings.fold } },
       instances: lay.instances.slice(),
-      // двери (их индексы = индексы проёмов), затем переходы спец-локаций
-      links: [...lay.links, ...this.descents],
+      // двери (их индексы = индексы проёмов), затем переходы спец-локаций и выходы лифтов
+      links: [...lay.links, ...this.trans],
       openConnectors,
       content: this.content.slice(),
       totals: { ...this.totals },
@@ -1053,17 +1198,24 @@ class Stream implements StreamWorld {
     }
     if (bad.length) return bad;
     const inst = new Map(sv.run.instances.map((i) => [i.id, i]));
+    const locOf = (id: string) => {
+      const i = inst.get(id);
+      return i ? this.byRoom.get(i.roomId)!.room.location?.kind ?? null : null;
+    };
     for (const l of sv.run.links) {
-      // переход спец-локации: у локации метки нет, у выхода — метка прихода
-      for (const e of l.kind === 'descent' ? [l.b] : [l.a, l.b]) {
+      // переход спец-локации / выход лифта: у локации метки нет, у выхода — метка прихода
+      for (const e of l.kind === 'descent' || l.kind === 'lift' ? [l.b] : [l.a, l.b]) {
         const i = inst.get(e.inst);
         if (!i || !this.byRoom.get(i.roomId)!.room.connectors.some((c) => c.id === e.connector)) {
           bad.push(`связь ${e.inst}/${e.connector} ведёт в несуществующую метку`);
         }
       }
-      if (l.kind === 'descent') {
-        const i = inst.get(l.a.inst);
-        if (!i || !this.byRoom.get(i.roomId)!.room.location) bad.push(`переход вниз из ${l.a.inst} — у комнаты больше нет спец-локации`);
+      if (l.kind === 'descent' && locOf(l.a.inst) !== 'stairwell') bad.push(`переход вниз из ${l.a.inst} — у комнаты больше нет спец-локации`);
+      if (l.kind === 'lift') {
+        if (locOf(l.a.inst) !== 'lift') bad.push(`выход лифта из ${l.a.inst} — у комнаты больше нет спец-локации лифта`);
+        else if (!Number.isInteger(l.floors) || l.floors! < 1 || (l.side !== 'straight' && l.side !== 'right')) {
+          bad.push(`выход лифта из ${l.a.inst}: этаж ${l.floors}, выход ${l.side} — так не бывает`);
+        }
       }
     }
     return bad;
@@ -1085,12 +1237,21 @@ class Stream implements StreamWorld {
     const parentConn = new Map<string, string>();
     for (const l of run.links) {
       const a = this.byId.get(l.a.inst)!, b = this.byId.get(l.b.inst)!;
-      if (l.kind === 'descent') {
-        // переход спец-локации: метка прихода выхода занята, проёма и соседства нет
+      if (l.kind === 'descent' || l.kind === 'lift') {
+        // переход спец-локации / выход лифта: метка прихода занята, проёма и соседства нет
         b.linked[b.info.room.connectors.findIndex((c) => c.id === l.b.connector)] = true;
-        this.descents.push({ a: { ...l.a }, b: { ...l.b }, kind: 'descent', floors: l.floors });
-        this.exitBy.set(a.inst.order, b);
-        if (b.inst.parent === a.inst.id && !parentConn.has(b.inst.id)) parentConn.set(b.inst.id, DESCENT_CONN);
+        let conn: string;
+        if (l.kind === 'descent') {
+          this.trans.push({ a: { ...l.a }, b: { ...l.b }, kind: 'descent', floors: l.floors });
+          this.exitBy.set(a.inst.order, b);
+          conn = DESCENT_CONN;
+        } else {
+          const f = l.floors!, side = l.side!;
+          this.trans.push({ a: { ...l.a }, b: { ...l.b }, kind: 'lift', floors: f, side });
+          this.liftBy.set(`${a.inst.order}:${f}:${side}`, b);
+          conn = liftConn(f, side);
+        }
+        if (b.inst.parent === a.inst.id && !parentConn.has(b.inst.id)) parentConn.set(b.inst.id, conn);
         continue;
       }
       const ai = a.info.room.connectors.findIndex((c) => c.id === l.a.connector);
@@ -1104,7 +1265,7 @@ class Stream implements StreamWorld {
       if (b.inst.parent === a.inst.id && !parentConn.has(b.inst.id)) parentConn.set(b.inst.id, l.a.connector);
       if (a.w !== b.w) this.shifted++;
     }
-    const nd = this.descents.length;
+    const nd = this.trans.length;
     this.loops = run.links.length - nd - Math.max(0, run.instances.length - 1 - nd);
     this.grown = Math.max(0, run.instances.length - 1 - nd);
     const exp = new Set(sv.expanded);
@@ -1131,8 +1292,7 @@ class Stream implements StreamWorld {
       this.all.add(n);
       if (n.w < this.minW) this.minW = n.w;
       if (n.w > this.maxW) this.maxW = n.w;
-      this.floorSet.add(n.floor);
-      if (n.floor < this.minFloor) this.minFloor = n.floor;
+      this.addFloor(n.floor);
       if (derive) this.content.push(this.rollFor(n, parent));
     }
     if (savedOverlaps !== null) this.overlaps = savedOverlaps;

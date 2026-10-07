@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { applyShape, rectCells } from './cells';
 import { createItem, createProp, createRoom, duplicateRoom } from './ops';
 import { DEFAULT_STAIRWELL, newStairwell } from '../locations/stairwell';
+import { DEFAULT_LIFT, newLift } from '../locations/lift';
+import { DEFAULT_LAIR, newLair } from '../locations/lair';
 import { emptyProject, parseProject, parseRoom, serializeProject, serializeRoom } from './serialize';
-import type { Project, StairwellSpec } from './types';
+import type { LairSpec, LiftSpec, Project, StairwellSpec } from './types';
 
 /** Проект со всеми видами сущностей и перекрёстных ссылок. */
 function sample(): Project {
@@ -190,5 +192,34 @@ describe('serialize/parse', () => {
     expect(c.location).toEqual(back.rooms[0].location);
     (c.location as StairwellSpec).sounds[0] = 1;
     expect((back.rooms[0].location as StairwellSpec).sounds[0]).toBe(2);
+  });
+
+  it('спец-локации «Ржавый лифт» и «Логово босса»: roundtrip, нормализация, дубль лифта — своя копия диапазонов', () => {
+    const p = sample();
+    p.rooms[0].location = { ...newLift(), floorsUp: [2, 4], cageChance: 0.25, boardPumpS: [3, 5.5] };
+    const lr = createRoom(p, 'Логово', 2, 2);
+    lr.location = { ...newLair(), boss: 'shershun' };
+    const json = JSON.parse(JSON.stringify(serializeProject(p)));
+    expect(json.rooms[0].location).toEqual({ ...DEFAULT_LIFT, floorsUp: [2, 4], cageChance: 0.25, boardPumpS: [3, 5.5] });
+    expect(json.rooms.find((x: { id: string }) => x.id === lr.id).location).toEqual({ kind: 'lair', boss: 'shershun', darkness: DEFAULT_LAIR.darkness });
+    const back = parseProject(json);
+    expect(back).toEqual(p);
+    expect(JSON.stringify(serializeProject(back))).toBe(JSON.stringify(serializeProject(p)));
+    // диапазоны лифта: перевёрнутые — по порядку, за рамками — зажаты, этажи — целые; мусор — по умолчанию
+    const n = parseRoom({
+      name: 'R', cells: ['0:0-2'],
+      location: { kind: 'lift', floorsUp: [40.2, 0], boardPumpS: [9, -1], speed: 'быстро', cageChance: 7, swingPeriod: 0.1 },
+    });
+    expect(n.location).toEqual({ ...DEFAULT_LIFT, floorsUp: [1, 30], boardPumpS: [0, 9], cageChance: 1, swingPeriod: 0.8 });
+    // логово: мусор — по умолчанию, длинное имя босса обрезано
+    const l = parseRoom({ name: 'R', cells: ['0:0-2'], location: { kind: 'lair', boss: 5, darkness: 3 } });
+    expect(l.location).toEqual({ ...DEFAULT_LAIR, darkness: 1 });
+    const long = parseRoom({ name: 'R', cells: ['0:0-2'], location: { kind: 'lair', boss: ' ' + 'б'.repeat(100) } });
+    expect((long.location as LairSpec).boss).toHaveLength(64);
+    // дублирование — своя копия
+    const c = duplicateRoom(back, back.rooms[0].id);
+    expect(c.location).toEqual(back.rooms[0].location);
+    (c.location as LiftSpec).floorsUp[0] = 9;
+    expect((back.rooms[0].location as LiftSpec).floorsUp[0]).toBe(2);
   });
 });

@@ -17,12 +17,20 @@ import { FoldDriver, layerColor, type FoldOrbitView, type FoldRender, type FoldR
 import { downloadBlob, parseRunJSON, propTexturesOf, runExportOf, singleRoomRun, startInst } from './sources';
 import { readWalk, writeWalk, WalkSession, type WalkOptions, type WalkStatus } from './walk';
 import { StairwellLayer, type LocationRequest } from './StairwellLayer';
+import { LiftLayer, type LiftRequest } from './LiftLayer';
+import { LairDecor } from './lairDecor';
+import { lairSign } from '../locations/lair';
+import type { LiftSide } from '../model/types';
 import { locationSeedKey } from '../locations/stairwell';
 import { seedKey as worldSeedKey } from '../gen4d/stream';
 import { viewHorizonM } from '../gen4d/pvs';
 import './view3d.css';
 
 type Source = 'run' | 'room' | 'file' | 'walk';
+
+/** Спец-локация на экране: лестница или лифт (у каждой свой слой и сцена). */
+type LocReq = (LocationRequest & { kind: 'stairwell' }) | LiftRequest;
+const SIDE_RU: Record<LiftSide, string> = { straight: 'прямо', right: 'направо' };
 
 /** Самопроверка моделей частей складчатого прогона — один раз на модель (модели кэшируются драйвером). */
 const validCache = new WeakMap<BlockoutModel, string[] | string>();
@@ -123,7 +131,7 @@ export default function View3DPage() {
   const [sceneErr, setSceneErr] = useState<string | null>(null);
   const [glbBusy, setGlbBusy] = useState(false);
   /** спец-локация (src/locations/): своя сцена поверх болванки, пока задана */
-  const [loc, setLoc] = useState<LocationRequest | null>(null);
+  const [loc, setLoc] = useState<LocReq | null>(null);
   const roomAttempts = useRef(new Map<string, number>());
 
   const setSource = (s: Source) => {
@@ -361,17 +369,34 @@ export default function View3DPage() {
     let timer = 0;
     let alive = true;
     // ── спец-локации мира: порог в комнату с Room.location → своя сцена; выход назад — к той же двери,
-    // выход вниз — world.descend → комната этажом(ами) ниже ──
+    // выход вниз — world.descend → комната этажом(ами) ниже; выход лифта — world.ascend → комната этажом(ами)
+    // выше, у её метки прихода; оттуда к лифту — шагнуть к этой стене ──
     const attempts = new Map<string, number>();
     const neighbor = (id: string): string | null => {
-      const l = session?.rx.links.find((x) => x.kind !== 'descent' && (x.a.inst === id || x.b.inst === id));
+      const l = session?.rx.links.find((x) => x.kind !== 'descent' && x.kind !== 'lift' && (x.a.inst === id || x.b.inst === id));
       return l ? (l.a.inst === id ? l.b.inst : l.a.inst) : null;
     };
+    const locKey = (s: WalkSession, id: string) => locationSeedKey(worldSeedKey(s.world.settings.seed, s.world.settings.mods), s.world.addressOf(id) ?? id);
+    /** после выхода из лифта — не войти обратно, пока игрок ещё стоит у стены, через которую пришёл */
+    let liftCool = 0;
+    const lair = new LairDecor(v.scene);
     const enterLoc = (id: string) => {
       const s = session;
       if (!s || !d || v.hasOverlay) return;
-      // спецификация и розыгрыш — из мира (тот же розыгрыш берёт descend)
+      // спецификация и розыгрыш — из мира (тот же розыгрыш берёт descend / ascend)
       const L = s.world.locationOf(id);
+      if (L?.kind === 'lift') {
+        const cross = d.current.cross;
+        enterLift(id, 0, undefined, cross && cross.to === id ? cross.from : null);
+        return;
+      }
+      if (L?.kind === 'lair') {
+        // связи-переходы — только в прогоне мира (в JSON болванки их нет)
+        const link = s.world.run().links.find((l) => l.kind === 'lift' && l.b.inst === id);
+        const de = link ? d.deadEndAt(id, link.b.connector) : null;
+        if (de) lair.show(id, de.center, de.u, de.depth, lairSign(L.spec), L.spec.darkness);
+        return;
+      }
       if (!L || L.kind !== 'stairwell') return;
       const inst = s.rx.instances.find((i) => i.id === id);
       const cross = d.current.cross;
@@ -379,9 +404,10 @@ export default function View3DPage() {
       const n = attempts.get(id) ?? 0;
       attempts.set(id, n + 1);
       setLoc({
+        kind: 'stairwell',
         key: `${id}:${Date.now()}`,
         spec: L.spec,
-        seedKey: locationSeedKey(worldSeedKey(s.world.settings.seed, s.world.settings.mods), s.world.addressOf(id) ?? id),
+        seedKey: locKey(s, id),
         roll: L.roll,
         attempt: n,
         title: inst?.roomName || 'Подъезд',
@@ -389,6 +415,89 @@ export default function View3DPage() {
         onExit: (kind) => exitLoc(kind, id, from),
       });
     };
+    /** Лифт: с этажа 0 (вошли с площадки) или с этажа floor у коридора side (вернулись из комнаты за выходом). */
+    const enterLift = (id: string, floor = 0, side?: LiftSide, from: string | null = null) => {
+      const s = session;
+      if (!s || !d || v.hasOverlay) return;
+      const L = s.world.locationOf(id);
+      if (L?.kind !== 'lift') return;
+      const inst = s.rx.instances.find((i) => i.id === id);
+      const n = attempts.get(id) ?? 0;
+      attempts.set(id, n + 1);
+      lair.hide();
+      setLoc({
+        kind: 'lift',
+        key: `${id}:${Date.now()}`,
+        spec: L.spec,
+        seedKey: locKey(s, id),
+        roll: L.roll,
+        attempt: n,
+        floor,
+        side,
+        title: inst?.roomName || 'Лифт',
+        mode: 'walk',
+        onExit: (kind, f, isLair) => exitLift(kind, f, isLair, id, from),
+      });
+    };
+    const exitLift = (kind: 'entry' | LiftSide, floor: number, isLair: boolean, id: string, from: string | null) => {
+      const s = session;
+      const dd = d;
+      setLoc(null);
+      if (!s || !dd || !alive) return;
+      const back = () => dd.placeAtDoor(from ?? neighbor(id) ?? id, id);
+      if (kind === 'entry') {
+        back();
+        return;
+      }
+      let exitId: string | null = null;
+      try {
+        exitId = s.world.ascend(id, floor, kind);
+      } catch (e) {
+        console.error(e);
+      }
+      if (!exitId) {
+        notify('Лифт никуда не вывел: мир не смог поставить комнату выше (см. консоль)', 'error');
+        back();
+        return;
+      }
+      const target = exitId;
+      const go = (k: number) => {
+        if (!alive) return;
+        if (!s.rx.instances.some((i) => i.id === target)) {
+          if (k < 50) setTimeout(() => go(k + 1), 20);
+          return;
+        }
+        const link = s.world.run().links.find((l) => l.kind === 'lift' && l.a.inst === id && l.b.inst === target);
+        dd.goTo(target);
+        if (link) dd.placeAtDeadEnd(target, link.b.connector);
+        liftCool = performance.now() + 1500;
+        const fl = s.world.run().instances.find((i) => i.id === target)?.floor ?? 0;
+        const text = `этаж ${fmtFloor(fl)} · ${SIDE_RU[kind]}${isLair ? ' · логово' : ''}`;
+        setFlash({ seq: Date.now(), text, color: isLair ? '#e0563f' : '#e8b04b' });
+        setTimeout(() => setFlash((f) => (f?.text === text ? null : f)), 1900);
+        // логово — темнота и табличка, как при шаге в комнату
+        if (s.world.locationOf(target)?.kind === 'lair') enterLoc(target);
+      };
+      go(0);
+    };
+    // возврат в лифт: игрок в комнате за выходом лифта шагнул к стене, через которую пришёл
+    const liftTimer = window.setInterval(() => {
+      const s = session, dd = d;
+      if (!s || !dd || v.hasOverlay || v.mode !== 'fps' || performance.now() < liftCool) return;
+      const room = dd.portal?.current ?? dd.current.center;
+      if (!room) return;
+      if (s.world.locationOf(room)?.kind === 'lift') return;
+      const c = v.fps.position;
+      for (const l of s.world.run().links) {
+        if (l.kind !== 'lift' || l.b.inst !== room) continue;
+        const de = dd.deadEndAt(room, l.b.connector);
+        if (!de || Math.abs(c.y - 1.65 - de.center.y) > 1.5) continue;
+        if (Math.hypot(c.x - de.center.x, c.z - de.center.z) < 0.7) {
+          enterLift(l.a.inst, l.floors ?? 1, l.side ?? 'straight');
+          return;
+        }
+      }
+    }, 100);
     const exitLoc = (kind: 'back' | 'descend', id: string, from: string | null) => {
       const s = session;
       const dd = d;
@@ -453,6 +562,8 @@ export default function View3DPage() {
           },
           onEnter: (id) => {
             s.enter(id);
+            // ушли из логова — свет обратно
+            if (s.world.locationOf(id)?.kind !== 'lair') lair.hide();
             enterLoc(id);
           },
         },
@@ -496,6 +607,8 @@ export default function View3DPage() {
       setLoc(null);
       window.removeEventListener('beforeunload', onUnload);
       clearInterval(timer);
+      clearInterval(liftTimer);
+      lair.hide();
       savePlayer();
       d?.dispose();
       session?.dispose();
@@ -652,10 +765,33 @@ export default function View3DPage() {
   const enterRoomLoc = () => {
     const room = selRoom;
     const spec = room?.location;
-    if (!room || !spec || spec.kind !== 'stairwell') return;
+    if (!room || !spec || spec.kind === 'lair') return;
     const n = roomAttempts.current.get(room.id) ?? 0;
     roomAttempts.current.set(room.id, n + 1);
+    if (spec.kind === 'lift') {
+      setLoc({
+        kind: 'lift',
+        key: `room:${room.id}:${Date.now()}`,
+        spec,
+        seedKey: locationSeedKey('room-' + room.id, 'i0'),
+        attempt: n,
+        title: room.name,
+        mode: 'room',
+        onExit: (kind, floor, isLair) => {
+          setLoc(null);
+          if (document.pointerLockElement) document.exitPointerLock();
+          notify(
+            kind === 'entry'
+              ? 'Вышли из лифта назад, на площадку'
+              : `Выход ${SIDE_RU[kind]} на этаже +${floor}${isLair ? ' — логово босса' : ''}: в «Прогулке» это комната этажом выше`,
+            'ok',
+          );
+        },
+      });
+      return;
+    }
     setLoc({
+      kind: 'stairwell',
       key: `room:${room.id}:${Date.now()}`,
       spec,
       // как у прогона фиксированного размера: сид прогона одной комнаты (singleRoomRun) + id экземпляра
@@ -775,13 +911,20 @@ export default function View3DPage() {
             <div className="v3-src">
               <Select value={roomSel} options={p.rooms.map((r) => ({ value: r.id, label: r.name + (r.location ? ' · спец-локация' : '') }))} onChange={setRoomSel} />
               <div className="hint">Один экземпляр, rot 0, без розыгрыша спотов. Тупики по умолчанию открыты.</div>
-              {selRoom?.location?.kind === 'stairwell' && (
+              {(selRoom?.location?.kind === 'stairwell' || selRoom?.location?.kind === 'lift') && (
                 <>
                   <Btn variant="primary" onClick={enterRoomLoc} disabled={!!loc || !!glErr} title="Сцена спец-локации сама по себе, без мира: вход у двери, выход назад — через неё же">
                     Войти в локацию
                   </Btn>
-                  <div className="hint">Спец-локация «Бесконечная лестница». В «Прогулке» вход — через дверь комнаты, выход вниз ведёт на этаж ниже.</div>
+                  <div className="hint">
+                    {selRoom.location.kind === 'stairwell'
+                      ? 'Спец-локация «Бесконечная лестница». В «Прогулке» вход — через дверь комнаты, выход вниз ведёт на этаж ниже.'
+                      : 'Спец-локация «Ржавый лифт». В «Прогулке» вход — через дверь шахты, выходы прямо и направо ведут на этажи выше, к лифту — назад к той же стене.'}
+                  </div>
                 </>
+              )}
+              {selRoom?.location?.kind === 'lair' && (
+                <div className="hint">Логово босса (заглушка): в «Прогулке» сюда выводит один из выходов лифта — тёмная комната с табличкой.</div>
               )}
             </div>
           )}
@@ -986,7 +1129,12 @@ export default function View3DPage() {
 
       <div className="stage v3-stage" ref={stageRef}>
         <canvas ref={canvasRef} tabIndex={0} />
-        {loc && <StairwellLayer viewer={viewer.current} req={loc} onClose={() => setLoc(null)} />}
+        {loc &&
+          (loc.kind === 'lift' ? (
+            <LiftLayer viewer={viewer.current} req={loc} onClose={() => setLoc(null)} />
+          ) : (
+            <StairwellLayer viewer={viewer.current} req={loc} onClose={() => setLoc(null)} />
+          ))}
         <div className="float toolbar v3-tools" style={loc ? { display: 'none' } : undefined}>
           <Btn sm on={mode === 'orbit'} onClick={() => setMode('orbit')} title="Облёт: вид сверху под углом, потолки скрыты">
             Облёт

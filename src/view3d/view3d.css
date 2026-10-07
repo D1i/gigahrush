@@ -116,6 +116,8 @@
 .v3-loc-center .muted { font-size: 11px; }
 .v3-loc-hint { left: 50%; bottom: 14px; transform: translateX(-50%); cursor: pointer; pointer-events: auto; }
 .v3-loc-hint b { color: var(--accent); font-weight: 500; }
+/* «Ржавый лифт» (LiftLayer): подсказка кнопок поста / двери логова */
+.v3-lift-prompt { left: 50%; bottom: 46px; transform: translateX(-50%); pointer-events: none; font-size: 13px; letter-spacing: 0.02em; }
 .v3-loc-dead {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
   background: radial-gradient(ellipse at center, #1a0504e8 0%, #000000f5 70%); animation: v3-dead 1.2s ease-out;

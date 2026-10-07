@@ -156,9 +156,10 @@ export class WalkSession {
       const part = exportRunJSON(this.p, { ...run, instances: fresh }, { withTex: false }) as RunExport;
       for (const i of part.instances) this.exp.set(i.id, i);
     }
-    // переходы спец-локаций (kind 'descent': локация → комната-выход этажом ниже) — не проёмы: в JSON
-    // болванки их нет (иначе соседство по связям тянет локацию в куски выхода); метка прихода выхода — тупик
-    const doors = run.links.filter((l) => l.kind !== 'descent');
+    // переходы спец-локаций (kind 'descent': локация → комната-выход этажом ниже; 'lift': лифт → комната за
+    // выходом этажом выше) — не проёмы: в JSON болванки их нет (иначе соседство по связям тянет локацию в куски
+    // выхода); метка прихода выхода — тупик
+    const doors = run.links.filter((l) => l.kind !== 'descent' && l.kind !== 'lift');
     const linkBy = new Map<string, { inst: string; connector: string }>();
     for (const l of doors) {
       linkBy.set(`${l.a.inst}/${l.a.connector}`, l.b);

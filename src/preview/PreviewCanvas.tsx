@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { SIDE_DELTA } from '../model/cells';
 import { segmentLine, segmentMid } from '../model/segments';
-import type { Project, Run } from '../model/types';
+import type { LocationSpec, Project, Run } from '../model/types';
 import { setUI } from '../model/ui';
 import { toScreen, useCanvasView, type View } from '../render/camera';
 import { CANVAS } from '../render/palette';
@@ -52,6 +52,9 @@ const LOD_EMPTY_SPOTS = 55;
 type Look = 'full' | 'trans' | 'ghost' | 'hidden';
 
 const OVERLAP_COLOR = '#ff5cd6';
+
+/** Пометка спец-локации перед названием комнаты на плане (docs/LOCATIONS.md). */
+const LOC_MARK: Record<LocationSpec['kind'], string> = { stairwell: '∞', lift: '⇅', lair: '☠' };
 
 export function PreviewCanvas(props: {
   p: Project;
@@ -473,8 +476,9 @@ export function PreviewCanvas(props: {
         continue;
       }
       const wTag = fold ? { text: wText(g.layer), color: layerColor(g.layer) } : null;
-      // спец-локация (src/locations/) — пометка «∞» перед названием
-      const name = (g.room?.location ? '∞ ' : '') + (g.room?.name ?? g.inst.roomId);
+      // спец-локация (src/locations/) — пометка перед названием: «∞» лестница, «⇅» лифт, «☠» логово
+      const loc = g.room?.location;
+      const name = (loc ? `${LOC_MARK[loc.kind]} ` : '') + (g.room?.name ?? g.inst.roomId);
       label(ctx, sx, sy, Math.min(wPx - 8, 180), name, tier, c?.danger ?? 0, isStart, wPx >= 90, wTag);
     }
     // линия обзора — поверх всего (в складчатом прогоне не считается)

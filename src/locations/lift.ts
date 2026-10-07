@@ -3,8 +3,8 @@
 // положение игрока на площадке кабины, зовёт лифт на этаж и реагирует на события. Контракт зафиксирован
 // оркестратором; правила и формулы — docs/LOCATIONS.md.
 //
-// Коротко (для игрока): рычагом — на этаж. Тряхнуло доской — площадку кренит: перебегай на верхний край;
-// на нижнем краю раскачаешь сильнее, стоя на месте — не погасишь. С каретки сильный крен выбрасывает в
+// Коротко (для игрока): кнопкой — на этаж. Тряхнуло доской — площадку кренит: перебегай на поднявшуюся сторону
+// (до края не обязательно); на опустившейся раскачаешь сильнее, стоя на месте — не погасишь. С каретки сильный крен выбрасывает в
 // шахту; клетка бьётся о стены и стоит, пока не стихнет. На каждом этаже два выхода — прямо и направо; за
 // одним из них на одном из этажей — логово: оттуда тянет красным светом и гулом.
 import { hashSeed, makeRng } from '../model/rng';
@@ -23,19 +23,29 @@ export const DEFAULT_LIFT: LiftSpec = {
   darkness: 0.7,
 };
 
-/** Высота этажа шахты, м (как у модуля подъезда). */
-export const LIFT_FLOOR_M = 3;
-/** Полуразмер площадки кабины, м (площадка 2.0 × 2.0): положение игрока нормируется на него. */
-export const LIFT_HALF_M = 1.0;
-/** Шахта в плане (внутри), м: комната-пресет лифта — 2.6 × 2.6; зазор кабина — стена 0.3 м (сюда застревает доска). */
-export const LIFT_SHAFT_M = 2.6;
+// Размеры — по ассету пользователя rusted_lift_v2 (docs/LOCATION-LIFT-BABYLON.md): оси кабины x — вправо (сторона
+// широкого проёма «направо»), z — вперёд (сторона узкого проёма «прямо», она же вход на этаже 0).
+/** Высота этажа шахты, м (уровни ассета 0 / 4.2 / 8.4). */
+export const LIFT_FLOOR_M = 4.2;
+/** Полуразмеры площадки кабины, м (площадка 2.0 × 3.0: узкая сторона — вперёд): положение игрока нормируется на них. */
+export const LIFT_HALF_X = 1.0;
+export const LIFT_HALF_Z = 1.5;
+/** Шахта в плане (внутри), м: x — 3.6 (передняя стена с узким проёмом), z — 4.4. Комната-пресет лифта — этот прямоугольник. */
+export const LIFT_SHAFT_X = 3.6;
+export const LIFT_SHAFT_Z = 4.4;
+/** Проёмы шахты, м: «прямо» — узкий (передняя стена, коридор 1.4 м), «направо» — широкий (правая стена, коридор 2.8 м). */
+export const LIFT_DOOR_STRAIGHT_M = 1.0;
+export const LIFT_DOOR_RIGHT_M = 2.4;
 /** Крен при |φ| = 1 (предел), градусы — для сцены. */
 export const LIFT_TILT_DEG = 15;
-/** Собственное затухание качания (доля критического). */
+/** Собственное затухание качания (доля критического), пока доска застряла и скребёт. */
 export const LIFT_ZETA = 0.03;
+/** Доска выпала — башмаки снова держат направляющие: затухание сильнее (клетка без игрока стихает за ~10 с). */
+export const LIFT_ZETA_FREE = 0.12;
 /**
  * Вес игрока: на верхнем (поднятом) краю гасит качание, на нижнем — раскачивает, в центре — ничего. Член
- * затухания c_p = LIFT_PLAYER_DAMP · (−p · sgn φ), p — положение игрока по оси качания в долях полуразмера.
+ * затухания c_p = LIFT_PLAYER_DAMP · (−d · sgn φ), d — плечо: положение игрока по оси качания от центра площадки, м
+ * (по x до ±1.0, по длинной оси z до ±1.5 — там бежать дальше, но и гасит сильнее).
  * Стоять у одного края — в среднем за период ноль: гасить можно, только перебегая на верхний край.
  */
 export const LIFT_PLAYER_DAMP = 3.5;
@@ -72,7 +82,7 @@ export interface LiftBoard {
   segment: number;
   /** где на пролёте застревает: доля пролёта 0.3…0.7 */
   frac: number;
-  /** с какой стороны падает (из проёма какого выхода): 'straight' → качает по оси z, 'right' — по x */
+  /** в какой зазор падает (стена шахты со стороны выхода): 'straight' → качает по оси z (бегать 3 м), 'right' — по x (2 м) */
   side: LiftSide;
   /** сколько секунд качает, застряв */
   pumpS: number;
@@ -151,10 +161,11 @@ export type LiftEvent =
   /** каретку накренило за предел — игрока выбросило в шахту (смерть, затем новая попытка у входа) */
   | { type: 'thrown'; axis: LiftAxis; dir: 1 | -1 };
 
-/** Выход, доступный у этажа: на этаже 0 — «назад» (входная дверь), выше — «прямо» и «направо». */
+/** Выход, доступный у этажа: на этаже 0 — вход (узкий передний проём, откуда игрок пришёл; широкий на этаже 0
+ *  заколочен), выше — «прямо» (узкий передний) и «направо» (широкий правый). */
 export interface LiftExit {
   floor: number;
-  side: LiftSide | 'back';
+  side: LiftSide | 'entry';
   /** за этим выходом логово */
   lair: boolean;
 }
@@ -216,13 +227,14 @@ export function normLift(v: unknown): LiftSpec | null {
 // ───────────────────────── Формулы ─────────────────────────
 
 /** Коэффициенты качания: φ'' = −ω²·φ − (2ζω + c_p)·φ' + P·sign(φ') (последнее — пока качает доска),
- *  c_p = kd·(−p·sgn φ) — вес игрока (LIFT_PLAYER_DAMP). */
-export function swingCoef(spec: LiftSpec): { w: number; c: number; kd: number; pump: number } {
+ *  c_p = kd·(−d·sgn φ) — вес игрока (LIFT_PLAYER_DAMP, d — плечо, м). Период одинаков по обеим осям. */
+export function swingCoef(spec: LiftSpec): { w: number; c: number; cFree: number; kd: number; pump: number } {
   const T = fin(spec.swingPeriod) && spec.swingPeriod > 0 ? spec.swingPeriod : DEFAULT_LIFT.swingPeriod;
   const w = (2 * Math.PI) / T;
   return {
     w,
     c: 2 * LIFT_ZETA * w,
+    cFree: 2 * LIFT_ZETA_FREE * w,
     kd: LIFT_PLAYER_DAMP,
     // сила «в такт» P·sign(φ'): за период добавляет 4·P·A работы → dA/dt = 2P/(πω) = LIFT_PUMP_RATE
     pump: (LIFT_PUMP_RATE * Math.PI * w) / 2,
@@ -242,14 +254,14 @@ export function liftBoard(spec: LiftSpec, roll: LiftRoll, attempt: number, segme
   return falls ? { segment, frac, side, pumpS } : null;
 }
 
-/** Выходы у этажа floor: 0 — «назад» (вход), выше — «прямо» и «направо». */
+/** Выходы у этажа floor: 0 — вход, выше — «прямо» и «направо». */
 export function liftExitsAt(roll: LiftRoll, floor: number): LiftExit[] {
-  if (floor === 0) return [{ floor: 0, side: 'back', lair: false }];
+  if (floor === 0) return [{ floor: 0, side: 'entry', lair: false }];
   if (floor < 0 || floor > roll.floors || !Number.isInteger(floor)) return [];
   return (['straight', 'right'] as const).map((side) => ({ floor, side, lair: isLair(roll, floor, side) }));
 }
 
-export function isLair(roll: LiftRoll, floor: number, side: LiftSide | 'back'): boolean {
+export function isLair(roll: LiftRoll, floor: number, side: LiftSide | 'entry'): boolean {
   return !!roll.lair && roll.lair.floor === floor && roll.lair.side === side;
 }
 
@@ -263,8 +275,8 @@ const span = ([a, b]: [number, number]) => (a === b ? `${a}` : `${a}–${b}`);
 /** Правило для игрока одной строкой (подсказка в инспекторе и в UI игры). */
 export function liftRule(spec: LiftSpec): string {
   const lair = spec.lairChance <= 0 ? '' : ` На одном из этажей за одним из выходов — логово: оттуда тянет красным светом и гулом.`;
-  return `Рычаг — вверх или вниз, ${span(spec.floorsUp)} эт. над входом, на каждом — выходы прямо и направо. ` +
-    `Тряхнуло доской — площадку кренит: перебегай на верхний край; на нижнем — раскачаешь сильнее, стоя на месте — не погасишь. ` +
+  return `Кнопки на посту — вверх или вниз, ${span(spec.floorsUp)} эт. над входом, на каждом — выходы прямо (узкий, над входом) и направо (широкий). ` +
+    `Тряхнуло доской — площадку кренит: перебегай на поднявшуюся сторону (до края не обязательно); на опустившейся — раскачаешь сильнее, стоя на месте — не погасишь. ` +
     `С каретки сильный крен сбрасывает в шахту; клетка бьётся о стены и стоит, пока не стихнет.` + lair;
 }
 
@@ -318,7 +330,7 @@ export function callLift(s: LiftState, floor: number): LiftEvent[] {
  *         пролёт ещё не «отработан») — событие board, фаза jammed, кабина стоит, качание с удара: φ = 0,
  *         φ' = −boardKick·ω (кабину отбрасывает от стены, где застряла доска). Проехал этаж — pass, доехал — arrive.
  * jammed: φ'' = −ω²φ − (2ζω + c_p)·φ' + P·sign(φ') (последнее — пока доска качает, pump > 0; выпала — freed);
- *         c_p = LIFT_PLAYER_DAMP·(−p·sgn φ): игрок на верхнем краю гасит, на нижнем раскачивает; p — положение
+ *         c_p = LIFT_PLAYER_DAMP·(−d·sgn φ): игрок на верхнем краю гасит, на нижнем раскачивает; d — плечо, м: положение
  *         игрока по оси качания в долях полуразмера (−1…1), sgn φ сглажен у нуля (|φ| < 0.05). |φ| ≥ 1: каретка — thrown (смерть),
  *         клетка — bang (отскок с LIFT_BOUNCE). Доска выпала и амплитуда < LIFT_STEADY_AMP дольше LIFT_STEADY_S —
  *         steady, едет дальше к target.
@@ -328,8 +340,8 @@ export function stepLift(spec: LiftSpec, s: LiftState, dt: number, player: { x: 
   const ev: LiftEvent[] = [];
   if (s.phase === 'thrown') return ev;
   let rest = fin(dt) && dt > 0 ? Math.min(dt, 5) : 0;
-  const px = fin(player?.x) ? clampN(player.x / LIFT_HALF_M, [-1, 1]) : 0;
-  const pz = fin(player?.z) ? clampN(player.z / LIFT_HALF_M, [-1, 1]) : 0;
+  const px = fin(player?.x) ? clampN(player.x / LIFT_HALF_X, [-1, 1]) : 0;
+  const pz = fin(player?.z) ? clampN(player.z / LIFT_HALF_Z, [-1, 1]) : 0;
   const speed = fin(spec.speed) && spec.speed > 0 ? spec.speed : DEFAULT_LIFT.speed;
   const co = swingCoef(spec);
   while (rest > 1e-9 && (s.phase as LiftPhase) !== 'thrown') {
@@ -337,7 +349,8 @@ export function stepLift(spec: LiftSpec, s: LiftState, dt: number, player: { x: 
     rest -= h;
     s.t += h;
     if (s.phase === 'moving') moveStep(spec, s, h, speed, co, ev);
-    else if (s.phase === 'jammed') swingStep(s, h, s.swing!.axis === 'x' ? px : pz, co, ev);
+    // плечо веса игрока, м: на длинной оси (z) — до 1.5 м, сильнее (бежать дальше, зато и гасит сильнее)
+    else if (s.phase === 'jammed') swingStep(s, h, s.swing!.axis === 'x' ? px * LIFT_HALF_X : pz * LIFT_HALF_Z, co, ev);
   }
   return ev;
 }
@@ -365,10 +378,13 @@ function moveStep(spec: LiftSpec, s: LiftState, h: number, speed: number, co: Re
       }
     }
   }
-  // проехал этажи
-  const f0 = s.y / LIFT_FLOOR_M, f1 = ny / LIFT_FLOOR_M;
-  if (dir > 0) for (let f = Math.floor(f0 + 1e-9) + 1; f < f1 - 1e-9 && f < s.target!; f++) ev.push({ type: 'pass', floor: f }), (s.floor = f);
-  if (dir < 0) for (let f = Math.ceil(f0 - 1e-9) - 1; f > f1 + 1e-9 && f > s.target!; f--) ev.push({ type: 'pass', floor: f }), (s.floor = f);
+  // проехал этажи: отметка этажа f·этаж — в (y, ny] (вверх) или [ny, y) (вниз), кроме целевого
+  const F = LIFT_FLOOR_M;
+  if (dir > 0) {
+    for (let f = Math.floor(s.y / F) + 1; f * F <= ny && f < s.target!; f++) if (f * F > s.y) ev.push({ type: 'pass', floor: f }), (s.floor = f);
+  } else if (dir < 0) {
+    for (let f = Math.ceil(s.y / F) - 1; f * F >= ny && f > s.target!; f--) if (f * F < s.y) ev.push({ type: 'pass', floor: f }), (s.floor = f);
+  }
   s.y = ny;
   if (ny === ty) {
     s.phase = 'idle';
@@ -378,14 +394,14 @@ function moveStep(spec: LiftSpec, s: LiftState, h: number, speed: number, co: Re
   }
 }
 
-function swingStep(s: LiftState, h: number, p: number, co: ReturnType<typeof swingCoef>, ev: LiftEvent[]): void {
+function swingStep(s: LiftState, h: number, arm: number, co: ReturnType<typeof swingCoef>, ev: LiftEvent[]): void {
   const sw = s.swing!;
   const pumping = sw.pump > 0;
   const drive = pumping ? co.pump * (sw.vel !== 0 ? Math.sign(sw.vel) : 1) : 0;
   // вес игрока: на верхнем краю (p против крена) — затухание, на нижнем — раскачка
-  const cp = co.kd * -p * Math.max(-1, Math.min(1, sw.phi / 0.05));
+  const cp = co.kd * -arm * Math.max(-1, Math.min(1, sw.phi / 0.05));
   // полунеявный Эйлер: сначала скорость, потом крен
-  sw.vel += (-co.w * co.w * sw.phi - (co.c + cp) * sw.vel + drive) * h;
+  sw.vel += (-co.w * co.w * sw.phi - ((pumping ? co.c : co.cFree) + cp) * sw.vel + drive) * h;
   sw.phi += sw.vel * h;
   sw.t += h;
   if (pumping) {

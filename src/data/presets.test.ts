@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('./textures', () => ({ makeTexture: () => null }));
 
-import type { Project, Room, Segment, StairwellSpec } from '../model/types';
+import type { LiftSpec, Project, Room, Segment, StairwellSpec } from '../model/types';
 import { cellKey, parseKey, SIDE_DELTA } from '../model/cells';
 import { tagsCompatible } from '../model/segments';
 import { finishChances, finishRuleFor } from '../model/ops';
@@ -11,6 +11,8 @@ import { createDefaultProject } from './presets';
 import { TAG_LEN } from './roomBuilder';
 import { variantFloorProps, walkCheck, walkMessage } from '../gen/walk';
 import { DEFAULT_STAIRWELL } from '../locations/stairwell';
+import { DEFAULT_LIFT, LIFT_SHAFT_X, LIFT_SHAFT_Z } from '../locations/lift';
+import { DEFAULT_LAIR } from '../locations/lair';
 
 const p: Project = createDefaultProject();
 const M = p.settings.cellM;
@@ -279,9 +281,49 @@ describe('стартовый проект', () => {
     expect(r.gen.weight).toBeLessThan(1);
     expect(r.gen.max).toBe(1);
     expect(p.economy.tiers.filter((t) => r.elite.some((e) => e.tierId === t.id)).every((t) => t.level >= 8)).toBe(true);
-    // кроме неё спец-локаций в пресетах нет
-    expect(p.rooms.filter((x) => x.location).map((x) => x.id)).toEqual(['stair_loop']);
+    // кроме спец-локаций «Бесконечная лестница», «Ржавый лифт» и «Логово босса» в пресетах их нет
+    expect(p.rooms.filter((x) => x.location).map((x) => x.id)).toEqual(['stair_loop', 'lift_rusty', 'boss_lair']);
   });
+
+  const levels = (r: Room) => p.economy.tiers.filter((t) => r.elite.some((e) => e.tierId === t.id)).map((t) => t.level);
+
+  it('спец-локация «Ржавый лифт»: шахта 3.6×4.4 м (ассет rusted_lift_v2), один вход 1.0 м (apt>landing) по центру стороны S, без декора', () => {
+    const r = p.rooms.find((x) => x.id === 'lift_rusty')!;
+    expect(r).toBeDefined();
+    expect(r.location).toEqual(DEFAULT_LIFT);
+    expect((r.location as LiftSpec).floorsUp).not.toBe(DEFAULT_LIFT.floorsUp); // своя копия
+    expect(r.tags[0]).toBe('лифт');
+    expect(r.tags).toEqual(expect.arrayContaining(['спец', 'лифт-шахта']));
+    const n = Math.round(LIFT_SHAFT_X / M), d = Math.round(LIFT_SHAFT_Z / M);
+    expect(r.cells.size).toBe(n * d);
+    expect(r.decor).toEqual([]);
+    expect(r.spots).toEqual([]);
+    expect(r.connectors).toHaveLength(1);
+    const c = r.connectors[0];
+    expect(c).toMatchObject({ tag: 'apt>landing', len: 10, side: 'S', cy: d - 1 });
+    expect(Math.abs(c.cx + c.len / 2 - n / 2)).toBeLessThanOrEqual(0.5); // по центру (±0.05 м)
+    expect(r.gen.weight).toBeGreaterThan(0);
+    expect(r.gen.weight).toBeLessThanOrEqual(3);
+    expect(r.gen.max).toBe(1);
+    // умеренно элитный: тиры 3…8
+    expect(levels(r).every((l) => l >= 3 && l <= 8)).toBe(true);
+  });
+
+  it('спец-локация «Логово босса»: заглушка 6.0×4.8 м, проём 1.3 м (corridor), вес 0 — только через лифт, богаче лифта', () => {
+    const r = p.rooms.find((x) => x.id === 'boss_lair')!;
+    expect(r).toBeDefined();
+    expect(r.location).toEqual(DEFAULT_LAIR);
+    expect(r.tags[0]).toBe('служебное');
+    expect(r.tags).toEqual(expect.arrayContaining(['спец', 'логово']));
+    expect(r.cells.size).toBe(60 * 48);
+    expect(r.decor).toEqual([]);
+    expect(r.connectors).toHaveLength(1);
+    expect(r.connectors[0]).toMatchObject({ tag: 'corridor', len: 13 });
+    expect(r.gen.weight).toBe(0);
+    const lift = p.rooms.find((x) => x.id === 'lift_rusty')!;
+    expect(Math.min(...levels(r))).toBeGreaterThan(Math.max(...levels(lift)));
+  });
+
 
   it('все ключи клеток корректны', () => {
     for (const r of p.rooms)

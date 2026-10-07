@@ -411,7 +411,7 @@ function adjacency(run: Run): Map<string, string[]> {
   if (adj && adj.size === run.instances.length) return adj;
   adj = new Map(run.instances.map((i) => [i.id, [] as string[]]));
   for (const l of run.links) {
-    if (l.kind === 'descent') continue; // переход спец-локации — не дверь
+    if (l.kind === 'descent' || l.kind === 'lift') continue; // переход спец-локации / выход лифта — не дверь
     adj.get(l.a.inst)?.push(l.b.inst);
     adj.get(l.b.inst)?.push(l.a.inst);
   }
@@ -718,16 +718,22 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
     const name = `связь ${l.a.inst}/${l.a.connector} – ${l.b.inst}/${l.b.connector}`;
     const wa = byId.get(l.a.inst), wb = byId.get(l.b.inst);
     if (!wa || !wb) { err(`${name}: нет экземпляра`); continue; }
-    if (l.kind === 'descent') {
-      // переход спец-локации: a — экземпляр локации, b — комната-выход ниже на floors этажей, b.connector — метка прихода
-      if (!p.rooms.find((r) => r.id === wa.inst.roomId)?.location) err(`${name}: переход вниз не из спец-локации`);
+    if (l.kind === 'descent' || l.kind === 'lift') {
+      // переход спец-локации: a — экземпляр локации, b — комната-выход ниже на floors этажей ('descent') или комната
+      // за выходом лифта выше на floors этажей ('lift'), b.connector — метка прихода
+      const up = l.kind === 'lift';
+      const kind = p.rooms.find((r) => r.id === wa.inst.roomId)?.location?.kind;
+      if (!up && kind !== 'stairwell') err(`${name}: переход вниз не из спец-локации`);
+      if (up && kind !== 'lift') err(`${name}: выход лифта не из лифта`);
+      if (up && l.side !== 'straight' && l.side !== 'right') err(`${name}: выход лифта side = ${l.side}`);
       const B = wb.connectors.find((c) => c.id === l.b.connector);
       if (!B) { err(`${name}: нет метки прихода`); continue; }
       const k = `${l.b.inst}/${l.b.connector}`;
       if (used.has(k)) err(`${name}: метка ${k} связана дважды`);
       used.add(k);
+      const want = floorOf(l.a.inst) + (up ? 1 : -1) * (l.floors ?? 0);
       if (!Number.isInteger(l.floors) || l.floors! < 1) err(`${name}: floors = ${l.floors}`);
-      else if (floorOf(l.b.inst) !== floorOf(l.a.inst) - l.floors!) err(`${name}: этаж ${floorOf(l.b.inst)}, а должен быть ${floorOf(l.a.inst)} − ${l.floors}`);
+      else if (floorOf(l.b.inst) !== want) err(`${name}: этаж ${floorOf(l.b.inst)}, а должен быть ${floorOf(l.a.inst)} ${up ? '+' : '−'} ${l.floors}`);
       pairs.add(`${l.a.inst}>${l.b.inst}`);
       continue;
     }

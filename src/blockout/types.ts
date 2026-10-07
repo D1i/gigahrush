@@ -47,7 +47,8 @@ export interface RunInstance {
   parent: string | null;
   /** слой W складчатого (4D) генератора; нет поля / 0 — обычный прогон */
   w?: number;
-  /** этаж (0 — этаж старта, ниже — отрицательные): меняется только переходом спец-локации (links[].kind = 'descent') */
+  /** этаж (0 — этаж старта, ниже — отрицательные, выше — положительные): меняется только переходом спец-локации
+   *  (links[].kind = 'descent' — вниз, 'lift' — выход лифта вверх) */
   floor?: number;
   /** спец-локация комнаты (Room Forge: src/locations/, docs/LOCATIONS.md) или null — обычная комната */
   location?: { kind: string; [k: string]: unknown } | null;
@@ -104,8 +105,12 @@ export interface RunExport {
   tiers?: { id: string; name: string; level: number; color: string; danger: number }[];
   instances: RunInstance[];
   /** dw — сдвиг порога по W в складчатом прогоне: w(b) − w(a) */
-  /** kind = 'descent' — переход спец-локации на этаж(и) ниже (floors): не проём, геометрии нет (a.connector пуст) */
-  links: { a: { inst: string; connector: string }; b: { inst: string; connector: string }; dw?: number; kind?: 'door' | 'descent'; floors?: number }[];
+  /** kind = 'descent' — переход спец-локации на этаж(и) ниже (floors), 'lift' — выход лифта на floors этажей выше
+   *  (side — 'straight' / 'right'): не проёмы, геометрии нет (a.connector пуст) */
+  links: {
+    a: { inst: string; connector: string }; b: { inst: string; connector: string }; dw?: number;
+    kind?: 'door' | 'descent' | 'lift'; floors?: number; side?: 'straight' | 'right';
+  }[];
   openConnectors: { inst: string; connector: string }[];
   /** складчатый прогон с бесшовной видимостью: id экземпляра → id экземпляров его PVS (включая его) */
   pvs?: Record<string, string[]> | null;

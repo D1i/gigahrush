@@ -287,8 +287,14 @@ export function buildBlockoutModel(run: RunExport, opts?: Partial<BlockoutOption
   const openings: Opening[] = [];
   const pending0: { op: Opening; vertical: boolean; line: number; t0: number; t1: number }[] = [];
   const links = run.links ?? [];
+  // метки прихода переходов спец-локаций (их linkedTo указывает на локацию без метки) — тупики без жалоб
+  const transit = new Set<string>();
   links.forEach((L, li) => {
-    if (L.kind === 'descent') return; // переход спец-локации на другой этаж — не проём
+    // переход спец-локации на другой этаж (вниз — 'descent', выход лифта — 'lift') — не проём
+    if (L.kind === 'descent' || L.kind === 'lift') {
+      transit.add(`${L.b?.inst}/${L.b?.connector}`);
+      return;
+    }
     const nameA = `${L.a?.inst}/${L.a?.connector}`;
     const nameB = `${L.b?.inst}/${L.b?.connector}`;
     const fail = (why: string): void => {
@@ -390,7 +396,7 @@ export function buildBlockoutModel(run: RunExport, opts?: Partial<BlockoutOption
     for (const k of ks) {
       const key = `${inst.id}/${k.id}`;
       if (linked.has(key)) continue;
-      if (k.linkedTo && !failed.has(key)) {
+      if (k.linkedTo && !failed.has(key) && !transit.has(key)) {
         issues.push(`Метка ${key} указывает связь с ${k.linkedTo.inst}/${k.linkedTo.connector}, но в links её нет — закрыта как тупик`);
       }
       dead.push({ ii, seg: k, source: 'connector', mode: k.cut && o.cutEnds ? o.cutEnds : o.deadEnds });

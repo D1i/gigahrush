@@ -1,7 +1,7 @@
 // Подбор констант раскачки (npm run test:perf): боты на каретке — кто выживает. LIFT_SPEC='{...}' — свои параметры.
 import { it } from 'vitest';
 const env = ((globalThis as any).process?.env ?? {}) as Record<string, string | undefined>;
-import { DEFAULT_LIFT, LIFT_RUN, LIFT_SLIP, LIFT_HALF_M, createLift, stepLift, type LiftRoll, liftBoard } from './lift';
+import { DEFAULT_LIFT, LIFT_RUN, LIFT_SLIP, LIFT_HALF_X, LIFT_HALF_Z, createLift, stepLift, type LiftRoll, liftBoard } from './lift';
 import type { LiftSpec } from '../model/types';
 
 type Bot = (phi: number, vel: number, p: number) => number; // целевое положение, доли
@@ -10,6 +10,8 @@ const bots: Record<string, Bot> = {
   counter: (phi, vel) => -Math.sign(vel) * 0.9,
   downhill: (phi) => Math.sign(phi) * 0.9,
   uphill: (phi) => -Math.sign(phi) * 0.9,
+  // перебегает не до самого края, а на полплощадки: короче путь — меньше опоздание
+  uphillHalf: (phi) => -Math.sign(phi) * 0.5,
   wrong: (phi, vel) => Math.sign(vel) * 0.9,
   edge: () => 0.9,
 };
@@ -27,26 +29,31 @@ function sim(spec: LiftSpec, bot: Bot, react: number, seed: number) {
       hist.push(sw.vel); hp.push(sw.phi);
       const lag = Math.max(0, hist.length - 1 - Math.round(react / dt));
       const tgt = bot(hp[lag], hist[lag], p);
-      p += Math.max(-LIFT_RUN * dt, Math.min(LIFT_RUN * dt, (tgt - p) * LIFT_HALF_M)) / LIFT_HALF_M + LIFT_SLIP * sw.phi * dt / LIFT_HALF_M;
+      const half = sw.axis === 'x' ? LIFT_HALF_X : LIFT_HALF_Z;
+      p += Math.max(-LIFT_RUN * dt, Math.min(LIFT_RUN * dt, (tgt - p) * half)) / half + LIFT_SLIP * sw.phi * dt / half;
       p = Math.max(-1, Math.min(1, p));
     }
-    const pos = sw?.axis === 'x' ? { x: p * LIFT_HALF_M, z: 0 } : { x: 0, z: p * LIFT_HALF_M };
+    const pos = sw?.axis === 'x' ? { x: p * LIFT_HALF_X, z: 0 } : { x: 0, z: p * LIFT_HALF_Z };
     const ev = stepLift(spec, s, dt, pos);
-    if (ev.some((e) => e.type === 'thrown')) return { thrown: true, t };
-    if (ev.some((e) => e.type === 'steady')) return { thrown: false, t };
+    if (ev.some((e) => e.type === 'thrown')) return { thrown: true, t, axis: sw!.axis };
+    if (ev.some((e) => e.type === 'steady')) return { thrown: false, t, axis: sw!.axis };
   }
-  return { thrown: false, t: 99 };
+  return { thrown: false, t: 99, axis: s.swing?.axis ?? 'x' };
 }
 it('tune', () => {
   const rows: string[] = [];
   const spec = { ...DEFAULT_LIFT, ...JSON.parse(env.LIFT_SPEC || '{}') };
   const N = 200;
-  const cases: [string, Bot, number][] = [['idle', bots.idle, 0], ['edge', bots.edge, 0], ['down', bots.downhill, 0.3], ['up.3', bots.uphill, 0.3], ['up.5', bots.uphill, 0.5], ['up.7', bots.uphill, 0.7]];
+  const cases: [string, Bot, number][] = [['idle', bots.idle, 0], ['edge', bots.edge, 0], ['down', bots.downhill, 0.3], ['up.3', bots.uphill, 0.3], ['up.5', bots.uphill, 0.5], ['up.7', bots.uphill, 0.7], ['upH.5', bots.uphillHalf, 0.5], ['upH.7', bots.uphillHalf, 0.7]];
   for (const [name, bot, react] of cases) {
-    const r = Array.from({ length: N }, (_, i) => sim(spec, bot, react, i));
-    const th = r.filter((x) => x.thrown).length;
-    const ok = r.filter((x) => !x.thrown).map((x) => x.t).sort((a, b) => a - b);
-    rows.push(`${name}:${Math.round((100 * th) / N)}%${ok.length ? '/' + ok[ok.length >> 1].toFixed(0) + 'с' : ''}`);
+    const all = Array.from({ length: N }, (_, i) => sim(spec, bot, react, i));
+    const part = (ax: string) => {
+      const r = all.filter((x) => x.axis === ax);
+      const th = r.filter((x) => x.thrown).length;
+      const ok = r.filter((x) => !x.thrown).map((x) => x.t).sort((a, b) => a - b);
+      return `${ax}${Math.round((100 * th) / (r.length || 1))}%${ok.length ? '/' + ok[ok.length >> 1].toFixed(0) + 'с' : ''}`;
+    };
+    rows.push(`${name}: ${part('x')} ${part('z')}`);
   }
   console.log('RES ' + (env.TAG ?? 'по умолчанию') + ' ' + rows.join(' '));
 });

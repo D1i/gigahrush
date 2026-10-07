@@ -108,7 +108,8 @@ export function exportRunJSON(p: Project, run: Run, opts: ExportOptions = {}): u
       parent: w.inst.parent,
       /** слой W складчатого генератора (0 — евклидов прогон) */
       w: w.inst.w ?? 0,
-      /** этаж (0 — этаж старта, ниже — отрицательные): меняется только переходом спец-локации (links[].kind = 'descent') */
+      /** этаж (0 — этаж старта, ниже — отрицательные, выше — положительные): меняется только переходом спец-локации
+       *  (links[].kind = 'descent' — вниз, 'lift' — выход лифта вверх) */
       floor: w.inst.floor ?? 0,
       /** спец-локация комнаты (src/locations/, docs/LOCATIONS.md) или null — обычная комната */
       location: room?.location ? cloneLocation(room.location) : null,
@@ -192,8 +193,10 @@ export function exportRunJSON(p: Project, run: Run, opts: ExportOptions = {}): u
     finishes,
     dangerLimit: p.economy.dangerLimit,
     instances,
-    /** связи: обычные двери (dw — сдвиг порога по W) и переходы спец-локаций kind = 'descent' (a — экземпляр
-     *  локации, connector пуст; b — комната-выход и метка, через которую в неё приходят; floors — этажей вниз) */
+    /** связи: обычные двери (dw — сдвиг порога по W) и переходы спец-локаций — kind = 'descent' (a — экземпляр
+     *  локации, connector пуст; b — комната-выход и метка, через которую в неё приходят; floors — этажей вниз) и
+     *  kind = 'lift' (a — лифт, connector пуст; b — комната за выходом кабины и метка прихода; floors — этажей
+     *  над лифтом; side — 'straight' / 'right'). Не проёмы */
     links: run.links,
     openConnectors: run.openConnectors,
     /** самая длинная линия прямого обзора: метры и отрезок «от края до края» в мировых клетках */

@@ -1,10 +1,10 @@
-// Секция инспектора «Спец-локация»: вид локации комнаты и параметры «Бесконечной лестницы»
-// (механика — src/locations/stairwell.ts, правила и формулы — docs/LOCATIONS.md).
-import type { LocationSpec, Room, StairwellSpec } from '../model/types';
+// Секция инспектора «Спец-локация»: вид локации комнаты и параметры «Бесконечной лестницы», «Ржавого лифта»
+// и «Логова босса» (механика — src/locations/, правила и формулы — docs/LOCATIONS.md).
+import type { LairSpec, LiftSpec, LocationSpec, Room, StairwellSpec } from '../model/types';
 import { grabTime, LOCATION_KINDS, newStairwell, STAIRWELL_LIMITS, stairwellRule } from '../locations/stairwell';
-import { newLift } from '../locations/lift';
-import { newLair } from '../locations/lair';
-import { NumField, Section, Select } from '../ui/kit';
+import { LIFT_FLOOR_M, LIFT_LIMITS, LIFT_PUMP_RATE, liftRule, newLift } from '../locations/lift';
+import { lairSign, newLair } from '../locations/lair';
+import { NumField, Section, Select, TextField } from '../ui/kit';
 import { mutRoom } from './util';
 
 type Kind = 'none' | LocationSpec['kind'];
@@ -28,8 +28,10 @@ export function LocationSection({ room }: { room: Room }) {
       />
       {loc?.kind === 'stairwell' ? (
         <StairwellFields room={room} spec={loc} />
-      ) : loc ? (
-        <div className="hint">TODO(логика лифта): поля «{loc.kind}»</div>
+      ) : loc?.kind === 'lift' ? (
+        <LiftFields room={room} spec={loc} />
+      ) : loc?.kind === 'lair' ? (
+        <LairFields room={room} spec={loc} />
       ) : (
         <div className="hint">
           Вход в такую комнату переводит игрока в особую сцену со своей механикой. В плане генератора это обычная комната
@@ -132,6 +134,158 @@ function StairwellFields({ room, spec }: { room: Room; spec: StairwellSpec }) {
       />
       <div className="pn-loc-rule">
         <b>Правило для игрока.</b> {stairwellRule(spec)}
+      </div>
+    </>
+  );
+}
+
+type LiftRangeKey = 'floorsUp' | 'boardPumpS';
+type LiftPctKey = 'cageChance' | 'lairChance' | 'boardChance' | 'darkness';
+
+function LiftFields({ room, spec }: { room: Room; spec: LiftSpec }) {
+  const L = LIFT_LIMITS;
+  const upd = (key: string, fn: (s: LiftSpec) => void) =>
+    mutRoom(room.id, (r) => {
+      if (r.location?.kind === 'lift') fn(r.location);
+    }, { key: `room-loc-${key}:${room.id}` });
+  // диапазон [мин, макс]: правка одного конца тянет другой, чтобы мин ≤ макс
+  const setRange = (k: LiftRangeKey, int: boolean) => (i: 0 | 1, v: number) =>
+    upd(`${k}${i}`, (s) => {
+      const x = int ? Math.round(v) : v;
+      s[k][i] = x;
+      if (s[k][0] > s[k][1]) s[k][1 - i] = x;
+    });
+  // доли 0..1 — в процентах
+  const pct = (label: string, key: LiftPctKey, title: string) => (
+    <NumField
+      label={label}
+      value={Math.round(spec[key] * 100)}
+      min={0}
+      max={100}
+      step={5}
+      digits={0}
+      suffix="%"
+      title={title}
+      onChange={(v) => upd(key, (s) => (s[key] = v / 100))}
+    />
+  );
+  // стоять на месте: от удара (boardKick) раскачка растёт на LIFT_PUMP_RATE долей предела в секунду, пока качает доска
+  const toLimit = spec.boardKick >= 1 ? 0 : (1 - spec.boardKick) / LIFT_PUMP_RATE;
+  const reaches = toLimit <= spec.boardPumpS[1];
+  const avgFloors = (spec.floorsUp[0] + spec.floorsUp[1]) / 2;
+  return (
+    <>
+      <div className="grid2">
+        {pct('Клетка (иначе каретка)', 'cageChance', 'Вероятность, что экземпляр — клетка: бьётся о стены и не сбрасывает; иначе открытая каретка — сбрасывает в шахту')}
+        {pct('Логово за выходом', 'lairChance', 'Вероятность, что за одним из выходов лифта (на одном из этажей) — логово босса')}
+      </div>
+      <Range
+        label="Этажей с выходами над входом"
+        value={spec.floorsUp}
+        lim={L.floorsUp}
+        int
+        title="Сколько этажей над входом; на каждом — выходы прямо и направо"
+        onChange={setRange('floorsUp', true)}
+      />
+      <div className="hint">
+        Вид, число этажей и где логово (этаж и выход) разыгрываются для каждого экземпляра лифта. Смерть — новая попытка: доски
+        падают на других пролётах.
+      </div>
+      <div className="grid2">
+        <NumField
+          label="Скорость кабины"
+          value={spec.speed}
+          min={L.speed[0]}
+          max={L.speed[1]}
+          step={0.1}
+          digits={2}
+          suffix="м/с"
+          title="Скорость кабины в шахте"
+          onChange={(v) => upd('speed', (s) => (s.speed = v))}
+        />
+        {pct('Доска на пролёте', 'boardChance', 'Вероятность, что на пролёте вверх между соседними этажами упадёт доска (не больше одной на пролёт за попытку)')}
+      </div>
+      <div className="hint">
+        Этаж ({LIFT_FLOOR_M} м) кабина проходит за <b className="mono">{(LIFT_FLOOR_M / spec.speed).toFixed(1)} с</b>; досок за подъём до
+        верха — в среднем <b className="mono">{(avgFloors * spec.boardChance).toFixed(1)}</b>. При спуске досок нет.
+      </div>
+      <div className="grid2">
+        <NumField
+          label="Удар доски"
+          value={Math.round(spec.boardKick * 100)}
+          min={L.boardKick[0] * 100}
+          max={L.boardKick[1] * 100}
+          step={5}
+          digits={0}
+          suffix="%"
+          title="Начальная амплитуда крена от удара, % предела (100% — сразу предел)"
+          onChange={(v) => upd('kick', (s) => (s.boardKick = v / 100))}
+        />
+        <NumField
+          label="Период качания"
+          value={spec.swingPeriod}
+          min={L.swingPeriod[0]}
+          max={L.swingPeriod[1]}
+          step={0.5}
+          digits={1}
+          suffix="с"
+          title="Период качания кабины: меньше — чаще перебегать"
+          onChange={(v) => upd('period', (s) => (s.swingPeriod = v))}
+        />
+      </div>
+      <Range
+        label="Доска качает"
+        value={spec.boardPumpS}
+        lim={L.boardPumpS}
+        step={0.5}
+        digits={1}
+        suffix="с"
+        title="Сколько секунд застрявшая доска раскачивает лифт, прежде чем выпасть"
+        onChange={setRange('boardPumpS', false)}
+      />
+      <div className="hint">
+        Стоять на месте: крен дойдёт до предела через <b className="mono">≈ {toLimit.toFixed(1)} с</b> после удара
+        {reaches ? ' — доска качает дольше, каретку сбросит' : ' — доска выпадет раньше'}. Гасит только бег на верхний край (вес на
+        нижнем раскачивает): перебегать каждые полпериода, ≈ {(spec.swingPeriod / 2).toFixed(1)} с.
+      </div>
+      {pct('Темнота', 'darkness', '0 — светло; 100% — свет только от фонарика')}
+      <div className="pn-loc-rule">
+        <b>Правило для игрока.</b> {liftRule(spec)}
+      </div>
+    </>
+  );
+}
+
+function LairFields({ room, spec }: { room: Room; spec: LairSpec }) {
+  const upd = (key: string, fn: (s: LairSpec) => void) =>
+    mutRoom(room.id, (r) => {
+      if (r.location?.kind === 'lair') fn(r.location);
+    }, { key: `room-loc-${key}:${room.id}` });
+  return (
+    <>
+      <TextField
+        label="Босс (id для движка)"
+        value={spec.boss}
+        placeholder="пусто — «здесь будет босс»"
+        onChange={(v) => upd('boss', (s) => (s.boss = v.slice(0, 64)))}
+      />
+      <NumField
+        label="Темнота"
+        value={Math.round(spec.darkness * 100)}
+        min={0}
+        max={100}
+        step={5}
+        digits={0}
+        suffix="%"
+        title="0 — светло; 100% — свет только от фонарика"
+        onChange={(v) => upd('dark', (s) => (s.darkness = v / 100))}
+      />
+      <div className="hint">
+        Заглушка: боссов пока нет. Само не растёт — ставится только за выходом лифта, где по розыгрышу логово (вес роста — 0).
+        Нужна метка corridor 1.3 м: через неё приходят из кабины.
+      </div>
+      <div className="pn-loc-rule">
+        <b>Табличка.</b> {lairSign(spec)}
       </div>
     </>
   );
