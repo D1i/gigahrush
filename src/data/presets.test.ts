@@ -334,11 +334,14 @@ describe('стартовый проект', () => {
 
 
   it('все ключи клеток корректны', () => {
+    // одна проверка на все клетки: expect на каждую из сотен тысяч клеток — секунды
+    const bad: string[] = [];
     for (const r of p.rooms)
       for (const k of r.cells) {
         const [x, y] = parseKey(k);
-        expect(Number.isInteger(x) && Number.isInteger(y)).toBe(true);
+        if (!Number.isInteger(x) || !Number.isInteger(y)) bad.push(`${r.id}: ${k}`);
       }
+    expect(bad).toEqual([]);
   });
 
   it('экономика ссылается на существующие предметы и магазины', () => {
