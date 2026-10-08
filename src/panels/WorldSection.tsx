@@ -45,7 +45,7 @@ export function WorldSection() {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <Range label="Комнат в квартире" value={w.clusterRooms} lim={[1, CLUSTER_MAX]} title="Сколько комнат в квартире (кластере); не больше 15" onChange={setRange('clusterRooms', [1, CLUSTER_MAX])} />
-        <Range label="Выходов из квартиры" value={w.clusterExits} lim={EXITS_LIM} title="Закрытых дверей-выходов в другие квартиры (входные двери, коридоры, марши, подвальные ходы)" onChange={setRange('clusterExits', EXITS_LIM)} />
+        <Range label="Выходов из квартиры" value={w.clusterExits} lim={EXITS_LIM} title="Закрытых дверей-выходов в другие квартиры: квартира держит столько дверей открытыми при росте (за ними — только проходные комнаты), все оставшиеся двери — выходы, не больше максимума. Больше — меньше тупиковых комнат (кухня, санузел), меньше — квартиры обычнее" onChange={setRange('clusterExits', EXITS_LIM)} />
       </div>
       <div className="grid2">
         <NumField label="Переход после комнат" value={w.trAfter} min={0} max={10000} step={5} digits={0} title="Сколько комнат пройти (впервые), прежде чем появится шанс перехода" onChange={(v) => upd('trAfter', (x) => (x.trAfter = Math.max(0, Math.round(v))))} />

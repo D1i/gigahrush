@@ -1419,12 +1419,13 @@ class Stream implements StreamWorld {
    * внутренние (OUTER_TAGS нет) — первыми, чтобы квартиры достраивались; наружные — когда внутренних нет. Для двери:
    * петля к двери своей квартиры напротив — связать; иначе складчатая стыковка из пула биома на потоке двери (как обычный
    * рост); у наружной двери, когда наружных впереди меньше K + 1, — сначала комнаты, дающие рост. Запас под выходы:
-   * открытых дверей (с текущей) не больше clusterExits[0] — за дверью встаёт только комната, дающая рост, петля не
-   * замыкается (−2 двери); не встала — дверь остаётся под выход (стена 'cluster', см. ниже). Иначе замкнутая квартира
-   * (все двери связаны, как у квартиры за входной дверью) осталась бы без выходов. Набрали N комнат —
-   * оставшиеся внутренние двери — стены ('cluster'); из оставшихся наружных K (C.shuffle) — закрытые выходы, остальные —
-   * стены. Выходов меньше clusterExits[0] — выходами становятся глухие двери квартиры (сначала наружные). Все комнаты
-   * квартиры — раскрыты (ensureAround / ensureVisible их не трогают).
+   * открытых дверей (с текущей) не больше K — за дверью встаёт только комната с ещё одной дверью (проходная), петля не
+   * замыкается (−2 двери); не встала — дверь остаётся под выход (стена 'cluster', см. ниже). Так квартира держит ~K
+   * выходов и меньше тупиковых комнат (кухня, санузел, кладовка): чем больше K, тем чаще дверь прихожей ведёт в другую
+   * квартиру, а не в кухню. Иначе замкнутая квартира (все двери связаны) осталась бы без выходов. Набрали N комнат — все оставшиеся
+   * двери квартиры — закрытые выходы, не больше clusterExits[1]: сначала наружные (C.shuffle), затем глухие от входа
+   * (наружные, потом внутренние); стены — только сверх предела. Все комнаты квартиры — раскрыты (ensureAround /
+   * ensureVisible их не трогают).
    */
   private fillCluster(cl: Cluster): void {
     const W = this.W!;
@@ -1459,13 +1460,13 @@ class Stream implements StreamWorld {
       const left = openLeft();
       if (isIn) ii++;
       else oi++;
-      const reserve = left <= Kmin;
+      const reserve = left <= K;
       if (left - 2 >= Kmin && this.tryLoop(P, ci, cl.id)) continue;
       const daddr = childAddr(this.addr[P.inst.order], P.info.room.connectors[ci].id);
       const scarce = reserve || (!isIn && outer.length - oi < K + 1);
       const { child, why } = this.grow(P, ci, this.root.sub(`door:${daddr}`), scarce, win, pool, reserve ? 1 : 0);
       if (!child) {
-        this.markDead(P, ci, reserve ? 'cluster' : why);
+        this.markDead(P, ci, reserve ? (this.doorBlocked(P, ci, pool) ? 'space' : 'cluster') : why);
         continue;
       }
       this.grown++;
@@ -1474,9 +1475,11 @@ class Stream implements StreamWorld {
       push(child);
     }
     for (const { n, ci } of inner.slice(ii)) if (open(n, ci)) this.markDead(n, ci, 'cluster');
+    // выходы — все оставшиеся двери квартиры (не больше clusterExits[1]): сначала наружные (C.shuffle), потом внутренние
+    // глухие (ниже); стены — только сверх предела. Иначе квартира — сплошные тупики: кухни, санузлы и стены
     const rest = outer.slice(oi).filter(({ n, ci }) => open(n, ci));
     const order = C.shuffle(rest.map((_, i) => i));
-    const take = new Set(order.slice(0, K));
+    const take = new Set(order.slice(0, W.clusterExits[1]));
     rest.forEach(({ n, ci }, i) => {
       if (take.has(i)) {
         const key = dk(n.inst.order, ci);
@@ -1484,10 +1487,10 @@ class Stream implements StreamWorld {
         this.exitDoors.set(key, cl.id);
       } else this.markDead(n, ci, 'cluster');
     });
-    // выходов меньше минимума (двери ушли на рост или за ними ничего не встало) — выходами становятся глухие двери
-    // квартиры от входа: наружные неиспользованные, наружные, где не встало (при открытии пробуются снова, в т.ч. другие
-    // слои), затем так же внутренние, — квартира без выходов остановила бы мир
-    const need = W.clusterExits[0] - cl.exits.length;
+    // до предела выходами становятся и глухие двери квартиры от входа: наружные неиспользованные, наружные, где не
+    // встало (при открытии пробуются снова, в т.ч. другие слои), затем так же внутренние (прихожая → комната: за ней —
+    // другая квартира швом loose). Минимум clusterExits[0] держит запас дверей при росте
+    const need = W.clusterExits[1] - cl.exits.length;
     if (need > 0) {
       const lists: number[][] = [[], [], [], []];
       for (const i of cl.rooms) {
@@ -1499,7 +1502,11 @@ class Stream implements StreamWorld {
           lists[(OUTER_TAGS.includes(c.tag) ? 0 : 2) + (why === 'cluster' ? 0 : 1)].push(key);
         });
       }
-      for (const key of lists.flat().slice(0, need)) {
+      // неиспользованные (стены квартиры) — до предела; где комната уже не встала (место, обзор) — только до минимума:
+      // за такой дверью при открытии скорее всего снова ничего не встанет
+      const unused = [...lists[0], ...lists[2]], failed = [...lists[1], ...lists[3]];
+      const pick = [...unused.slice(0, need), ...failed.slice(0, Math.max(0, W.clusterExits[0] - cl.exits.length - Math.min(need, unused.length)))];
+      for (const key of pick) {
         this.dead.delete(key);
         this.deadFail--;
         cl.exits.push(key);
@@ -1628,6 +1635,28 @@ class Stream implements StreamWorld {
     const child = growFrom(this.ctx, this.lay, P, ci, [list], okB, D, fails, { weightOf, skip, stick: true });
     if (child) this.lay.links[this.lay.links.length - 1].loose = true;
     return child;
+  }
+
+  /** За дверью ci экземпляра P ни одна совместимая комната пула не встанет — она пересекла бы саму комнату P (дверь
+   *  смотрит внутрь её габарита: внутренний угол Г-образной прихожей). Такая дверь — стена, а не выход. Совместимых
+   *  нет — false (за ней может встать комната швом loose). */
+  private doorBlocked(P: Node, ci: number, pool: Pool): boolean {
+    const A = P.conns[ci];
+    const g = this.settings.gap;
+    let any = false;
+    for (const info of pool.list) {
+      for (let bi = 0; bi < info.room.connectors.length; bi++) {
+        const b = info.room.connectors[bi];
+        if (b.len < 1 || !compatible(A, b, this.settings.match)) continue;
+        any = true;
+        const rot = rotFor(b.side, OPPOSITE[A.side]);
+        const sh = this.ctx.shapes.get(info.room, rot);
+        const Bw = sh.conns[bi];
+        const t = dockTarget(A, Bw.len, g);
+        if (!this.ctx.shapes.conflict({ sh, dx: t.cx - Bw.cx, dy: t.cy - Bw.cy }, P.body)) return false;
+      }
+    }
+    return any;
   }
 
   /** Остальные закрытые выходы квартиры (подвала) исчезают, пропущенный в ней переход — тоже. */
