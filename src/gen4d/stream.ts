@@ -154,9 +154,9 @@ export interface StreamWorld {
   /** комната-выход спец-локации, если descend уже был; иначе null */
   exitOf(instId: string): string | null;
   /** выход лифта (docs/LOCATIONS.md, «Ржавый лифт»): один раз и детерминированно по адресу создаёт комнату за
-   *  выходом side на этаже floor(лифта) + floor (1…roll.floors) и связь kind 'lift' (floors, side); если это
-   *  логово по розыгрышу (roll.lair) — комнату с location.kind 'lair'. Повторный вызов — тот же id. Ошибка, если
-   *  экземпляр не лифт или этаж вне 1…roll.floors */
+   *  выходом side на этаже floor(лифта) + floor (floor — −roll.down…−1 или 1…roll.floors: ниже или выше входа) и
+   *  связь kind 'lift' (floors, side); если это логово по розыгрышу (roll.lair) — комнату с location.kind 'lair'.
+   *  Повторный вызов — тот же id. Ошибка, если экземпляр не лифт или этаж вне диапазона (или 0 — вход) */
   ascend(instId: string, floor: number, side: LiftSide): string;
   /** комната за выходом лифта, если ascend уже был; иначе null */
   liftExitOf(instId: string, floor: number, side: LiftSide): string | null;
@@ -990,8 +990,8 @@ class Stream implements StreamWorld {
     if (!L) throw new Error(`ascend: нет экземпляра ${instId}`);
     const roll = this.liftOf(L, 'ascend');
     if (side !== 'straight' && side !== 'right') throw new Error(`ascend: выход «${String(side)}» — бывает только 'straight' (прямо) или 'right' (направо)`);
-    if (!Number.isInteger(floor) || floor < 1 || floor > roll.floors) {
-      throw new Error(`ascend: у лифта ${instId} этажи с выходами 1…${roll.floors}, а запрошен ${floor}`);
+    if (!Number.isInteger(floor) || floor === 0 || floor < -roll.down || floor > roll.floors) {
+      throw new Error(`ascend: у лифта ${instId} этажи с выходами −${roll.down}…−1 и 1…${roll.floors}, а запрошен ${floor}`);
     }
     const had = this.liftBy.get(`${L.inst.order}:${floor}:${side}`);
     if (had) return had.inst.id;
@@ -1213,7 +1213,7 @@ class Stream implements StreamWorld {
       if (l.kind === 'descent' && locOf(l.a.inst) !== 'stairwell') bad.push(`переход вниз из ${l.a.inst} — у комнаты больше нет спец-локации`);
       if (l.kind === 'lift') {
         if (locOf(l.a.inst) !== 'lift') bad.push(`выход лифта из ${l.a.inst} — у комнаты больше нет спец-локации лифта`);
-        else if (!Number.isInteger(l.floors) || l.floors! < 1 || (l.side !== 'straight' && l.side !== 'right')) {
+        else if (!Number.isInteger(l.floors) || l.floors === 0 || (l.side !== 'straight' && l.side !== 'right')) {
           bad.push(`выход лифта из ${l.a.inst}: этаж ${l.floors}, выход ${l.side} — так не бывает`);
         }
       }

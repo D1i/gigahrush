@@ -240,6 +240,54 @@ try {
   const toast = await page.locator('.toast, .toasts').allInnerTexts().catch(() => []);
   ok('(а) выход через конец коридора — сцена закрыта, сообщение', !closed.lift && !closed.overlay, (walked ? '' : 'не дошёл; ') + toast.join(' | ').slice(0, 160));
 
+  // ═════════ (а2) настройки по умолчанию (без подмен): первый подъём — с доской; этажи ниже входа ═════════
+  await openLift(page, {}, 'lift_rusty');
+  await page.locator('.v3-loc-center.prompt').click();
+  await page.waitForTimeout(300);
+  await page.evaluate(() => window.__rfLift.qaStart());
+  const def = await page.evaluate(() => {
+    const s = window.__rfLift;
+    window.__lp.walk(s, 0, 0, 10);
+    const ev = [];
+    let seen = s.log.length;
+    s.press('up');
+    for (let k = 0; k < 60 * 30 && !ev.includes('board'); k++) {
+      s.simulate(1 / 60, { f: 0, s: 0, run: false });
+      s.sync();
+      for (; seen < s.log.length; seen++) ev.push(s.log[seen].e.type);
+    }
+    return { ev, st: s.qaState(), down: s.roll.down };
+  });
+  ok('(а2) по умолчанию первый подъём — доска', def.ev.includes('board'), def.ev.join(','));
+  ok('(а2) у лифта есть этажи ниже входа', def.down >= 1, `вниз ${def.down}, вверх ${def.st.floors}`);
+  // погасить, вернуться вниз на самый нижний этаж
+  const low = await page.evaluate(() => {
+    const s = window.__rfLift;
+    window.__lp.balance(s, 0.5, 40, 0.25);
+    for (let g = 0; g < 12 && s.state.floor !== -s.roll.down; g++) {
+      if (s.state.phase !== 'idle' && s.state.phase !== 'moving') {
+        window.__lp.balance(s, 0.5, 40, 0.25);
+        continue;
+      }
+      s.press('down');
+      for (let k = 0; k < 60 * 30 && s.state.phase === 'moving'; k++) {
+        s.simulate(1 / 60, { f: 0, s: 0, run: false });
+        s.sync();
+      }
+    }
+    return s.qaState();
+  });
+  ok('(а2) спуск ниже входа — кабина у нижнего этажа, выходы открыты', low.phase === 'idle' && low.floor < 0 && low.y < 0, JSON.stringify({ floor: low.floor, y: low.y }));
+  await page.evaluate(() => window.__rfLift.place(0, 0, -Math.PI / 2, 0.05));
+  await page.waitForTimeout(150);
+  const prompt = await page.evaluate(() => window.__rfLift.hud().prompt);
+  ok('(а2) кнопки внизу: «вверх» с подписью этажа, «вниз» нет', /E — вверх \(−?\d\)/.test(prompt ?? '') && !/Q — вниз/.test(prompt ?? ''), prompt ?? '—');
+  await page.screenshot({ path: out + 'lift-14-basement-right.png' });
+  await page.evaluate(() => window.__rfLift.place(0.3, -0.9, Math.PI + 0.25, -0.05));
+  await page.screenshot({ path: out + 'lift-15-basement-number.png' });
+  await page.evaluate(() => [...document.querySelectorAll('.v3-loc-tools button')].find((b) => b.textContent.trim() === 'выйти')?.click());
+  await page.waitForTimeout(400);
+
   // ═════════ (б) каретка: стоять — выбросит ═════════
   await openLift(page, { boardChance: 1, floorsUp: [3, 3] }, 'lift_carriage');
   await page.locator('.v3-loc-center.prompt').click();

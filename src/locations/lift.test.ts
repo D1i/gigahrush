@@ -3,13 +3,13 @@
 import { describe, expect, it } from 'vitest';
 import type { LiftSpec } from '../model/types';
 import {
-  callLift, createLift, DEFAULT_LIFT, isLair, liftBoard, liftExits, liftExitsAt, liftRule, normLift, rollLift, stepLift,
+  boardAhead, callLift, createLift, DEFAULT_LIFT, isLair, liftBoard, liftExits, liftExitsAt, liftFloorLabel, liftRule, normLift, rollLift, stepLift,
   LIFT_FLOOR_M, LIFT_HALF_X, LIFT_HALF_Z, LIFT_RUN, LIFT_SLIP,
   type LiftAxis, type LiftEvent, type LiftRoll, type LiftState,
 } from './lift';
 
 const spec = (o: Partial<LiftSpec> = {}): LiftSpec => ({ ...DEFAULT_LIFT, ...o });
-const roll = (variant: LiftRoll['variant'], floors = 3, seed = 's'): LiftRoll => ({ variant, floors, lair: null, seed });
+const roll = (variant: LiftRoll['variant'], floors = 3, seed = 's', down = 0): LiftRoll => ({ variant, floors, down, lair: null, seed });
 const DT = 1 / 60;
 
 /** Бот: целевое положение по оси качания (доли полуразмера) по крену и скорости крена (с опозданием react). */
@@ -58,8 +58,11 @@ describe('«Ржавый лифт»: механика без движка', () =
   it('normLift: чужое — null; мусор — по умолчанию; диапазоны упорядочены и зажаты, этажи — целые', () => {
     for (const bad of [null, 5, 'lift', [], { kind: 'stairwell' }, { kind: 'elevator' }]) expect(normLift(bad)).toBeNull();
     expect(normLift({ kind: 'lift' })).toEqual(DEFAULT_LIFT);
-    const n = normLift({ kind: 'lift', floorsUp: [9.6, 2.2], cageChance: 7, speed: -1, boardPumpS: [10, 3], swingPeriod: 'x', darkness: 0.3 })!;
+    const n = normLift({ kind: 'lift', floorsUp: [9.6, 2.2], floorsDown: [-3, 1.4], boardFirst: 'да', cageChance: 7, speed: -1, boardPumpS: [10, 3], swingPeriod: 'x', darkness: 0.3 })!;
     expect(n.floorsUp).toEqual([2, 10]);
+    expect(n.floorsDown).toEqual([0, 1]);
+    expect(n.boardFirst).toBe(true);
+    expect(normLift({ kind: 'lift', boardFirst: false })!.boardFirst).toBe(false);
     expect(n.cageChance).toBe(1);
     expect(n.speed).toBe(0.1);
     expect(n.boardPumpS).toEqual([3, 10]);
@@ -67,7 +70,7 @@ describe('«Ржавый лифт»: механика без движка', () =
     expect(n.darkness).toBe(0.3);
   });
 
-  it('rollLift: детерминирован; вид — по cageChance; этажи в диапазоне; логово — на этаже 1…floors, оба выхода встречаются', () => {
+  it('rollLift: детерминирован; вид — по cageChance; этажи вверх и вниз в диапазоне; логово — на любом этаже, кроме входа', () => {
     expect(rollLift(DEFAULT_LIFT, 'k')).toEqual(rollLift(DEFAULT_LIFT, 'k'));
     const keys = Array.from({ length: 400 }, (_, i) => 'key' + i);
     expect(keys.every((k) => rollLift(spec({ cageChance: 0 }), k).variant === 'carriage')).toBe(true);
@@ -76,16 +79,25 @@ describe('«Ржавый лифт»: механика без движка', () =
     expect(half).toBeGreaterThan(0.4);
     expect(half).toBeLessThan(0.6);
     const sides = new Set<string>();
+    let below = 0;
     for (const k of keys) {
       const r = rollLift(DEFAULT_LIFT, k);
       expect(r.floors).toBeGreaterThanOrEqual(3);
       expect(r.floors).toBeLessThanOrEqual(6);
+      expect(r.down).toBeGreaterThanOrEqual(1);
+      expect(r.down).toBeLessThanOrEqual(2);
       expect(r.lair).not.toBeNull();
-      expect(r.lair!.floor).toBeGreaterThanOrEqual(1);
+      expect(r.lair!.floor).not.toBe(0);
+      expect(r.lair!.floor).toBeGreaterThanOrEqual(-r.down);
       expect(r.lair!.floor).toBeLessThanOrEqual(r.floors);
+      if (r.lair!.floor < 0) below++;
       sides.add(r.lair!.side);
     }
     expect([...sides].sort()).toEqual(['right', 'straight']);
+    // логово ниже входа — примерно по доле этажей вниз (в среднем 1.5 из 6)
+    expect(below / keys.length).toBeGreaterThan(0.15);
+    expect(below / keys.length).toBeLessThan(0.4);
+    expect(keys.every((k) => rollLift(spec({ floorsDown: [0, 0] }), k).down === 0)).toBe(true);
     expect(keys.every((k) => rollLift(spec({ lairChance: 0 }), k).lair === null)).toBe(true);
   });
 
@@ -94,6 +106,10 @@ describe('«Ржавый лифт»: механика без движка', () =
     expect(liftBoard(DEFAULT_LIFT, r, 0, 1)).toEqual(liftBoard(DEFAULT_LIFT, r, 0, 1));
     expect(liftBoard(spec({ boardChance: 1 }), r, 0, -1)).toBeNull();
     expect(liftBoard(spec({ boardChance: 1 }), r, 0, 4)).toBeNull();
+    // ниже входа пролёты −down…−1
+    const rd = roll('cage', 4, 'b', 2);
+    expect(liftBoard(spec({ boardChance: 1 }), rd, 0, -2)).not.toBeNull();
+    expect(liftBoard(spec({ boardChance: 1 }), rd, 0, -3)).toBeNull();
     let n = 0, all = 0;
     for (let a = 0; a < 200; a++) {
       for (let g = 0; g < 4; g++) {
@@ -126,7 +142,7 @@ describe('«Ржавый лифт»: механика без движка', () =
   });
 
   it('поездка без досок: проехал этажи (pass), доехал (arrive) за путь / скорость; вниз — так же', () => {
-    const sp = spec({ boardChance: 0 });
+    const sp = spec({ boardChance: 0, boardFirst: false });
     const s = createLift(roll('cage', 3));
     callLift(s, 3);
     const ev: LiftEvent[] = [];
@@ -145,6 +161,45 @@ describe('«Ржавый лифт»: механика без движка', () =
     // вниз досок нет, даже если на каждом пролёте вверх они падают
     expect(down.map((e) => e.type)).toEqual(['pass', 'pass', 'arrive']);
     expect(s.floor).toBe(0);
+  });
+
+  it('этажи ниже входа: вниз до −down (подписи −1, −2), выходы там, выше −down — нельзя; вверх оттуда — с доской', () => {
+    const sp = spec({ boardChance: 0, boardFirst: false });
+    const r = roll('cage', 2, 'dn', 2);
+    const s = createLift(r);
+    expect(callLift(s, -3)).toEqual([]);
+    expect(callLift(s, -2)).toEqual([{ type: 'depart', from: 0, to: -2 }]);
+    const ev: LiftEvent[] = [];
+    for (let k = 0; k < 6000 && s.phase !== 'idle'; k++) ev.push(...stepLift(sp, s, DT, { x: 0, z: 0 }));
+    expect(ev).toEqual([{ type: 'pass', floor: -1 }, { type: 'arrive', floor: -2 }]);
+    expect(s.y).toBeCloseTo(-2 * LIFT_FLOOR_M, 9);
+    expect(liftExits(s).map((e) => e.side)).toEqual(['straight', 'right']);
+    expect(liftExitsAt(r, -3)).toEqual([]);
+    expect(createLift(r, 0, -2).floor).toBe(-2);
+    expect(createLift(r, 0, -3).floor).toBe(0);
+    expect([-2, -1, 0, 1, 2].map(liftFloorLabel)).toEqual(['−2', '−1', '1', '2', '3']);
+    // вверх с −2: первый подъём попытки — доска на первом же пролёте (−2), при boardFirst
+    callLift(s, 2);
+    const up: LiftEvent[] = [];
+    for (let k = 0; k < 6000 && s.phase === 'moving'; k++) up.push(...stepLift(spec({ boardChance: 0 }), s, DT, { x: 0, z: 0 }));
+    expect(up.find((e) => e.type === 'board')).toMatchObject({ segment: -2 });
+  });
+
+  it('первый подъём — доска всегда (boardFirst), один раз за попытку; без boardFirst и с нулевым шансом — ни одной', () => {
+    for (const seed of SEEDS) {
+      const r = roll('cage', 4, seed);
+      const s = createLift(r);
+      expect(boardAhead(spec({ boardChance: 0 }), s, 0)).not.toBeNull();
+      expect(boardAhead(spec({ boardChance: 0, boardFirst: false }), s, 0)).toBeNull();
+      callLift(s, 4);
+      const types: string[] = [];
+      for (let k = 0; k < 60 * 200 && !(s.phase === 'idle' && s.floor === 4); k++) types.push(...stepLift(spec({ boardChance: 0 }), s, DT, { x: 0, z: 0 }).map((e) => e.type));
+      expect(types.filter((t) => t === 'board')).toHaveLength(1);
+      expect(s.boards).toEqual([0]);
+      expect(boardAhead(spec({ boardChance: 0 }), s, 1)).toBeNull();
+      // новая попытка — снова первый подъём с доской
+      expect(boardAhead(spec({ boardChance: 0 }), createLift(r, 1), 0)).not.toBeNull();
+    }
   });
 
   it('доска: на подъёме в точке (пролёт + frac)·этаж — кабина стоит и качается; ось — по стороне; пролёт отработан', () => {
@@ -216,7 +271,7 @@ describe('«Ржавый лифт»: механика без движка', () =
   });
 
   it('большой шаг времени — без NaN, тот же итог, что мелкими шагами (поездка без досок)', () => {
-    const sp = spec({ boardChance: 0 });
+    const sp = spec({ boardChance: 0, boardFirst: false });
     const a = createLift(roll('cage', 3)), b = createLift(roll('cage', 3));
     callLift(a, 2);
     callLift(b, 2);
@@ -232,7 +287,7 @@ describe('«Ржавый лифт»: механика без движка', () =
   });
 
   it('выходы: этаж 0 — вход; выше — прямо и направо (логово отмечено); стоя у этажа — liftExits', () => {
-    const r: LiftRoll = { variant: 'cage', floors: 3, lair: { floor: 2, side: 'right' }, seed: 'x' };
+    const r: LiftRoll = { variant: 'cage', floors: 3, down: 0, lair: { floor: 2, side: 'right' }, seed: 'x' };
     expect(liftExitsAt(r, 0)).toEqual([{ floor: 0, side: 'entry', lair: false }]);
     expect(liftExitsAt(r, 2)).toEqual([
       { floor: 2, side: 'straight', lair: false },
@@ -251,7 +306,8 @@ describe('«Ржавый лифт»: механика без движка', () =
   });
 
   it('правило для игрока — с числами спецификации и логовом', () => {
-    expect(liftRule(DEFAULT_LIFT)).toMatch(/3–6 эт\./);
+    expect(liftRule(DEFAULT_LIFT)).toMatch(/3–6 эт\. над входом и 1–2 под ним/);
+    expect(liftRule(spec({ floorsDown: [0, 0] }))).not.toMatch(/под ним/);
     expect(liftRule(DEFAULT_LIFT)).toMatch(/поднявшуюся сторону/);
     expect(liftRule(DEFAULT_LIFT)).toMatch(/логово/);
     expect(liftRule(spec({ lairChance: 0 }))).not.toMatch(/логово/);

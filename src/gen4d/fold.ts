@@ -732,7 +732,8 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
       if (used.has(k)) err(`${name}: метка ${k} связана дважды`);
       used.add(k);
       const want = floorOf(l.a.inst) + (up ? 1 : -1) * (l.floors ?? 0);
-      if (!Number.isInteger(l.floors) || l.floors! < 1) err(`${name}: floors = ${l.floors}`);
+      // спуск — floors ≥ 1 этажей вниз; лифт — floors ≠ 0 этажей вверх (отрицательное — вниз)
+      if (!Number.isInteger(l.floors) || (up ? l.floors === 0 : l.floors! < 1)) err(`${name}: floors = ${l.floors}`);
       else if (floorOf(l.b.inst) !== want) err(`${name}: этаж ${floorOf(l.b.inst)}, а должен быть ${floorOf(l.a.inst)} ${up ? '+' : '−'} ${l.floors}`);
       pairs.add(`${l.a.inst}>${l.b.inst}`);
       continue;

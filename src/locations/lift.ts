@@ -14,9 +14,11 @@ export const DEFAULT_LIFT: LiftSpec = {
   kind: 'lift',
   cageChance: 0.5,
   floorsUp: [3, 6],
+  floorsDown: [1, 2],
   lairChance: 1,
   speed: 0.6,
   boardChance: 0.35,
+  boardFirst: true,
   boardKick: 0.5,
   boardPumpS: [4, 6],
   swingPeriod: 5,
@@ -69,9 +71,11 @@ const H = 1 / 240;
 /** Розыгрыш экземпляра лифта по сиду (детерминированно). */
 export interface LiftRoll {
   variant: 'cage' | 'carriage';
-  /** этажей с выходами над входом (1…): кабина ходит между 0 (вход) и floors */
+  /** этажей с выходами над входом (1…): кабина ходит между −down и floors (0 — вход) */
   floors: number;
-  /** логово: этаж (1…floors) и выход; null — у этого лифта логова нет */
+  /** этажей с выходами под входом (0…) */
+  down: number;
+  /** логово: этаж (−down…floors, кроме 0) и выход; null — у этого лифта логова нет */
   lair: { floor: number; side: LiftSide } | null;
   /** сид для расписания досок (каждая попытка после смерти — свой под-сид) */
   seed: string;
@@ -162,7 +166,7 @@ export type LiftEvent =
   | { type: 'thrown'; axis: LiftAxis; dir: 1 | -1 };
 
 /** Выход, доступный у этажа: на этаже 0 — вход (узкий передний проём, откуда игрок пришёл; широкий на этаже 0
- *  заколочен), выше — «прямо» (узкий передний) и «направо» (широкий правый). */
+ *  заколочен), на остальных (выше и ниже) — «прямо» (узкий передний) и «направо» (широкий правый). */
 export interface LiftExit {
   floor: number;
   side: LiftSide | 'entry';
@@ -177,12 +181,13 @@ export function newLift(): LiftSpec {
 }
 
 export function cloneLift(s: LiftSpec): LiftSpec {
-  return { ...s, floorsUp: [s.floorsUp[0], s.floorsUp[1]], boardPumpS: [s.boardPumpS[0], s.boardPumpS[1]] };
+  return { ...s, floorsUp: [s.floorsUp[0], s.floorsUp[1]], floorsDown: [s.floorsDown[0], s.floorsDown[1]], boardPumpS: [s.boardPumpS[0], s.boardPumpS[1]] };
 }
 
 export const LIFT_LIMITS = {
   cageChance: [0, 1],
   floorsUp: [1, 30],
+  floorsDown: [0, 30],
   lairChance: [0, 1],
   speed: [0.1, 5],
   boardChance: [0, 1],
@@ -204,7 +209,7 @@ function range(v: unknown, d: [number, number], lim: readonly [number, number], 
 }
 
 /** Толерантный разбор: не объект или kind ≠ 'lift' — null; мусорные поля — по умолчанию; диапазоны
- *  упорядочиваются и зажимаются в LIFT_LIMITS (этажи — целые ≥ 1). */
+ *  упорядочиваются и зажимаются в LIFT_LIMITS (этажи — целые: вверх ≥ 1, вниз ≥ 0). */
 export function normLift(v: unknown): LiftSpec | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
@@ -214,9 +219,11 @@ export function normLift(v: unknown): LiftSpec | null {
     kind: 'lift',
     cageChance: num(o.cageChance, D.cageChance, L.cageChance),
     floorsUp: range(o.floorsUp, D.floorsUp, L.floorsUp, true),
+    floorsDown: range(o.floorsDown, D.floorsDown, L.floorsDown, true),
     lairChance: num(o.lairChance, D.lairChance, L.lairChance),
     speed: num(o.speed, D.speed, L.speed),
     boardChance: num(o.boardChance, D.boardChance, L.boardChance),
+    boardFirst: typeof o.boardFirst === 'boolean' ? o.boardFirst : D.boardFirst,
     boardKick: num(o.boardKick, D.boardKick, L.boardKick),
     boardPumpS: range(o.boardPumpS, D.boardPumpS, L.boardPumpS, false),
     swingPeriod: num(o.swingPeriod, D.swingPeriod, L.swingPeriod),
@@ -241,24 +248,45 @@ export function swingCoef(spec: LiftSpec): { w: number; c: number; cFree: number
   };
 }
 
-/** Доска на пролёте segment в попытке attempt (null — не падает). Детерминированно по сиду, не зависит
- *  от того, как шли шаги: поток makeRng(roll.seed + "/a" + attempt + "/b" + segment). */
-export function liftBoard(spec: LiftSpec, roll: LiftRoll, attempt: number, segment: number): LiftBoard | null {
-  if (segment < 0 || segment >= roll.floors) return null;
+/** Бросок доски на пролёте segment (−down…floors−1) в попытке attempt: падает ли по шансу и её параметры.
+ *  Поток makeRng(roll.seed + "/a" + attempt + "/b" + segment) — не зависит от того, как шли шаги. */
+function boardRoll(spec: LiftSpec, roll: LiftRoll, attempt: number, segment: number): { falls: boolean; board: LiftBoard } | null {
+  if (!Number.isInteger(segment) || segment < -(roll.down ?? 0) || segment >= roll.floors) return null;
   const R = makeRng(`${roll.seed}/a${attempt}/b${segment}`);
   const falls = R.next() < (fin(spec.boardChance) ? spec.boardChance : DEFAULT_LIFT.boardChance);
   const frac = 0.3 + 0.4 * R.next();
   const side: LiftSide = R.next() < 0.5 ? 'straight' : 'right';
   const [lo, hi] = range(spec.boardPumpS, DEFAULT_LIFT.boardPumpS, LIFT_LIMITS.boardPumpS, false);
   const pumpS = lo + (hi - lo) * R.next();
-  return falls ? { segment, frac, side, pumpS } : null;
+  return { falls, board: { segment, frac, side, pumpS } };
 }
 
-/** Выходы у этажа floor: 0 — вход, выше — «прямо» и «направо». */
+/** Доска на пролёте segment в попытке attempt по шансу (null — не падает). Детерминированно по сиду. */
+export function liftBoard(spec: LiftSpec, roll: LiftRoll, attempt: number, segment: number): LiftBoard | null {
+  const r = boardRoll(spec, roll, attempt, segment);
+  return r?.falls ? r.board : null;
+}
+
+/** Доска, которая упадёт, когда кабина поедет вверх через пролёт segment в состоянии s: по шансу (liftBoard), а если
+ *  boardFirst и в этой попытке досок ещё не было — всегда (первый подъём не обходится без доски). На пролёте, где
+ *  доска уже падала, — null. Этим пользуются и шаг механики, и сцена (доска видна за полсекунды до удара). */
+export function boardAhead(spec: LiftSpec, s: LiftState, segment: number): LiftBoard | null {
+  if (s.boards.includes(segment)) return null;
+  const r = boardRoll(spec, s.roll, s.attempt, segment);
+  if (!r) return null;
+  return r.falls || (spec.boardFirst !== false && s.boards.length === 0) ? r.board : null;
+}
+
+/** Выходы у этажа floor: 0 — вход, выше и ниже (−down…floors) — «прямо» и «направо». */
 export function liftExitsAt(roll: LiftRoll, floor: number): LiftExit[] {
   if (floor === 0) return [{ floor: 0, side: 'entry', lair: false }];
-  if (floor < 0 || floor > roll.floors || !Number.isInteger(floor)) return [];
+  if (floor < -(roll.down ?? 0) || floor > roll.floors || !Number.isInteger(floor)) return [];
   return (['straight', 'right'] as const).map((side) => ({ floor, side, lair: isLair(roll, floor, side) }));
+}
+
+/** Подпись этажа в шахте (табличка, кнопки): вход и выше — 1, 2, 3…; ниже входа — −1, −2… */
+export function liftFloorLabel(floor: number): string {
+  return floor >= 0 ? String(floor + 1) : `−${-floor}`;
 }
 
 export function isLair(roll: LiftRoll, floor: number, side: LiftSide | 'entry'): boolean {
@@ -275,7 +303,8 @@ const span = ([a, b]: [number, number]) => (a === b ? `${a}` : `${a}–${b}`);
 /** Правило для игрока одной строкой (подсказка в инспекторе и в UI игры). */
 export function liftRule(spec: LiftSpec): string {
   const lair = spec.lairChance <= 0 ? '' : ` На одном из этажей за одним из выходов — логово: оттуда тянет красным светом и гулом.`;
-  return `Кнопки на посту — вверх или вниз, ${span(spec.floorsUp)} эт. над входом, на каждом — выходы прямо (узкий, над входом) и направо (широкий). ` +
+  const down = spec.floorsDown[1] <= 0 ? '' : ` и ${span(spec.floorsDown)} под ним`;
+  return `Кнопки на посту — вверх или вниз: ${span(spec.floorsUp)} эт. над входом${down}, на каждом — выходы прямо (узкий, над входом) и направо (широкий). ` +
     `Тряхнуло доской — площадку кренит: перебегай на поднявшуюся сторону (до края не обязательно); на опустившейся — раскачаешь сильнее, стоя на месте — не погасишь. ` +
     `С каретки сильный крен сбрасывает в шахту; клетка бьётся о стены и стоит, пока не стихнет.` + lair;
 }
@@ -285,27 +314,31 @@ export function liftRule(spec: LiftSpec): string {
 const hex8 = (n: number) => (n >>> 0).toString(16).padStart(8, '0');
 
 /** Розыгрыш экземпляра: по спецификации и ключу сида (locationSeedKey(...) из stairwell.ts). Порядок бросков
- *  фиксирован (вид, этажи, есть ли логово, этаж логова, выход логова) — не зависит от исходов. */
+ *  фиксирован (вид, этажи вверх, этажи вниз, есть ли логово, этаж логова, выход логова) — не зависит от исходов.
+ *  Этаж логова — равновероятно любой с выходами, кроме входного: −down…−1, 1…floors. */
 export function rollLift(spec: LiftSpec, seedKey: string): LiftRoll {
   const s = normLift(spec) ?? DEFAULT_LIFT;
   const R = makeRng(`lift|${seedKey}`);
   const variant = R.next() < s.cageChance ? 'cage' : 'carriage';
   const floors = R.int(s.floorsUp[0], s.floorsUp[1]);
+  const down = R.int(s.floorsDown[0], s.floorsDown[1]);
   const has = R.next() < s.lairChance;
-  const lairFloor = R.int(1, floors);
+  const k = R.int(0, down + floors - 1);
+  const lairFloor = k < down ? -(k + 1) : k - down + 1;
   const lairSide: LiftSide = R.next() < 0.5 ? 'straight' : 'right';
   return {
     variant,
     floors,
+    down,
     lair: has ? { floor: lairFloor, side: lairSide } : null,
     seed: hex8(hashSeed(`lift-seed|${seedKey}`)) + hex8(R.int(0, 0xffffffff)),
   };
 }
 
-/** Начать попытку: кабина у входа (этаж 0), стоит. floor — у какого этажа начать (вход в лифт с этажа выше
+/** Начать попытку: кабина у входа (этаж 0), стоит. floor — у какого этажа начать (вход в лифт с другого этажа
  *  в «Прогулке», когда игрок возвращается из комнаты за выходом). */
 export function createLift(roll: LiftRoll, attempt = 0, floor = 0): LiftState {
-  const f = Number.isInteger(floor) && floor >= 0 && floor <= roll.floors ? floor : 0;
+  const f = Number.isInteger(floor) && floor >= -(roll.down ?? 0) && floor <= roll.floors ? floor : 0;
   return { phase: 'idle', roll, attempt, t: 0, y: f * LIFT_FLOOR_M, floor: f, target: null, swing: null, boards: [], bangs: 0, thrown: null };
 }
 
@@ -313,7 +346,7 @@ export function createLift(roll: LiftRoll, attempt = 0, floor = 0): LiftState {
  *  в раскачке и после выброса — нет (пустой список). Тот же этаж, где стоит, — пусто. */
 export function callLift(s: LiftState, floor: number): LiftEvent[] {
   if (s.phase !== 'idle' && s.phase !== 'moving') return [];
-  if (!Number.isInteger(floor) || floor < 0 || floor > s.roll.floors) return [];
+  if (!Number.isInteger(floor) || floor < -(s.roll.down ?? 0) || floor > s.roll.floors) return [];
   if (s.phase === 'idle' && floor === s.floor) return [];
   if (s.phase === 'moving' && s.target === floor) return [];
   const from = s.phase === 'idle' ? s.floor : s.y / LIFT_FLOOR_M;
@@ -326,8 +359,8 @@ export function callLift(s: LiftState, floor: number): LiftEvent[] {
  * Шаг механики. dt — секунды; player — положение игрока на площадке в осях кабины, м (x — вправо, z — вперёд,
  * 0 — центр; движок сам следит, чтобы игрок был в кабине). Мутирует state, возвращает события шага.
  *
- * moving: кабина идёт к target со скоростью spec.speed; при подъёме через точку доски этой попытки (liftBoard,
- *         пролёт ещё не «отработан») — событие board, фаза jammed, кабина стоит, качание с удара: φ = 0,
+ * moving: кабина идёт к target со скоростью spec.speed; при подъёме через точку доски этой попытки (boardAhead:
+ *         по шансу, первый подъём — всегда при boardFirst; пролёт ещё не «отработан») — событие board, фаза jammed, кабина стоит, качание с удара: φ = 0,
  *         φ' = −boardKick·ω (кабину отбрасывает от стены, где застряла доска). Проехал этаж — pass, доехал — arrive.
  * jammed: φ'' = −ω²φ − (2ζω + c_p)·φ' + P·sign(φ') (последнее — пока доска качает, pump > 0; выпала — freed);
  *         c_p = LIFT_PLAYER_DAMP·(−d·sgn φ): игрок на верхнем краю гасит, на нижнем раскачивает; d — плечо, м: положение
@@ -362,7 +395,7 @@ function moveStep(spec: LiftSpec, s: LiftState, h: number, speed: number, co: Re
   // доска: только при подъёме, один раз на пролёт за попытку
   if (dir > 0) {
     const seg = Math.floor(s.y / LIFT_FLOOR_M + 1e-9);
-    const b = s.boards.includes(seg) ? null : liftBoard(spec, s.roll, s.attempt, seg);
+    const b = boardAhead(spec, s, seg);
     if (b) {
       const by = (seg + b.frac) * LIFT_FLOOR_M;
       if (s.y < by && ny >= by) {

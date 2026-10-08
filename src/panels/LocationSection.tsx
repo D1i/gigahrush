@@ -139,7 +139,7 @@ function StairwellFields({ room, spec }: { room: Room; spec: StairwellSpec }) {
   );
 }
 
-type LiftRangeKey = 'floorsUp' | 'boardPumpS';
+type LiftRangeKey = 'floorsUp' | 'floorsDown' | 'boardPumpS';
 type LiftPctKey = 'cageChance' | 'lairChance' | 'boardChance' | 'darkness';
 
 function LiftFields({ room, spec }: { room: Room; spec: LiftSpec }) {
@@ -173,23 +173,38 @@ function LiftFields({ room, spec }: { room: Room; spec: LiftSpec }) {
   const toLimit = spec.boardKick >= 1 ? 0 : (1 - spec.boardKick) / LIFT_PUMP_RATE;
   const reaches = toLimit <= spec.boardPumpS[1];
   const avgFloors = (spec.floorsUp[0] + spec.floorsUp[1]) / 2;
+  const avgDown = (spec.floorsDown[0] + spec.floorsDown[1]) / 2;
+  // досок за подъём от самого низа до верха: первая (boardFirst) + по шансу на остальных пролётах
+  const climb = avgFloors + avgDown;
+  const boards = spec.boardFirst ? 1 + Math.max(0, climb - 1) * spec.boardChance : climb * spec.boardChance;
   return (
     <>
       <div className="grid2">
         {pct('Клетка (иначе каретка)', 'cageChance', 'Вероятность, что экземпляр — клетка: бьётся о стены и не сбрасывает; иначе открытая каретка — сбрасывает в шахту')}
         {pct('Логово за выходом', 'lairChance', 'Вероятность, что за одним из выходов лифта (на одном из этажей) — логово босса')}
       </div>
-      <Range
-        label="Этажей с выходами над входом"
-        value={spec.floorsUp}
-        lim={L.floorsUp}
-        int
-        title="Сколько этажей над входом; на каждом — выходы прямо и направо"
-        onChange={setRange('floorsUp', true)}
-      />
+      <div className="grid2">
+        <Range
+          label="Этажей вверх"
+          value={spec.floorsUp}
+          lim={L.floorsUp}
+          int
+          title="Ход вверх: сколько этажей над входом; на каждом — выходы прямо и направо"
+          onChange={setRange('floorsUp', true)}
+        />
+        <Range
+          label="Этажей вниз"
+          value={spec.floorsDown}
+          lim={L.floorsDown}
+          int
+          title="Ход вниз: сколько этажей под входом (0 — вниз не ездит); на каждом — выходы прямо и направо"
+          onChange={setRange('floorsDown', true)}
+        />
+      </div>
       <div className="hint">
-        Вид, число этажей и где логово (этаж и выход) разыгрываются для каждого экземпляра лифта. Смерть — новая попытка: доски
-        падают на других пролётах.
+        Высота шахты — от {spec.floorsDown[0]}–{spec.floorsDown[1]} эт. под входом до {spec.floorsUp[0]}–{spec.floorsUp[1]} над ним
+        (этаж {LIFT_FLOOR_M} м). Вид, число этажей и где логово (этаж выше или ниже входа и выход) разыгрываются для каждого
+        экземпляра лифта. Смерть — новая попытка: доски падают на других пролётах.
       </div>
       <div className="grid2">
         <NumField
@@ -205,9 +220,13 @@ function LiftFields({ room, spec }: { room: Room; spec: LiftSpec }) {
         />
         {pct('Доска на пролёте', 'boardChance', 'Вероятность, что на пролёте вверх между соседними этажами упадёт доска (не больше одной на пролёт за попытку)')}
       </div>
+      <label className="check" title="Первая поездка вверх в каждой попытке не обходится без доски — на первом же пролёте; дальше — по шансу">
+        <input type="checkbox" checked={spec.boardFirst} onChange={(e) => upd('boardFirst', (s) => (s.boardFirst = e.target.checked))} />
+        Первый подъём — доска всегда
+      </label>
       <div className="hint">
-        Этаж ({LIFT_FLOOR_M} м) кабина проходит за <b className="mono">{(LIFT_FLOOR_M / spec.speed).toFixed(1)} с</b>; досок за подъём до
-        верха — в среднем <b className="mono">{(avgFloors * spec.boardChance).toFixed(1)}</b>. При спуске досок нет.
+        Этаж ({LIFT_FLOOR_M} м) кабина проходит за <b className="mono">{(LIFT_FLOOR_M / spec.speed).toFixed(1)} с</b>; досок за подъём от
+        низа до верха — в среднем <b className="mono">{boards.toFixed(1)}</b>. При спуске досок нет.
       </div>
       <div className="grid2">
         <NumField

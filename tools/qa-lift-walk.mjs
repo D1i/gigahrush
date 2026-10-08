@@ -111,7 +111,7 @@ try {
   await page.reload({ timeout: 180000 });
   await page.waitForTimeout(1000);
   await page.evaluate(() => {
-    window.__rfLiftSpec = { boardChance: 0 };
+    window.__rfLiftSpec = { boardChance: 0, boardFirst: false };
   });
   await page.getByRole('button', { name: '3D', exact: true }).click();
   await page.waitForFunction(() => window.__rfWalk && window.__rf3dFold?.portal?.isActive, null, { timeout: 180000 });

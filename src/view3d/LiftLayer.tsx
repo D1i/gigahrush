@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Color4 } from '@babylonjs/core/Maths/math.color';
 import type { BlockoutViewer } from './viewer';
 import type { LiftSide, LiftSpec } from '../model/types';
-import type { LiftRoll } from '../locations/lift';
+import { liftFloorLabel, type LiftRoll } from '../locations/lift';
 import type { LiftExitKind, LiftHud, LiftMechanics, LiftScene } from '../locations/sceneLift';
 
 export interface LiftRequest {
@@ -125,11 +125,13 @@ export function LiftLayer(props: { viewer: BlockoutViewer | null; req: LiftReque
             {req.title} · {h.variant === 'cage' ? 'клетка' : 'каретка'} · попытка {h.attempt + 1} · смертей {h.deaths}
           </div>
           <div>
-            фаза <b>{PHASE[h.phase] ?? h.phase}</b> · этаж {h.floor + 1}
-            {h.target !== null ? ` → ${h.target + 1}` : ''} из {h.floors + 1} · y {h.y.toFixed(2)} м
+            фаза <b>{PHASE[h.phase] ?? h.phase}</b> · этаж {liftFloorLabel(h.floor)}
+            {h.target !== null ? ` → ${liftFloorLabel(h.target)}` : ''} (шахта {liftFloorLabel(-h.down)}…{liftFloorLabel(h.floors)}) · y{' '}
+            {h.y.toFixed(2)} м
           </div>
           <div>
-            логово: {h.lair ? `этаж ${h.lair.floor + 1}, ${SIDE[h.lair.side]}` : 'нет'} · {h.inCage ? 'в кабине' : `в коридоре этажа ${h.level + 1}`}
+            логово: {h.lair ? `этаж ${liftFloorLabel(h.lair.floor)}, ${SIDE[h.lair.side]}` : 'нет'} ·{' '}
+            {h.inCage ? 'в кабине' : `в коридоре этажа ${liftFloorLabel(h.level)}`}
           </div>
           {h.axis && (
             <>

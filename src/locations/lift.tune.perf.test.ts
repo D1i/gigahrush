@@ -16,7 +16,7 @@ const bots: Record<string, Bot> = {
   edge: () => 0.9,
 };
 function sim(spec: LiftSpec, bot: Bot, react: number, seed: number) {
-  const roll: LiftRoll = { variant: 'carriage', floors: 1, lair: null, seed: 's' + seed };
+  const roll: LiftRoll = { variant: 'carriage', floors: 1, down: 0, lair: null, seed: 's' + seed };
   // найти попытку, где на пролёте 0 падает доска
   let a = 0; while (!liftBoard(spec, roll, a, 0)) a++;
   const s = createLift(roll, a);

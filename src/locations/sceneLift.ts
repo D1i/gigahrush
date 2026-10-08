@@ -3,8 +3,8 @@
 // подаёт ей время и положение игрока на площадке кабины, зовёт кабину на этаж и показывает/озвучивает события.
 //
 //  • Геометрия — ассет пользователя rusted_lift_v2 (оптимизированная копия assets/lift.glb, tools/optimize-lift.mjs):
-//    шахта собирается из кусков «низ» (приямок, этаж 0), «этаж» (повтор) и «верх» (последний этаж и привод) — на
-//    любое число этажей roll.floors; модуль этажа (проёмы и оба коридора) — на каждом этаже; кабина — каркас,
+//    шахта собирается из кусков «низ» (приямок, нижний этаж), «этаж» (повтор) и «верх» (последний этаж и привод) — на
+//    любое число этажей −roll.down…roll.floors (0 — вход); модуль этажа (проёмы и оба коридора) — на каждом; кабина — каркас,
 //    площадка и пост (у каретки каркаса нет); доска и дверь логова — из ассета.
 //  • Оси: ассет загружается в левостороннюю сцену с отражением x (glTF +x → −x), поэтому в мире сцены узкий проём
 //    («прямо», вход на этаже 0) — к +z, широкий («направо») — к −x. Для механики: x кабины = −x сцены, z = z.
@@ -46,7 +46,7 @@ import '@babylonjs/loaders/glTF/2.0/Extensions/ExtrasAsMetadata';
 import liftUrl from './assets/lift.glb?url';
 import type { LiftSide, LiftSpec } from '../model/types';
 import {
-  callLift, createLift, liftBoard, liftExits, rollLift, stepLift, swingCoef,
+  boardAhead, callLift, createLift, liftExits, liftFloorLabel, rollLift, stepLift, swingCoef,
   LIFT_FLOOR_M, LIFT_HALF_X, LIFT_HALF_Z, LIFT_SLIP, LIFT_TILT_DEG,
   type LiftAxis, type LiftEvent, type LiftExit, type LiftPhase, type LiftRoll, type LiftState,
 } from './lift';
@@ -76,10 +76,11 @@ export interface LiftHud {
   sound: boolean;
   phase: LiftPhase;
   variant: 'cage' | 'carriage';
-  /** этаж кабины (у которого стоит или последний пройденный) и куда едет */
+  /** этаж кабины (у которого стоит или последний пройденный) и куда едет; этажи шахты — −down…floors (0 — вход) */
   floor: number;
   target: number | null;
   floors: number;
+  down: number;
   /** высота пола кабины, м */
   y: number;
   /** раскачка: крен, амплитуда (доли предела), сколько ещё качает доска, с; ось */
@@ -402,7 +403,7 @@ export class LiftScene {
     const deckEx = meta.get('LIFT_CAGE_DECK') ?? {};
     if (typeof deckEx.pivotY === 'number') this.pivotY = deckEx.pivotY;
 
-    const F = this.roll.floors;
+    const F = this.roll.floors, D = this.roll.down;
     const mat = (y: number) => Matrix.Translation(0, y, 0);
     const thin = (list: Mesh[] | undefined, ys: number[]) => {
       for (const m of list ?? []) {
@@ -418,11 +419,11 @@ export class LiftScene {
         this.built.push(m);
       }
     };
-    // шахта: низ (этаж 0 и приямок), этажи 1…F−1, верх (этаж F и привод); модуль этажа — на каждом
-    thin(groups.get('LIFT_SHAFT_BOTTOM'), [0]);
-    thin(groups.get('LIFT_SHAFT_MID'), Array.from({ length: Math.max(0, F - 1) }, (_, k) => (k + 1) * FM));
+    // шахта: низ (нижний этаж −D и приямок), этажи −D+1…F−1, верх (этаж F и привод); модуль этажа — на каждом
+    thin(groups.get('LIFT_SHAFT_BOTTOM'), [-D * FM]);
+    thin(groups.get('LIFT_SHAFT_MID'), Array.from({ length: Math.max(0, F + D - 1) }, (_, k) => (k + 1 - D) * FM));
     thin(groups.get('LIFT_SHAFT_TOP'), [F * FM]);
-    thin(groups.get('LIFT_LEVEL'), Array.from({ length: F + 1 }, (_, k) => k * FM));
+    thin(groups.get('LIFT_LEVEL'), Array.from({ length: F + D + 1 }, (_, k) => (k - D) * FM));
 
     // кабина: поворот — вокруг центра пола (площадка кренится, как доска на опоре), подвес — над ней
     this.cage = new TransformNode('lift:cage', scene);
@@ -510,7 +511,7 @@ export class LiftScene {
     black.disableLighting = true;
     black.emissiveColor = Color3.Black();
     black.diffuseColor = Color3.Black();
-    const F = this.roll.floors;
+    const F = this.roll.floors, D = this.roll.down;
     const box = (name: string, w: number, h: number, d: number, x: number, y: number, z: number, m: Material | null) => {
       const b = MeshBuilder.CreateBox(name, { width: w, height: h, depth: d }, scene);
       b.position.set(x, y + h / 2, z);
@@ -520,7 +521,7 @@ export class LiftScene {
       this.built.push(b);
       return b;
     };
-    for (let k = 0; k <= F; k++) {
+    for (let k = -D; k <= F; k++) {
       const y = k * FM;
       const lairHere = this.roll.lair?.floor === k ? this.roll.lair.side : null;
       // узкий: проём 1.0 × 2.1 по центру
@@ -530,8 +531,8 @@ export class LiftScene {
         box(`lift:endN${k}c`, 1.8, 0.9, 0.2, 0, y + 2.1, N_END + 0.1, concrete);
         box(`lift:voidN${k}`, 1.2, 2.2, 0.05, 0, y, N_END + 0.6, black);
       }
-      // широкий: проём 1.3 × 2.2 (на этаже 0 широкий заколочен — конец не нужен)
-      if (k > 0 && lairHere !== 'right') {
+      // широкий: проём 1.3 × 2.2 (на входном этаже 0 широкий заколочен — конец не нужен)
+      if (k !== 0 && lairHere !== 'right') {
         box(`lift:endW${k}a`, 0.2, 3, 1.15, W_END - 0.1, y, 1.225, concrete);
         box(`lift:endW${k}b`, 0.2, 3, 1.15, W_END - 0.1, y, -1.225, concrete);
         box(`lift:endW${k}c`, 0.2, 0.8, 1.4, W_END - 0.1, y + 2.2, 0, concrete);
@@ -556,18 +557,19 @@ export class LiftScene {
 
   /** Номера этажей на табличках задней стены (по трафарету). */
   private buildNumbers() {
-    const F = this.roll.floors;
-    const labels = Array.from({ length: F + 1 }, (_, k) => String(k + 1));
+    const F = this.roll.floors, D = this.roll.down;
+    // ячейка атласа i — этаж i − D (снизу вверх): −2, −1, 1, 2, 3…
+    const labels = Array.from({ length: F + D + 1 }, (_, i) => liftFloorLabel(i - D));
     const { tex, cells } = numbersAtlas(this.scene, labels);
     const m = new StandardMaterial('lift:num', this.scene);
     m.diffuseTexture = tex;
     m.useAlphaFromDiffuseTexture = true;
     m.specularColor = Color3.Black();
-    for (let k = 0; k <= F; k++) {
+    for (let k = -D; k <= F; k++) {
       const p = MeshBuilder.CreatePlane('lift:numPlane' + k, { width: 0.26, height: 0.26 }, this.scene);
-      // своя ячейка атласа: u → (k + u) / cells (одна текстура на все таблички)
+      // своя ячейка атласа: u → (k + D + u) / cells (одна текстура на все таблички)
       const uv = p.getVerticesData('uv')!;
-      for (let i = 0; i < uv.length; i += 2) uv[i] = (k + uv[i]) / cells;
+      for (let i = 0; i < uv.length; i += 2) uv[i] = (k + D + uv[i]) / cells;
       p.setVerticesData('uv', uv);
       p.material = m;
       // табличка ассета: glTF x −1.44…−1.27, y +1.66…+1.88, z −1.9 → мир сцены x ≈ +1.355
@@ -822,7 +824,7 @@ export class LiftScene {
   press(dir: 'up' | 'down') {
     const s = this.state;
     const at = s.phase === 'moving' && s.target !== null ? s.target : s.floor;
-    const to = clamp(at + (dir === 'up' ? 1 : -1), 0, this.roll.floors);
+    const to = clamp(at + (dir === 'up' ? 1 : -1), -this.roll.down, this.roll.floors);
     const ev = to === at ? [] : this.mech.call(s, to);
     const panel = this.panelWorld();
     this.audio.lever(panel, ev.length === 0);
@@ -1021,13 +1023,12 @@ export class LiftScene {
     const s = this.state;
     if (!this.board && s.phase === 'moving' && s.target !== null && s.target * FM > s.y) {
       const seg = Math.floor(s.y / FM + 1e-9);
-      if (!s.boards.includes(seg)) {
-        const b = liftBoard(this.spec, this.roll, s.attempt, seg);
-        if (b) {
-          const by = (seg + b.frac) * FM;
-          const speed = this.spec.speed > 0 ? this.spec.speed : 0.6;
-          if (by > s.y && (by - s.y) / speed < 0.5) this.board = { phase: 'fall', t: 0.5 - (by - s.y) / speed, side: b.side, segment: seg };
-        }
+      // та же доска, что возьмёт механика (по шансу; первый подъём — всегда)
+      const b = boardAhead(this.spec, s, seg);
+      if (b) {
+        const by = (seg + b.frac) * FM;
+        const speed = this.spec.speed > 0 ? this.spec.speed : 0.6;
+        if (by > s.y && (by - s.y) / speed < 0.5) this.board = { phase: 'fall', t: 0.5 - (by - s.y) / speed, side: b.side, segment: seg };
       }
     }
     const b = this.board;
@@ -1138,7 +1139,8 @@ export class LiftScene {
     this.cage.rotationQuaternion!.copyFrom(tilt);
     // противовес — навстречу кабине; тросы — от проушины и противовеса к барабану
     const top = this.roll.floors * FM + 4.6;
-    this.cw.position.y = this.roll.floors * FM - s.y;
+    // в покое (ассет) грузы внизу шахты, кабина — на этаже 0 нижнего куска; кабина наверху — грузы внизу
+    this.cw.position.y = (this.roll.floors - this.roll.down) * FM - s.y;
     const hook = Vector3.TransformCoordinates(new Vector3(0, this.pivotY, 0), this.cage.computeWorldMatrix(true));
     this.cables.forEach((c, i) => {
       const x = (c.metadata as { x: number }).x;
@@ -1174,7 +1176,7 @@ export class LiftScene {
     const near = Math.round(eyeY / FM);
     this.pool.forEach((pl, i) => {
       const k = near + (i === 0 ? 0 : i === 1 ? 1 : -1);
-      if (k < 0 || k > this.roll.floors) {
+      if (k < -this.roll.down || k > this.roll.floors) {
         pl.intensity = 0;
         return;
       }
@@ -1223,8 +1225,8 @@ export class LiftScene {
         if (s.phase === 'jammed') prompt = 'кнопки не отвечают';
         else {
           const at = s.phase === 'moving' && s.target !== null ? s.target : s.floor;
-          const up = at < this.roll.floors ? `E — вверх (${at + 2})` : null;
-          const down = at > 0 ? `Q — вниз (${at})` : null;
+          const up = at < this.roll.floors ? `E — вверх (${liftFloorLabel(at + 1)})` : null;
+          const down = at > -this.roll.down ? `Q — вниз (${liftFloorLabel(at - 1)})` : null;
           prompt = [up, down].filter(Boolean).join(' · ') || null;
         }
       }
@@ -1240,6 +1242,7 @@ export class LiftScene {
       floor: s.floor,
       target: s.target,
       floors: this.roll.floors,
+      down: this.roll.down,
       y: s.y,
       phi: sw?.phi ?? 0,
       amp: sw?.amp ?? 0,

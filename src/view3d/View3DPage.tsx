@@ -760,6 +760,12 @@ export default function View3DPage() {
   }, [fold, fs?.models]);
   const foldStats = (rx.data?.fold ?? null) as { minW: number; maxW: number; layers: number; overlaps: number; shifted: number } | null;
 
+  /** Закрыть сцену спец-локации кнопкой («выйти», «Назад»): и отпустить мышь, если сцена её захватила. */
+  const closeLoc = () => {
+    setLoc(null);
+    if (document.pointerLockElement) document.exitPointerLock();
+  };
+
   // ── «Комната» со спец-локацией: войти в её сцену без мира ──
   const selRoom = p.rooms.find((r) => r.id === roomSel) ?? null;
   const enterRoomLoc = () => {
@@ -783,7 +789,7 @@ export default function View3DPage() {
           notify(
             kind === 'entry'
               ? 'Вышли из лифта назад, на площадку'
-              : `Выход ${SIDE_RU[kind]} на этаже +${floor}${isLair ? ' — логово босса' : ''}: в «Прогулке» это комната этажом выше`,
+              : `Выход ${SIDE_RU[kind]} на этаже ${floor > 0 ? '+' : '−'}${Math.abs(floor)}${isLair ? ' — логово босса' : ''}: в «Прогулке» это комната ${floor > 0 ? 'выше' : 'ниже'}`,
             'ok',
           );
         },
@@ -919,7 +925,7 @@ export default function View3DPage() {
                   <div className="hint">
                     {selRoom.location.kind === 'stairwell'
                       ? 'Спец-локация «Бесконечная лестница». В «Прогулке» вход — через дверь комнаты, выход вниз ведёт на этаж ниже.'
-                      : 'Спец-локация «Ржавый лифт». В «Прогулке» вход — через дверь шахты, выходы прямо и направо ведут на этажи выше, к лифту — назад к той же стене.'}
+                      : 'Спец-локация «Ржавый лифт». В «Прогулке» вход — через дверь шахты, выходы прямо и направо ведут на этажи выше и ниже, к лифту — назад к той же стене.'}
                   </div>
                 </>
               )}
@@ -1131,9 +1137,9 @@ export default function View3DPage() {
         <canvas ref={canvasRef} tabIndex={0} />
         {loc &&
           (loc.kind === 'lift' ? (
-            <LiftLayer viewer={viewer.current} req={loc} onClose={() => setLoc(null)} />
+            <LiftLayer viewer={viewer.current} req={loc} onClose={closeLoc} />
           ) : (
-            <StairwellLayer viewer={viewer.current} req={loc} onClose={() => setLoc(null)} />
+            <StairwellLayer viewer={viewer.current} req={loc} onClose={closeLoc} />
           ))}
         <div className="float toolbar v3-tools" style={loc ? { display: 'none' } : undefined}>
           <Btn sm on={mode === 'orbit'} onClick={() => setMode('orbit')} title="Облёт: вид сверху под углом, потолки скрыты">

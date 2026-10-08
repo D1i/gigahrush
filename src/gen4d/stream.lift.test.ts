@@ -81,16 +81,16 @@ function liftRoll(w: StreamWorld, id: string) {
   return L.roll;
 }
 
-/** Все выходы лифта: [этаж, сторона] по порядку этажей. */
-const exitsOf = (floors: number): [number, LiftSide][] => {
+/** Все выходы лифта: [этаж, сторона] по порядку этажей — снизу (−down) вверх (floors), без входного 0. */
+const exitsOf = (r: { floors: number; down: number }): [number, LiftSide][] => {
   const out: [number, LiftSide][] = [];
-  for (let f = 1; f <= floors; f++) for (const s of SIDES) out.push([f, s]);
+  for (let f = -r.down; f <= r.floors; f++) if (f !== 0) for (const s of SIDES) out.push([f, s]);
   return out;
 };
 
 const CW: Record<Side, Side> = { N: 'E', E: 'S', S: 'W', W: 'N' };
 
-describe('бесконечный мир: «Ржавый лифт» и выходы вверх', { timeout: 300000 }, () => {
+describe('бесконечный мир: «Ржавый лифт» и выходы вверх и вниз', { timeout: 300000 }, () => {
   const p = presets();
   const s = streamSettings('lift');
 
@@ -122,35 +122,39 @@ describe('бесконечный мир: «Ржавый лифт» и выход
     if (loc.kind !== 'lift') throw new Error('не лифт');
     expect(loc.roll).toEqual(rollLift(loc.spec, locationSeedKey(seedKey(s.seed, s.mods), w.addressOf(L)!)));
     expect(loc.roll.lair).not.toBeNull(); // lairChance 1 у пресета
-    // ошибки: не лифт, этаж вне 1…floors, чужая сторона
+    // ошибки: не лифт, этаж вне −down…floors или вход (0), чужая сторона
     expect(() => w.ascend(w.startId!, 1, 'straight')).toThrow(/нет спец-локации|не лифт/);
     expect(() => w.ascend('нет', 1, 'straight')).toThrow();
-    for (const f of [0, -1, loc.roll.floors + 1, 1.5, NaN]) expect(() => w.ascend(L, f, 'straight')).toThrow(/этаж/);
+    expect(loc.roll.down).toBeGreaterThanOrEqual(1); // пресет: 1–2 этажа вниз
+    for (const f of [0, -loc.roll.down - 1, loc.roll.floors + 1, 1.5, NaN]) expect(() => w.ascend(L, f, 'straight')).toThrow(/этаж/);
     expect(() => w.ascend(L, 1, 'left' as LiftSide)).toThrow(/straight/);
     expect(() => w.descend(L)).toThrow(/не лестница/);
     expect(w.run().instances.length).toBe(run.instances.length);
   });
 
-  it('ascend: этаж +floor, связь lift, логово ровно на roll.lair, повтор — тот же id, детерминизм', () => {
+  it('ascend: этаж ±floor, связь lift, логово ровно на roll.lair, повтор — тот же id, детерминизм', () => {
     const play = (order: (x: [number, LiftSide][]) => [number, LiftSide][]) => {
       const { w, L } = withLift(p, s);
       const got: string[][] = [];
       w.onChange((ids) => got.push(ids));
       const ids = new Map<string, string>();
-      for (const [f, side] of order(exitsOf(liftRoll(w, L).floors))) ids.set(`${f}:${side}`, w.ascend(L, f, side));
+      for (const [f, side] of order(exitsOf(liftRoll(w, L)))) ids.set(`${f}:${side}`, w.ascend(L, f, side));
       return { w, L, ids, got };
     };
     const { w, L, ids, got } = play((x) => x);
     const roll = liftRoll(w, L);
     expect(roll.floors).toBeGreaterThanOrEqual(3);
     expect(roll.floors).toBeLessThanOrEqual(6);
+    expect(roll.down).toBeGreaterThanOrEqual(1);
+    expect(roll.down).toBeLessThanOrEqual(2);
+    const n = 2 * (roll.floors + roll.down);
     expect(got).toEqual([...ids.values()].map((id) => [id]));
     const run = w.run();
     const li = inst(run, L);
     const lifts = run.links.filter((l) => l.kind === 'lift');
-    expect(lifts).toHaveLength(2 * roll.floors);
+    expect(lifts).toHaveLength(n);
     let lairs = 0;
-    for (const [f, side] of exitsOf(roll.floors)) {
+    for (const [f, side] of exitsOf(roll)) {
       const id = ids.get(`${f}:${side}`)!;
       // повторный вызов и liftExitOf — тот же id, мир не меняется
       expect(w.ascend(L, f, side)).toBe(id);
@@ -177,13 +181,14 @@ describe('бесконечный мир: «Ржавый лифт» и выход
       }
     }
     expect(lairs).toBe(1);
-    expect(got.length).toBe(2 * roll.floors); // повторные вызовы ничего не меняют
-    // этажи — своё измерение занятости: выходы над лифтом не пересекаются ни с ним, ни друг с другом между этажами
+    expect(got.length).toBe(n); // повторные вызовы ничего не меняют
+    // этажи — своё измерение занятости: выходы над и под лифтом не пересекаются ни с ним, ни друг с другом между этажами
     const pairs = overlapPairs(p, run);
     for (const [a, b] of pairs) expect(inst(run, a).floor ?? 0).toBe(inst(run, b).floor ?? 0);
     expect(validateFoldRun(p, run)).toEqual([]);
-    expect(w.stats()).toMatchObject({ lifts: 2 * roll.floors, descents: 0, floors: 1 + roll.floors, minFloor: 0, maxFloor: (li.floor ?? 0) + roll.floors });
-    expect(run.warnings.some((x) => x.includes(`выходов лифтов ${2 * roll.floors}`))).toBe(true);
+    const lf = li.floor ?? 0;
+    expect(w.stats()).toMatchObject({ lifts: n, descents: 0, floors: 1 + roll.floors + roll.down, minFloor: Math.min(0, lf - roll.down), maxFloor: lf + roll.floors });
+    expect(run.warnings.some((x) => x.includes(`выходов лифтов ${n}`))).toBe(true);
     // тот же сид и те же действия — тот же мир
     const b = play((x) => x);
     expect(strip(b.w.run())).toEqual(strip(run));
@@ -226,6 +231,13 @@ describe('бесконечный мир: «Ржавый лифт» и выход
       docked++;
     }
     expect(docked).toBe(roll.floors);
+    // и этаж ниже входа: та же стыковка, этаж лифта − 1
+    const idDown = w.ascend(L, -1, 'straight');
+    const rd = w.run();
+    expect(inst(rd, idDown).floor).toBe((inst(rd, L).floor ?? 0) - 1);
+    expect(rd.links.find((l) => l.kind === 'lift' && l.b.inst === idDown)).toMatchObject({ floors: -1, side: 'straight' });
+    const Bd = instanceWorld(p, inst(rd, idDown)).connectors.find((c) => c.id === rd.links.find((l) => l.kind === 'lift' && l.b.inst === idDown)!.b.connector)!;
+    expect(Bd.side).toBe(OPPOSITE[instanceWorld(p, inst(rd, L)).connectors[0].side]);
     // обе стороны одного этажа: вторая тоже лицом к своей стороне шахты (в своём слое, если углы комнат сошлись)
     const id2 = w.ascend(L, 1, 'right');
     const run = w.run();
@@ -326,6 +338,7 @@ describe('бесконечный мир: «Ржавый лифт» и выход
     };
     const lift = (r: Run) => r.links.find((l) => l.kind === 'lift')!;
     expect(bad((r) => { lift(r).floors! += 1; })).toMatch(/этаж/);
+    expect(bad((r) => { lift(r).floors = 0; })).toMatch(/floors = 0/);
     expect(bad((r) => { lift(r).a.inst = r.instances[0].id; })).toMatch(/не из лифта/);
     expect(bad((r) => { lift(r).side = 'left' as LiftSide; })).toMatch(/side/);
     expect(bad((r) => { lift(r).kind = 'descent'; })).toMatch(/не из спец-локации|этаж/);
