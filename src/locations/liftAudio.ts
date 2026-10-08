@@ -29,6 +29,8 @@ export interface LiftAudioCounters {
   step: number;
   thrown: number;
   drip: number;
+  kick: number;
+  ping: number;
 }
 
 /** Состояние кадра для непрерывных слоёв. */
@@ -44,6 +46,8 @@ export interface LiftAudioFrame {
   top: V3;
   /** застрявшая доска: точка и сила скрежета 0…1 (null — нет) */
   board: { at: V3; scrape: number } | null;
+  /** натяжение троса 0…1: доска держит кабину, лебёдка тянет (клетка — растёт с износом до обрыва); 0 — нет */
+  strain: number;
 }
 
 const rnd = (a: number, b: number) => a + Math.random() * (b - a);
@@ -52,7 +56,7 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 export class LiftAudio {
   ctx: AudioContext | null = null;
   enabled: boolean;
-  readonly counters: LiftAudioCounters = { depart: 0, arrive: 0, pass: 0, board: 0, freed: 0, bang: 0, creak: 0, clink: 0, gate: 0, lever: 0, step: 0, thrown: 0, drip: 0 };
+  readonly counters: LiftAudioCounters = { depart: 0, arrive: 0, pass: 0, board: 0, freed: 0, bang: 0, creak: 0, clink: 0, gate: 0, lever: 0, step: 0, thrown: 0, drip: 0, kick: 0, ping: 0 };
   private master!: GainNode;
   private analyser: AnalyserNode | null = null;
   private sfx!: GainNode;
@@ -65,6 +69,9 @@ export class LiftAudio {
   private motor: { pan: PannerNode; gain: GainNode; whine: OscillatorNode; saw: OscillatorNode; cable: GainNode; cablePan: PannerNode } | null = null;
   /** скрежет доски о стену */
   private scrape: { pan: PannerNode; gain: GainNode; flt: BiquadFilterNode } | null = null;
+  /** натянутый трос: поющая струна (узкая полоса шума + тон) и надрыв лебёдки (низкая пила) у крюка */
+  private strainL: { pan: PannerNode; sing: GainNode; flt: BiquadFilterNode; hum: OscillatorNode; humG: GainNode; groan: GainNode; saw: OscillatorNode } | null = null;
+  private pingIn = 1;
   /** гул логова (позиционный) */
   private lair: { pan: PannerNode; gain: GainNode } | null = null;
   private lairAt: V3 | null = null;
@@ -153,6 +160,7 @@ export class LiftAudio {
     this.ambience();
     this.makeMotor();
     this.makeScrape();
+    this.makeStrain();
     if (this.lairAt) this.makeLair(this.lairAt);
   }
 
@@ -282,6 +290,50 @@ export class LiftAudio {
     s.start();
     tr.start();
     this.scrape = { pan, gain, flt };
+  }
+
+  /** Натянутый трос: поёт узкой полосой шума и тоном (высота растёт с натяжением, дрожит), снизу — надрыв лебёдки. */
+  private makeStrain() {
+    const ctx = this.ctx!;
+    const pan = this.panner({ x: 0, y: 0, z: 0 }, 1.5, 1);
+    this.out(pan, 0.8);
+    const s = ctx.createBufferSource();
+    s.buffer = this.noise;
+    s.loop = true;
+    const flt = ctx.createBiquadFilter();
+    flt.type = 'bandpass';
+    flt.frequency.value = 400;
+    flt.Q.value = 30;
+    const sing = ctx.createGain();
+    sing.gain.value = 0;
+    s.connect(flt).connect(sing).connect(pan);
+    // тон струны с дрожью (вибрато 6 Гц)
+    const hum = ctx.createOscillator();
+    hum.type = 'triangle';
+    hum.frequency.value = 400;
+    const vib = ctx.createOscillator();
+    vib.frequency.value = 6;
+    const vibG = ctx.createGain();
+    vibG.gain.value = 6;
+    vib.connect(vibG).connect(hum.frequency);
+    const humG = ctx.createGain();
+    humG.gain.value = 0;
+    hum.connect(humG).connect(pan);
+    // надрыв лебёдки: низкая пила через низкочастотный фильтр
+    const saw = ctx.createOscillator();
+    saw.type = 'sawtooth';
+    saw.frequency.value = 40;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 170;
+    const groan = ctx.createGain();
+    groan.gain.value = 0;
+    saw.connect(lp).connect(groan).connect(pan);
+    s.start();
+    hum.start();
+    vib.start();
+    saw.start();
+    this.strainL = { pan, sing, flt, hum, humG, groan, saw };
   }
 
   /** Гул логова: низкие пилы, рычащий шум и медленное «дыхание»; источник — в проёме логова. */
@@ -424,6 +476,25 @@ export class LiftAudio {
       sc.gain.gain.setTargetAtTime(0.5 * s, t, 0.05);
       sc.flt.frequency.setTargetAtTime(900 + 900 * s, t, 0.05);
     }
+    // натянутый трос: громче и выше с натяжением; щелчки лопающихся проволок — чаще к обрыву
+    const st = this.strainL;
+    const k = clamp01(f.strain);
+    if (st) {
+      setPos(st.pan, f.hook);
+      st.sing.gain.setTargetAtTime(0.25 * k * k, t, 0.15);
+      st.flt.frequency.setTargetAtTime(380 + 1100 * k, t, 0.3);
+      st.hum.frequency.setTargetAtTime(380 + 1100 * k, t, 0.3);
+      st.humG.gain.setTargetAtTime(0.035 * k * k, t, 0.15);
+      st.groan.gain.setTargetAtTime(0.18 * k, t, 0.2);
+      st.saw.frequency.setTargetAtTime(38 + 16 * k, t, 0.3);
+    }
+    if (k > 0.05) {
+      this.pingIn -= dt * (0.4 + 5 * k * k);
+      if (this.pingIn <= 0) {
+        this.pingIn = rnd(0.6, 1.4);
+        this.ping({ x: f.hook.x + rnd(-0.2, 0.2), y: f.hook.y + rnd(0, 1.5), z: f.hook.z + rnd(-0.2, 0.2) }, k);
+      }
+    }
     // скрип строп/цепей на развороте качания (смена знака скорости крена) и звяканье
     if (f.sway > 0.04 && Math.sign(f.swayVel) !== Math.sign(this.lastVel) && this.lastVel !== 0) this.creak(f.hook, clamp01(f.sway));
     this.lastVel = f.swayVel;
@@ -476,6 +547,16 @@ export class LiftAudio {
     tr.connect(tg).connect(c.g.gain);
     tr.start(c.t);
     tr.stop(c.t + dur);
+  }
+
+  /** Лопнула проволока троса: резкий щелчок и короткий звон струны. */
+  private ping(p: V3, k: number) {
+    this.counters.ping++;
+    const pn = this.panner(p, 1.3, 1);
+    this.out(pn, 0.7);
+    this.burst(this.noise, 0.012, 'highpass', 4000, 0.7, 0.25 + 0.4 * k, pn, 0, 0.001);
+    const f = rnd(900, 1600) * (1 + 0.5 * k);
+    this.tone('triangle', f, f * 0.94, rnd(0.15, 0.3), 0.06 + 0.1 * k, pn, 0.004, 0.002);
   }
 
   /** Звяканье цепи / решётки. */
@@ -543,6 +624,19 @@ export class LiftAudio {
     const d = this.burst(this.noise, 2.2, 'highpass', 2600, 0.5, 0.12, g, 0.08, 0.12);
     d.flt.frequency.linearRampToValueAtTime(5200, d.t + 2.2);
     this.burst(this.noise, 1.4, 'bandpass', 700, 0.8, 0.08, g, 0.15, 0.3);
+  }
+
+  /** Клетка: спихнули доску — глухой удар ногой по дереву, треск, и трос «отпускает» (звон вниз по высоте). */
+  kick(at: V3) {
+    if (!this.ctx) return;
+    this.counters.kick++;
+    const pn = this.panner(at, 1.8, 0.9);
+    this.out(pn, 0.9);
+    this.burst(this.brown, 0.18, 'lowpass', 520, 0.8, 0.9, pn, 0, 0.002);
+    this.tone('sine', 110, 55, 0.25, 0.6, pn, 0, 0.002);
+    for (let k = 0; k < 5; k++) this.burst(this.noise, rnd(0.02, 0.05), 'highpass', rnd(1600, 3200), 0.8, 0.6, pn, 0.03 + k * rnd(0.01, 0.03), 0.001);
+    const hk = this.strainL?.pan ?? pn;
+    this.tone('triangle', 900, 260, 0.7, 0.12, hk, 0.08, 0.005);
   }
 
   /** Доска выпала: треск, свист вниз по шахте (источник уходит вниз), далёкий удар со дна. */
@@ -669,6 +763,7 @@ export class LiftAudio {
     this.disposed = true;
     this.motor = null;
     this.scrape = null;
+    this.strainL = null;
     this.lair = null;
     const c = this.ctx;
     this.ctx = null;

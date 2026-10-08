@@ -47,7 +47,7 @@ import liftUrl from './assets/lift.glb?url';
 import type { LiftSide, LiftSpec } from '../model/types';
 import {
   boardAhead, callLift, createLift, liftExits, liftFloorLabel, rollLift, stepLift, swingCoef,
-  LIFT_FLOOR_M, LIFT_HALF_X, LIFT_HALF_Z, LIFT_SLIP, LIFT_TILT_DEG,
+  LIFT_CABLE, LIFT_FLOOR_M, LIFT_HALF_X, LIFT_HALF_Z, LIFT_SLIP, LIFT_TILT_DEG,
   type LiftAxis, type LiftEvent, type LiftExit, type LiftPhase, type LiftRoll, type LiftState,
 } from './lift';
 import { collide2, hash01, type Box2 } from './stairLoop';
@@ -83,10 +83,11 @@ export interface LiftHud {
   down: number;
   /** высота пола кабины, м */
   y: number;
-  /** раскачка: крен, амплитуда (доли предела), сколько ещё качает доска, с; ось */
+  /** раскачка: крен, амплитуда (доли предела), доска держит (качает), износ троса клетки (доля обрыва); ось */
   phi: number;
   amp: number;
-  pump: number;
+  stuck: boolean;
+  wear: number;
   axis: LiftAxis | null;
   lair: { floor: number; side: LiftSide } | null;
   /** игрок в кабине; этаж под ногами вне кабины */
@@ -193,6 +194,8 @@ export class LiftScene {
   private deaths = 0;
   private dead: LiftHud['dead'] = null;
   private fall: { t: number; from: Vector3; dir: Vector3 } | null = null;
+  /** натяжение троса для звука (0…1) — последнее посчитанное */
+  private strainNow = 0;
   /** клетка: трос оборвался — кабина с игроком падает (t — с обрыва, y0 — высота кабины в момент обрыва) */
   private drop: { t: number; y0: number } | null = null;
   private board: { phase: 'fall' | 'stuck' | 'drop'; t: number; side: LiftSide; segment: number; y0?: number } | null = null;
@@ -784,13 +787,16 @@ export class LiftScene {
     const fwd = this.camera.getDirection(Vector3.Forward());
     const up = this.camera.getDirection(Vector3.Up());
     const cageY = s.y;
+    // натяжение троса: доска держит кабину, лебёдка тянет; клетка — растёт с износом до обрыва
+    this.strainNow = s.phase === 'jammed' && sw?.stuck ? (this.roll.variant === 'cage' ? 0.3 + 0.7 * Math.min(1, s.wear / LIFT_CABLE) : 0.35) : 0;
     this.audio.update(dt, { x: eye.x, y: eye.y, z: eye.z }, { x: fwd.x, y: fwd.y, z: fwd.z }, { x: up.x, y: up.y, z: up.z }, {
       moving: s.phase === 'moving' ? 1 : 0,
       sway: sw?.amp ?? 0,
       swayVel: sw ? sw.vel / co.w : 0,
       hook: { x: 0, y: cageY + this.pivotY, z: 0 },
       top: { x: 0, y: this.roll.floors * FM + 4.6, z: 0 },
-      board: this.board?.phase === 'stuck' && sw ? { at: this.boardWorld(), scrape: clamp(Math.abs(sw.vel) / co.w, 0, 1) * (sw.pump > 0 ? 1 : 0.3) } : null,
+      board: this.board?.phase === 'stuck' && sw ? { at: this.boardWorld(), scrape: clamp(Math.abs(sw.vel) / co.w, 0, 1) * (sw.stuck ? 1 : 0.3) } : null,
+      strain: this.strainNow,
     });
     if (performance.now() - this.hudAt > 120) this.emitHud();
   }
@@ -1019,6 +1025,14 @@ export class LiftScene {
       case 'thrown':
         this.startFall(e.axis, e.dir);
         break;
+      case 'kick': {
+        // клетка: игрок подбежал к доске и спихнул её — удар по дереву, треск, пыль; дальше freed (доска летит вниз)
+        const p = this.boardWorld();
+        this.audio.kick(p);
+        this.burst(this.dust, p, 90);
+        this.shake = Math.max(this.shake, 0.5);
+        break;
+      }
       case 'fray': {
         // трос трещит: лопнула прядь у проушины — звон, искры, рывок
         const p = this.hookWorld();
@@ -1288,7 +1302,8 @@ export class LiftScene {
       y: s.y,
       phi: sw?.phi ?? 0,
       amp: sw?.amp ?? 0,
-      pump: Math.max(0, sw?.pump ?? 0),
+      stuck: !!sw?.stuck,
+      wear: this.roll.variant === 'cage' ? Math.min(1, s.wear / LIFT_CABLE) : 0,
       axis: sw?.axis ?? null,
       lair: this.roll.lair,
       inCage: this.inCage,
@@ -1333,11 +1348,16 @@ export class LiftScene {
     this.sync();
   }
 
+  /** QA: звук — натяжение троса и счётчики событий. */
+  qaAudio() {
+    return { strain: this.strainNow, counters: { ...this.audio.counters } };
+  }
+
   qaState() {
     const s = this.state;
     return {
       phase: s.phase, y: +s.y.toFixed(3), floor: s.floor, target: s.target, variant: this.roll.variant, floors: this.roll.floors,
-      lair: this.roll.lair, swing: s.swing ? { axis: s.swing.axis, phi: +s.swing.phi.toFixed(3), amp: +s.swing.amp.toFixed(3), pump: +s.swing.pump.toFixed(2) } : null,
+      lair: this.roll.lair, swing: s.swing ? { axis: s.swing.axis, phi: +s.swing.phi.toFixed(3), amp: +s.swing.amp.toFixed(3), stuck: s.swing.stuck } : null, wear: +s.wear.toFixed(2),
       pos: { x: +this.pos.x.toFixed(2), z: +this.pos.z.toFixed(2) }, feet: +this.feet.toFixed(2), inCage: this.inCage, board: this.board?.phase ?? null,
       dead: this.dead, exited: this.exited, attempt: s.attempt, events: this.log.slice(-12).map((l) => l.e.type),
       meshes: this.scene.meshes.length, active: this.scene.getActiveMeshes().length,

@@ -3,8 +3,8 @@
 //
 // Вкладка 3D → «Комната» → «Ржавый лифт А — клетка» / «Б — каретка» → «Войти в локацию» (доска на каждом пролёте —
 // window.__rfLiftSpec):
-//  (а) клетка: вход по узкому коридору этажа 0, в кабину, кнопка «вверх» → доска (пыль, крен), бот гасит раскачку,
-//      перебегая на поднявшуюся сторону → кабина едет дальше → этаж 1, оба проёма открыты; этаж логова — дверь
+//  (а) клетка: вход по узкому коридору этажа 0, в кабину, кнопка «вверх» → доска (пыль, крен), трос натягивается,
+//      бот подбегает к доске и спихивает её → стихло, кабина едет дальше → этаж 1, оба проёма открыты; этаж логова — дверь
 //      логова в конце коридора, подсказка «E — открыть»; выход через конец коридора → onExit;
 //  (б) каретка: доска → игрок стоит → выброс в шахту → экран смерти, подсказка → «Ещё раз» (новая попытка у входа);
 //  (б2) клетка: доска → игрок стоит → трос трещит дважды и рвётся → клетка с игроком падает → «Трос оборвался»
@@ -81,6 +81,33 @@ const PILOT = () => {
         if (s.state.phase === 'thrown' || s.hud().dead) return false;
       }
       return false;
+    },
+    /** клетка: подбежать к застрявшей доске (край +оси качания механики; в мире сцены x = −0.85 по оси x, z = +1.35
+     *  по оси z), спихнуть и стоять до steady; журнал событий и натяжение троса (звук) до и после пинка */
+    kick(s, maxSec = 30) {
+      const evs = [];
+      let seen = s.log.length;
+      let strainBefore = 0, strainAfter = 1;
+      for (let k = 0; k < maxSec * 60; k++) {
+        const sw = s.state.swing;
+        let f = 0;
+        if (sw && sw.stuck) {
+          const tx = sw.axis === 'x' ? -0.85 : 0, tz = sw.axis === 'z' ? 1.35 : 0;
+          const dx = tx - s.pos.x, dz = tz - s.pos.z, d = Math.hypot(dx, dz);
+          if (d > 0.05) s.camera.rotation.y = Math.atan2(dx, dz);
+          f = d > 0.05 ? Math.min(1, d / 0.15) : 0;
+        }
+        s.simulate(1 / 60, { f, s: 0, run: true });
+        s.sync();
+        const st = s.qaAudio?.().strain ?? null;
+        for (; seen < s.log.length; seen++) evs.push(s.log[seen].e.type);
+        if (st !== null) {
+          if (!evs.includes('kick')) strainBefore = Math.max(strainBefore, st);
+          else strainAfter = st;
+        }
+        if (evs.includes('steady') || evs.includes('snap') || evs.includes('arrive')) break;
+      }
+      return { evs, strainBefore, strainAfter, wear: s.state.wear };
     },
     /** в раскачке — на поднявшуюся сторону (frac — доля полуразмера), до steady; журнал событий */
     balance(s, frac = 0.5, maxSec = 40, react = 0.25) {
@@ -182,12 +209,17 @@ try {
   await page.evaluate((sd) => window.__rfLift.place(0, 0, sd === 'right' ? -Math.PI / 2 : 0, -0.25), side);
   await page.evaluate(() => window.__rfLift.advance(0.6));
   await shot(page, 'lift-6-board-wedged.png');
-  // раскачка: бот гасит на поднявшуюся сторону
+  // раскачка: трос натягивается; бот подбегает к доске и спихивает её
   await page.evaluate(() => window.__rfLift.advance(0.8));
   await shot(page, 'lift-7-sway-tilt.png');
-  const bal = await page.evaluate(() => window.__lp.balance(window.__rfLift, 0.5, 40, 0.25));
+  const kicked = await page.evaluate(() => window.__lp.kick(window.__rfLift));
   const st2 = await page.evaluate(() => window.__rfLift.qaState());
-  ok('(а) клетку не выбросило, раскачка стихла — едет дальше', bal.includes('steady') && !bal.includes('thrown'), bal.filter((e) => e !== 'sway').join(','));
+  const bal = kicked.evs;
+  ok(
+    '(а) клетка: подбежал к доске — спихнул, трос отпустило, стихло — едет дальше',
+    bal.includes('kick') && bal.indexOf('freed') === bal.indexOf('kick') + 1 && bal.includes('steady') && !bal.includes('snap') && kicked.strainBefore > 0.3 && kicked.strainAfter === 0,
+    JSON.stringify({ ev: bal.filter((e) => e !== 'sway').join(','), strain: [+kicked.strainBefore.toFixed(2), kicked.strainAfter], wear: +kicked.wear.toFixed(2) }),
+  );
   const arr = await page.evaluate(() => {
     const s = window.__rfLift;
     for (let k = 0; k < 60 * 20 && s.state.phase !== 'idle'; k++) {
@@ -262,13 +294,13 @@ try {
   });
   ok('(а2) по умолчанию первый подъём — доска', def.ev.includes('board'), def.ev.join(','));
   ok('(а2) у лифта есть этажи ниже входа', def.down >= 1, `вниз ${def.down}, вверх ${def.st.floors}`);
-  // погасить, вернуться вниз на самый нижний этаж
+  // клетка: спихнуть доску, вернуться вниз на самый нижний этаж
   const low = await page.evaluate(() => {
     const s = window.__rfLift;
-    window.__lp.balance(s, 0.5, 40, 0.25);
+    window.__lp.kick(s);
     for (let g = 0; g < 12 && s.state.floor !== -s.roll.down; g++) {
       if (s.state.phase !== 'idle' && s.state.phase !== 'moving') {
-        window.__lp.balance(s, 0.5, 40, 0.25);
+        window.__lp.kick(s);
         continue;
       }
       s.press('down');

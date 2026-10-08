@@ -136,7 +136,8 @@ export function LiftLayer(props: { viewer: BlockoutViewer | null; req: LiftReque
           {h.axis && (
             <>
               <div>
-                качает по {h.axis === 'x' ? 'ширине' : 'длине'} · крен {h.phi.toFixed(2)} · доска {h.pump > 0 ? `ещё ${h.pump.toFixed(1)} с` : 'выпала'}
+                качает по {h.axis === 'x' ? 'ширине' : 'длине'} · крен {h.phi.toFixed(2)} · доска {h.stuck ? 'держит' : 'выпала'}
+                {h.variant === 'cage' ? ` · трос ${Math.round(h.wear * 100)}%` : ''}
               </div>
               <div className="v3-loc-meter" title="Амплитуда раскачки (1 — предел)">
                 <span style={{ width: `${Math.round(Math.min(1, h.amp) * 100)}%` }} />
@@ -172,7 +173,11 @@ export function LiftLayer(props: { viewer: BlockoutViewer | null; req: LiftReque
         <div className="v3-loc-dead">
           <div>
             <h2>{h.dead.reason === 'snap' ? 'Трос оборвался' : 'Вас выбросило в шахту'}</h2>
-            {h.deaths >= 1 && <p className="hint">Кренит — перебегай на поднявшуюся сторону</p>}
+            {h.deaths >= 1 && (
+              <p className="hint">
+                {h.dead.reason === 'snap' ? 'Доска держит клетку, а лебёдка тянет — подбеги к доске и спихни её' : 'Кренит — перебегай на поднявшуюся сторону'}
+              </p>
+            )}
             <button className="btn primary" onClick={() => sceneRef.current?.retry()}>
               Ещё раз
             </button>

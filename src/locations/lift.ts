@@ -5,7 +5,8 @@
 //
 // Коротко (для игрока): кнопкой — на этаж. Тряхнуло доской — площадку кренит: перебегай на поднявшуюся сторону
 // (до края не обязательно); на опустившейся раскачаешь сильнее, стоя на месте — не погасишь. С каретки сильный крен выбрасывает в
-// шахту; клетка бьётся о стены, а трос долгой раскачки не держит — рвётся, клетка падает. На каждом этаже два выхода — прямо и направо; за
+// шахту, а доска выпадет, только когда раскачка погашена. Клетка бьётся о стены, трос натягивается и долгой раскачки
+// не держит — рвётся; доску в клетке надо спихнуть: подбежать к ней по площадке. На каждом этаже два выхода — прямо и направо; за
 // одним из них на одном из этажей — логово: оттуда тянет красным светом и гулом.
 import { hashSeed, makeRng } from '../model/rng';
 import type { LiftSide, LiftSpec } from '../model/types';
@@ -21,7 +22,7 @@ export const DEFAULT_LIFT: LiftSpec = {
   boardFirst: true,
   boardKick: 0.5,
   boardPumpS: [4, 6],
-  swingPeriod: 5,
+  swingPeriod: 7,
   darkness: 0.7,
 };
 
@@ -50,7 +51,7 @@ export const LIFT_ZETA_FREE = 0.12;
  * (по x до ±1.0, по длинной оси z до ±1.5 — там бежать дальше, но и гасит сильнее).
  * Стоять у одного края — в среднем за период ноль: гасить можно, только перебегая на верхний край.
  */
-export const LIFT_PLAYER_DAMP = 3.5;
+export const LIFT_PLAYER_DAMP = 5;
 /** Застрявшая доска раскачивает в такт: без игрока амплитуда растёт на столько долей предела в секунду. */
 export const LIFT_PUMP_RATE = 0.16;
 /** Скольжение игрока к нижнему краю: скорость, м/с, при |φ| = 1 (линейно по φ). Движок применяет его к игроку. */
@@ -60,16 +61,22 @@ export const LIFT_RUN = 3;
 /** Клетка: удар о стену шахты гасит скорость крена до этой доли (отскок). */
 export const LIFT_BOUNCE = 0.45;
 /**
- * Трос клетки: изнашивается, пока амплитуда качания выше LIFT_WEAR_AMP, — износ += (amp − LIFT_WEAR_AMP)·dt за попытку
- * (между досками не восстанавливается); износ LIFT_CABLE — обрыв, клетка падает в шахту (смерть). Боты (lift.test.ts,
- * 200 сидов): стоит в центре — износ ≥ 2.1, у края — ≥ 2.1, бежит на опустившуюся сторону — ≥ 74; перебегает на
- * поднявшуюся с реакцией 0.3 с — ≤ 0.9, на полплощадки с реакцией 0.5 / 0.7 с — ≤ 0.6 / ≤ 1.3: бездействие рвёт трос
- * всегда, кто гасит раскачку — доезжает.
+ * Трос клетки: пока доска держит кабину, а лебёдка тянет, трос натягивается — износ += (LIFT_WEAR_BASE +
+ * LIFT_WEAR_SWAY·min(1, amp))·dt (раскачка рвёт сильнее), за попытку; спихнули доску — износ стоит. Износ LIFT_CABLE —
+ * обрыв, клетка падает в шахту (смерть). Стоять на месте — обрыв через ~LIFT_CABLE секунд.
  */
-export const LIFT_WEAR_AMP = 0.5;
-export const LIFT_CABLE = 1.7;
+export const LIFT_WEAR_BASE = 0.4;
+export const LIFT_WEAR_SWAY = 0.6;
+export const LIFT_CABLE = 8;
 /** «Трос трещит» (событие fray): износ дошёл до этих долей LIFT_CABLE. */
 export const LIFT_FRAY: readonly number[] = [1 / 3, 2 / 3];
+/** Каретка: доска раскачивает не меньше pumpS секунд и выпадает, как только амплитуда ниже LIFT_FREE_AMP (раскачку
+ *  погасили); не погасили — качает дальше. Бездействие (стоять где угодно) не гасит — выбросит. */
+export const LIFT_FREE_AMP = 0.3;
+/** Клетка: доска сидит, пока её не спихнут — игрок подбегает по площадке к её краю (+ось качания: «направо» — +x,
+ *  «прямо» — +z) ближе LIFT_KICK_REACH, м, не раньше LIFT_KICK_DELAY с после удара. */
+export const LIFT_KICK_REACH = 0.45;
+export const LIFT_KICK_DELAY = 0.5;
 /** «Стихло»: амплитуда ниже LIFT_STEADY_AMP дольше LIFT_STEADY_S после того, как доска перестала качать. */
 export const LIFT_STEADY_AMP = 0.1;
 export const LIFT_STEADY_S = 1;
@@ -125,7 +132,9 @@ export interface LiftSwing {
   phi: number;
   /** dφ/dt, 1/с */
   vel: number;
-  /** сколько ещё секунд доска раскачивает (≤ 0 — выпала) */
+  /** доска застряла и раскачивает (выпала / спихнули — false) */
+  stuck: boolean;
+  /** каретка: сколько ещё секунд доска раскачивает наверняка (≤ 0 — выпадет, как только раскачку погасят) */
   pump: number;
   /** сколько секунд подряд амплитуда ниже LIFT_STEADY_AMP (после выпадения доски) */
   calm: number;
@@ -173,6 +182,8 @@ export type LiftEvent =
   | { type: 'sway'; amp: number; phi: number }
   /** клетка ударилась о стену шахты (strength — скорость удара в долях ω, 0…; dir — край) */
   | { type: 'bang'; strength: number; dir: 1 | -1 }
+  /** клетка: игрок подбежал к доске и спихнул её (следом — freed) */
+  | { type: 'kick' }
   /** доска выпала и полетела вниз по шахте — больше не качает */
   | { type: 'freed' }
   /** раскачка стихла — лифт едет дальше */
@@ -229,6 +240,9 @@ function range(v: unknown, d: [number, number], lim: readonly [number, number], 
 
 /** Толерантный разбор: не объект или kind ≠ 'lift' — null; мусорные поля — по умолчанию; диапазоны
  *  упорядочиваются и зажимаются в LIFT_LIMITS (этажи — целые: вверх ≥ 1, вниз ≥ 0). */
+const oldDefaults = (o: Record<string, unknown>): boolean =>
+  o.swingPeriod === 5 && o.boardKick === 0.5 && Array.isArray(o.boardPumpS) && o.boardPumpS[0] === 4 && o.boardPumpS[1] === 6;
+
 export function normLift(v: unknown): LiftSpec | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
@@ -245,7 +259,9 @@ export function normLift(v: unknown): LiftSpec | null {
     boardFirst: typeof o.boardFirst === 'boolean' ? o.boardFirst : D.boardFirst,
     boardKick: num(o.boardKick, D.boardKick, L.boardKick),
     boardPumpS: range(o.boardPumpS, D.boardPumpS, L.boardPumpS, false),
-    swingPeriod: num(o.swingPeriod, D.swingPeriod, L.swingPeriod),
+    // старые значения по умолчанию (период 5 с при толчке 0.5 и доске 4–6 с) — к новым: раскачка медленнее, больше
+    // времени на реакцию (свои значения не трогаются)
+    swingPeriod: oldDefaults(o) ? D.swingPeriod : num(o.swingPeriod, D.swingPeriod, L.swingPeriod),
     darkness: num(o.darkness, D.darkness, L.darkness),
   };
 }
@@ -325,7 +341,8 @@ export function liftRule(spec: LiftSpec): string {
   const down = spec.floorsDown[1] <= 0 ? '' : ` и ${span(spec.floorsDown)} под ним`;
   return `Кнопки на посту — вверх или вниз: ${span(spec.floorsUp)} эт. над входом${down}, на каждом — выходы прямо (узкий, над входом) и направо (широкий). ` +
     `Тряхнуло доской — площадку кренит: перебегай на поднявшуюся сторону (до края не обязательно); на опустившейся — раскачаешь сильнее, стоя на месте — не погасишь. ` +
-    `С каретки сильный крен сбрасывает в шахту; клетка бьётся о стены, но долгой раскачки трос не держит — рвётся.` + lair;
+    `С каретки сильный крен сбрасывает в шахту, а доска выпадет, только когда раскачку погасишь. ` +
+    `Клетку доска держит, пока её не спихнёшь — подбеги к ней по площадке: трос натягивается и долго не выдержит.` + lair;
 }
 
 // ───────────────────────── Механика ─────────────────────────
@@ -384,8 +401,10 @@ export function callLift(s: LiftState, floor: number): LiftEvent[] {
  * jammed: φ'' = −ω²φ − (2ζω + c_p)·φ' + P·sign(φ') (последнее — пока доска качает, pump > 0; выпала — freed);
  *         c_p = LIFT_PLAYER_DAMP·(−d·sgn φ): игрок на верхнем краю гасит, на нижнем раскачивает; d — плечо, м: положение
  *         игрока по оси качания в долях полуразмера (−1…1), sgn φ сглажен у нуля (|φ| < 0.05). |φ| ≥ 1: каретка — thrown (смерть),
- *         клетка — bang (отскок с LIFT_BOUNCE). Клетка: износ троса += (amp − LIFT_WEAR_AMP)·dt при amp > LIFT_WEAR_AMP,
- *         на долях LIFT_FRAY — fray, износ LIFT_CABLE — snap (смерть). Доска выпала и амплитуда < LIFT_STEADY_AMP
+ *         клетка — bang (отскок с LIFT_BOUNCE). Доска: каретка — качает не меньше pumpS, затем выпадает (freed), как
+ *         только amp < LIFT_FREE_AMP; клетка — сидит, пока игрок не подбежит к её краю (+ось качания) ближе
+ *         LIFT_KICK_REACH (kick, freed). Клетка, пока доска сидит: износ троса += (LIFT_WEAR_BASE + LIFT_WEAR_SWAY·min(1,
+ *         amp))·dt, на долях LIFT_FRAY — fray, LIFT_CABLE — snap (смерть). Доска выпала и амплитуда < LIFT_STEADY_AMP
  *         дольше LIFT_STEADY_S — steady, едет дальше к target.
  * thrown, snapped — терминальные: шаг ничего не делает.
  */
@@ -403,7 +422,10 @@ export function stepLift(spec: LiftSpec, s: LiftState, dt: number, player: { x: 
     s.t += h;
     if (s.phase === 'moving') moveStep(spec, s, h, speed, co, ev);
     // плечо веса игрока, м: на длинной оси (z) — до 1.5 м, сильнее (бежать дальше, зато и гасит сильнее)
-    else if (s.phase === 'jammed') swingStep(s, h, s.swing!.axis === 'x' ? px * LIFT_HALF_X : pz * LIFT_HALF_Z, co, ev);
+    else if (s.phase === 'jammed') {
+      const half = s.swing!.axis === 'x' ? LIFT_HALF_X : LIFT_HALF_Z;
+      swingStep(s, h, (s.swing!.axis === 'x' ? px : pz) * half, half, co, ev);
+    }
   }
   return ev;
 }
@@ -425,7 +447,7 @@ function moveStep(spec: LiftSpec, s: LiftState, h: number, speed: number, co: Re
         const axis: LiftAxis = b.side === 'straight' ? 'z' : 'x';
         const kick = fin(spec.boardKick) ? spec.boardKick : DEFAULT_LIFT.boardKick;
         const vel = -kick * co.w;
-        s.swing = { axis, phi: 0, vel, pump: b.pumpS, calm: 0, amp: kick, t: 0, ampEv: kick };
+        s.swing = { axis, phi: 0, vel, stuck: true, pump: b.pumpS, calm: 0, amp: kick, t: 0, ampEv: kick };
         ev.push({ type: 'board', segment: seg, side: b.side, axis, pumpS: b.pumpS });
         return;
       }
@@ -447,9 +469,9 @@ function moveStep(spec: LiftSpec, s: LiftState, h: number, speed: number, co: Re
   }
 }
 
-function swingStep(s: LiftState, h: number, arm: number, co: ReturnType<typeof swingCoef>, ev: LiftEvent[]): void {
+function swingStep(s: LiftState, h: number, arm: number, half: number, co: ReturnType<typeof swingCoef>, ev: LiftEvent[]): void {
   const sw = s.swing!;
-  const pumping = sw.pump > 0;
+  const pumping = sw.stuck;
   const drive = pumping ? co.pump * (sw.vel !== 0 ? Math.sign(sw.vel) : 1) : 0;
   // вес игрока: на верхнем краю (p против крена) — затухание, на нижнем — раскачка
   const cp = co.kd * -arm * Math.max(-1, Math.min(1, sw.phi / 0.05));
@@ -457,9 +479,11 @@ function swingStep(s: LiftState, h: number, arm: number, co: ReturnType<typeof s
   sw.vel += (-co.w * co.w * sw.phi - ((pumping ? co.c : co.cFree) + cp) * sw.vel + drive) * h;
   sw.phi += sw.vel * h;
   sw.t += h;
-  if (pumping) {
-    sw.pump -= h;
-    if (sw.pump <= 0) ev.push({ type: 'freed' });
+  sw.pump -= h;
+  // клетка: подбежал к доске — спихнул
+  if (sw.stuck && s.roll.variant === 'cage' && sw.t >= LIFT_KICK_DELAY && arm >= half - LIFT_KICK_REACH) {
+    sw.stuck = false;
+    ev.push({ type: 'kick' }, { type: 'freed' });
   }
   if (Math.abs(sw.phi) >= 1) {
     const dir = (sw.phi > 0 ? 1 : -1) as 1 | -1;
@@ -478,10 +502,16 @@ function swingStep(s: LiftState, h: number, arm: number, co: ReturnType<typeof s
   const amp = Math.hypot(sw.phi, sw.vel / co.w);
   const t0 = sw.t - h;
   sw.amp = amp;
-  // клетка: трос изнашивается от раскачки; износ LIFT_CABLE — обрыв
-  if (s.roll.variant === 'cage' && amp > LIFT_WEAR_AMP) {
+  // каретка: доска выпадает не раньше pumpS и только когда раскачка погашена
+  if (sw.stuck && s.roll.variant !== 'cage' && sw.pump <= 0 && amp < LIFT_FREE_AMP) {
+    sw.stuck = false;
+    ev.push({ type: 'freed' });
+  }
+  // клетка: пока доска держит кабину, а лебёдка тянет, трос натягивается и изнашивается (сильнее при раскачке); износ
+  // LIFT_CABLE — обрыв. Спихнули доску — натяжение спало, износ стоит
+  if (s.roll.variant === 'cage' && sw.stuck) {
     const w0 = s.wear;
-    s.wear += (amp - LIFT_WEAR_AMP) * h;
+    s.wear += (LIFT_WEAR_BASE + LIFT_WEAR_SWAY * Math.min(1, amp)) * h;
     for (const f of LIFT_FRAY) if (w0 < f * LIFT_CABLE && s.wear >= f * LIFT_CABLE) ev.push({ type: 'fray', wear: f });
     if (s.wear >= LIFT_CABLE) {
       s.phase = 'snapped';
@@ -493,7 +523,7 @@ function swingStep(s: LiftState, h: number, arm: number, co: ReturnType<typeof s
     sw.ampEv = amp;
     ev.push({ type: 'sway', amp, phi: sw.phi });
   }
-  if (sw.pump <= 0 && amp < LIFT_STEADY_AMP) {
+  if (!sw.stuck && amp < LIFT_STEADY_AMP) {
     sw.calm += h;
     if (sw.calm >= LIFT_STEADY_S) {
       s.swing = null;

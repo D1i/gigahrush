@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { LiftSpec } from '../model/types';
 import {
   boardAhead, callLift, createLift, DEFAULT_LIFT, isLair, liftBoard, liftExits, liftExitsAt, liftFloorLabel, liftRule, normLift, rollLift, stepLift,
-  LIFT_CABLE, LIFT_FLOOR_M, LIFT_HALF_X, LIFT_HALF_Z, LIFT_RUN, LIFT_SLIP,
+  LIFT_CABLE, LIFT_FLOOR_M, LIFT_FREE_AMP, LIFT_HALF_X, LIFT_HALF_Z, LIFT_KICK_DELAY, LIFT_RUN, LIFT_SLIP,
   type LiftAxis, type LiftEvent, type LiftRoll, type LiftState,
 } from './lift';
 
@@ -16,14 +16,17 @@ const DT = 1 / 60;
 type Bot = (phi: number, vel: number) => number;
 const BOTS: Record<string, Bot> = {
   idle: () => 0,
+  // у края с доской (+ось): от удара доски эта сторона первой идёт вверх; у дальнего края — вниз
   edge: () => 0.9,
+  edgeFar: () => -0.9,
   downhill: (phi) => Math.sign(phi) * 0.9,
   uphill: (phi) => -Math.sign(phi) * 0.9,
   uphillHalf: (phi) => -Math.sign(phi) * 0.5,
 };
 
-/** Подъём на этаж 1 с доской на пролёте 0 (первая попытка, где она есть); бот гасит раскачку. Итог поездки. */
-function ride(sp: LiftSpec, variant: LiftRoll['variant'], seed: string, bot: Bot, react: number) {
+/** Подъём на этаж 1 с доской на пролёте 0 (первая попытка, где она есть); бот гасит раскачку (kickAt ≥ 0 — стоит в
+ *  центре и через kickAt с после удара доски бежит к ней, на край +оси). Итог поездки; at — время событий с удара доски. */
+function ride(sp: LiftSpec, variant: LiftRoll['variant'], seed: string, bot: Bot, react: number, kickAt = -1) {
   const r = roll(variant, 1, seed);
   let a = 0;
   while (!liftBoard(sp, r, a, 0)) a++;
@@ -33,23 +36,29 @@ function ride(sp: LiftSpec, variant: LiftRoll['variant'], seed: string, bot: Bot
   let axis: LiftAxis | null = null;
   const hp: number[] = [], hv: number[] = [];
   const ev: LiftEvent[] = [];
-  for (let t = 0; t < 60; t += DT) {
+  const at: Partial<Record<LiftEvent['type'], number>> = {};
+  let t0 = -1;
+  for (let t = 0; t < 90; t += DT) {
     const sw = s.swing;
     if (sw) {
+      if (t0 < 0) t0 = t;
       axis = sw.axis;
       hp.push(sw.phi);
       hv.push(sw.vel);
       const lag = Math.max(0, hp.length - 1 - Math.round(react / DT));
       const half = sw.axis === 'x' ? LIFT_HALF_X : LIFT_HALF_Z;
-      const tgt = bot(hp[lag], hv[lag]);
+      const tgt = kickAt >= 0 ? (t - t0 >= kickAt ? 1 : 0) : bot(hp[lag], hv[lag]);
       p += Math.max(-LIFT_RUN * DT, Math.min(LIFT_RUN * DT, (tgt - p) * half)) / half + (LIFT_SLIP * sw.phi * DT) / half;
       p = Math.max(-1, Math.min(1, p));
     }
     const pos = axis === 'x' ? { x: p * LIFT_HALF_X, z: 0 } : { x: 0, z: p * LIFT_HALF_Z };
-    ev.push(...stepLift(sp, s, DT, pos));
+    for (const e of stepLift(sp, s, DT, pos)) {
+      ev.push(e);
+      if (t0 >= 0) at[e.type] ??= t - t0;
+    }
     if (s.phase === 'thrown' || s.phase === 'snapped' || (s.phase === 'idle' && s.floor === 1)) break;
   }
-  return { s, ev, axis: axis!, thrown: s.phase === 'thrown', snapped: s.phase === 'snapped' };
+  return { s, ev, at, axis: axis!, thrown: s.phase === 'thrown', snapped: s.phase === 'snapped' };
 }
 
 const SEEDS = Array.from({ length: 60 }, (_, i) => 'bot' + i);
@@ -68,6 +77,10 @@ describe('«Ржавый лифт»: механика без движка', () =
     expect(n.boardPumpS).toEqual([3, 10]);
     expect(n.swingPeriod).toBe(DEFAULT_LIFT.swingPeriod);
     expect(n.darkness).toBe(0.3);
+    // старые значения по умолчанию (период 5 с, толчок 0.5, доска 4–6 с) — к новому периоду; свои — как есть
+    expect(normLift({ kind: 'lift', swingPeriod: 5, boardKick: 0.5, boardPumpS: [4, 6] })!.swingPeriod).toBe(DEFAULT_LIFT.swingPeriod);
+    expect(normLift({ kind: 'lift', swingPeriod: 5, boardKick: 0.6, boardPumpS: [4, 6] })!.swingPeriod).toBe(5);
+    expect(DEFAULT_LIFT.swingPeriod).toBe(7);
   });
 
   it('rollLift: детерминирован; вид — по cageChance; этажи вверх и вниз в диапазоне; логово — на любом этаже, кроме входа', () => {
@@ -228,28 +241,32 @@ describe('«Ржавый лифт»: механика без движка', () =
     expect(sched(0)).not.toEqual(sched(1));
   });
 
-  it('каретка: стоит на месте, стоит у края или бежит на опустившуюся сторону — выбрасывает всегда', () => {
-    for (const name of ['idle', 'edge', 'downhill']) {
+  it('каретка: стоит в центре, у дальнего края или бежит на опустившуюся сторону — доска не выпадает, выбрасывает всегда', () => {
+    for (const name of ['idle', 'edgeFar', 'downhill']) {
       for (const seed of SEEDS) {
         const r = ride(DEFAULT_LIFT, 'carriage', seed, BOTS[name], 0.3);
         expect(r.thrown, `${name} ${seed}`).toBe(true);
-        const t = r.ev.find((e) => e.type === 'thrown')!;
-        expect(t).toMatchObject({ type: 'thrown', axis: r.axis });
+        expect(r.ev.find((e) => e.type === 'thrown')).toMatchObject({ type: 'thrown', axis: r.axis });
+        // раскачку не погасили — доска держится до конца
+        expect(r.at.freed).toBeUndefined();
         // терминально
         expect(stepLift(DEFAULT_LIFT, r.s, 1, { x: 0, z: 0 })).toEqual([]);
       }
     }
   });
 
-  it('каретка: перебегая на поднявшуюся сторону, раскачку гасят по обеим осям — steady, кабина доезжает', () => {
+  it('каретка: перебегая на поднявшуюся сторону — и с реакцией до 1.5 с — гасят по обеим осям; доска выпадает, когда погашено', () => {
     const axes = new Set<LiftAxis>();
-    for (const [bot, react] of [['uphillHalf', 0.5], ['uphill', 0.3]] as const) {
+    for (const [bot, react] of [['uphill', 0.3], ['uphill', 1], ['uphill', 1.5], ['uphillHalf', 0.5], ['edge', 0]] as const) {
       for (const seed of SEEDS) {
         const r = ride(DEFAULT_LIFT, 'carriage', seed, BOTS[bot], react);
         axes.add(r.axis);
         expect(r.thrown, `${bot} ${react} ${seed}`).toBe(false);
         const types = r.ev.map((e) => e.type);
-        expect(types).toContain('freed');
+        // доска — не раньше pumpS и только при погашенной раскачке; потом стихло — едет
+        const b = r.ev.find((e) => e.type === 'board') as { pumpS: number };
+        expect(r.at.freed!).toBeGreaterThanOrEqual(b.pumpS - 0.05);
+        expect(types).not.toContain('kick');
         expect(types.indexOf('steady')).toBeGreaterThan(types.indexOf('freed'));
         expect(types.at(-1)).toBe('arrive');
       }
@@ -257,18 +274,27 @@ describe('«Ржавый лифт»: механика без движка', () =
     expect([...axes].sort()).toEqual(['x', 'z']);
   });
 
-  it('клетка: стоит на месте, у края или бежит на опустившуюся сторону — бьётся о стены, трос трещит и рвётся всегда', () => {
-    for (const name of ['idle', 'edge', 'downhill']) {
+  it('каретка: доска выпадает только при амплитуде ниже LIFT_FREE_AMP; трос не изнашивается', () => {
+    const r = ride(DEFAULT_LIFT, 'carriage', 'bot0', BOTS.uphill, 0.3);
+    const i = r.ev.findIndex((e) => e.type === 'freed');
+    const before = r.ev.slice(0, i).filter((e) => e.type === 'sway') as { amp: number }[];
+    expect(before.at(-1)!.amp).toBeLessThan(LIFT_FREE_AMP + 0.05);
+    expect(r.s.wear).toBe(0);
+    expect(r.ev.some((e) => e.type === 'fray' || e.type === 'snap')).toBe(false);
+  });
+
+  it('клетка: стоит в центре или у дальнего края — трос натягивается, трещит и рвётся через ~8 с (кто бегает по клетке — заденет доску)', () => {
+    for (const name of ['idle', 'edgeFar']) {
       for (const seed of SEEDS) {
         const r = ride(DEFAULT_LIFT, 'cage', seed, BOTS[name], 0.3);
         expect(r.snapped, `${name} ${seed}`).toBe(true);
-        // клетку не выбрасывает — она бьётся о стены
+        // клетку не выбрасывает — она бьётся о стены; доска сидит
         expect(r.thrown).toBe(false);
-        expect(r.s.bangs).toBeGreaterThan(0);
-        for (const e of r.ev) if (e.type === 'bang') expect(e.strength).toBeGreaterThan(0);
-        // трос трещит дважды, потом рвётся; износ — до предела
+        expect(r.at.freed).toBeUndefined();
+        // трос трещит дважды, потом рвётся — не раньше 7 с
         expect(r.ev.filter((e) => e.type === 'fray').map((e) => (e as { wear: number }).wear)).toEqual([1 / 3, 2 / 3]);
         expect(r.ev.at(-1)).toEqual({ type: 'snap' });
+        expect(r.at.snap!).toBeGreaterThan(7);
         expect(r.s.wear).toBeGreaterThanOrEqual(LIFT_CABLE);
         // терминально; новая попытка — новый трос
         expect(stepLift(DEFAULT_LIFT, r.s, 1, { x: 0, z: 0 })).toEqual([]);
@@ -277,27 +303,24 @@ describe('«Ржавый лифт»: механика без движка', () =
     }
   });
 
-  it('клетка: перебегая на поднявшуюся сторону, трос держит — стихает и доезжает (и с опозданием, с ударами о стены)', () => {
-    let bangs = 0;
-    for (const [bot, react] of [['uphill', 0.3], ['uphillHalf', 0.5], ['uphillHalf', 0.7]] as const) {
+  it('клетка: подбежал к доске (край +оси) и спихнул — доска выпала, трос больше не изнашивается, стихло, доехал; хоть через 6 с', () => {
+    for (const kickAt of [0, 1, 3, 6]) {
       for (const seed of SEEDS) {
-        const r = ride(DEFAULT_LIFT, 'cage', seed, BOTS[bot], react);
-        expect(r.snapped, `${bot} ${react} ${seed}`).toBe(false);
-        expect(r.s.phase).toBe('idle');
-        expect(r.s.floor).toBe(1);
+        const r = ride(DEFAULT_LIFT, 'cage', seed, BOTS.idle, 0, kickAt);
+        expect(r.snapped, `${kickAt} ${seed}`).toBe(false);
+        const types = r.ev.map((e) => e.type);
+        expect(types.indexOf('freed')).toBe(types.indexOf('kick') + 1);
+        // спихнуть — не раньше, чем доска села
+        expect(r.at.kick!).toBeGreaterThanOrEqual(Math.max(kickAt, LIFT_KICK_DELAY) - 0.05);
         expect(r.s.wear).toBeLessThan(LIFT_CABLE * 0.85);
-        bangs += r.s.bangs;
+        expect(types.at(-1)).toBe('arrive');
       }
     }
-    // опоздавший бьётся о стены, но доезжает
-    expect(bangs).toBeGreaterThan(SEEDS.length / 2);
   });
 
-  it('каретка: трос не изнашивается (её губит крен, не трос)', () => {
-    const r = ride(DEFAULT_LIFT, 'carriage', 'bot0', BOTS.idle, 0);
-    expect(r.thrown).toBe(true);
-    expect(r.s.wear).toBe(0);
-    expect(r.ev.some((e) => e.type === 'fray' || e.type === 'snap')).toBe(false);
+  it('каретку не спихнуть: у края с доской доска держится, пока раскачка не погашена', () => {
+    const r = ride(DEFAULT_LIFT, 'carriage', 'bot1', BOTS.idle, 0, 0);
+    expect(r.ev.some((e) => e.type === 'kick')).toBe(false);
   });
 
   it('большой шаг времени — без NaN, тот же итог, что мелкими шагами (поездка без досок)', () => {
@@ -339,6 +362,7 @@ describe('«Ржавый лифт»: механика без движка', () =
     expect(liftRule(DEFAULT_LIFT)).toMatch(/3–6 эт\. над входом и 1–2 под ним/);
     expect(liftRule(spec({ floorsDown: [0, 0] }))).not.toMatch(/под ним/);
     expect(liftRule(DEFAULT_LIFT)).toMatch(/поднявшуюся сторону/);
+    expect(liftRule(DEFAULT_LIFT)).toMatch(/спихнёшь/);
     expect(liftRule(DEFAULT_LIFT)).toMatch(/логово/);
     expect(liftRule(spec({ lairChance: 0 }))).not.toMatch(/логово/);
   });
