@@ -752,8 +752,9 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
     if (B.side !== OPPOSITE[A.side] || lb.n - la.n !== sign * gap || Math.abs(la.mid - lb.mid) > 0.5 + 1e-9) {
       err(`${name}: метки не стоят лицом к лицу через зазор ${gap}`);
     }
-    if (match !== 'len' && !tagsCompatible(A.tag, B.tag)) err(`${name}: теги ${A.tag} / ${B.tag} несовместимы`);
-    if (match !== 'tag' && A.len !== B.len) err(`${name}: длины ${A.len} / ${B.len} различаются`);
+    // дверь в переход (бесконечный мир) — метки любые
+    if (!l.loose && match !== 'len' && !tagsCompatible(A.tag, B.tag)) err(`${name}: теги ${A.tag} / ${B.tag} несовместимы`);
+    if (!l.loose && match !== 'tag' && A.len !== B.len) err(`${name}: длины ${A.len} / ${B.len} различаются`);
     const exp = wOf(l.b.inst) - wOf(l.a.inst);
     const dw = l.dw ?? 0;
     if (dw !== exp) err(`${name}: dw = ${dw}, а w(b) − w(a) = ${exp}`);

@@ -33,6 +33,12 @@ export interface RunConnector extends RunSegment {
   /** связь срезана подпрогоном (subrun.ts): во всём прогоне метка связана, но партнёра в части нет.
    *  Такой тупик ядро делает по BlockoutOptions.cutEnds (например, проёмом в темноту), а не по deadEnds. */
   cut?: boolean;
+  /** бесконечный мир: закрытая дверь-выход из квартиры (её можно открыть) — тупик всегда с дверной панелью
+   *  ('panel'), какими бы ни были deadEnds */
+  exit?: boolean;
+  /** бесконечный мир: метка прихода перехода (комната за выходом лифта, за спуском лестницы) — у неё игрок выходит из
+   *  локации и через неё возвращается: тупик всегда панелью (как и метки прихода по связям-переходам в links) */
+  arrival?: boolean;
 }
 
 export interface RunInstance {
@@ -110,6 +116,8 @@ export interface RunExport {
   links: {
     a: { inst: string; connector: string }; b: { inst: string; connector: string }; dw?: number;
     kind?: 'door' | 'descent' | 'lift'; floors?: number; side?: 'straight' | 'right';
+    /** бесконечный мир: «исчезнувшая» дверь (пропущенный переход) — не проём; дверь в переход — метки любые */
+    sealed?: true; loose?: true;
   }[];
   openConnectors: { inst: string; connector: string }[];
   /** складчатый прогон с бесшовной видимостью: id экземпляра → id экземпляров его PVS (включая его) */

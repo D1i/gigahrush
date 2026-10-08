@@ -5,6 +5,7 @@
 //  (в) шагнуть к этой стене → снова лифт, у этажа 1, в узком коридоре;
 //  (г) до этажа логова и в его коридор → «E — открыть» → логово: темно, табличка, красный свет; назад к стене →
 //      лифт.
+// Мир — прежний рост без квартир (clusters: false): лифт растёт по весу; переходы режима квартир — qa-world-walk.mjs.
 // Скриншоты — tools/qa/liftwalk-*.png. node tools/qa-lift-walk.mjs [--keep-server]
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
@@ -106,7 +107,7 @@ try {
   await go(page, BASE);
   await page.evaluate(() => {
     localStorage.clear();
-    localStorage.setItem('room-forge/walk', JSON.stringify({ seed: 'qa-lift-walk', deadEndChance: 0.1, branching: 1, aheadDoors: 2, on: true }));
+    localStorage.setItem('room-forge/walk', JSON.stringify({ seed: 'qa-lift-walk', deadEndChance: 0.1, branching: 1, aheadDoors: 2, clusters: false, on: true }));
   });
   await page.reload({ timeout: 180000 });
   await page.waitForTimeout(1000);

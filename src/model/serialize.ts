@@ -30,6 +30,7 @@ import type {
   TierLootRow,
   Variant,
 } from './types';
+import { cloneWorld, newWorldSettings, normWorld } from '../gen4d/biomes';
 import { areaM2, decodeCells, encodeCells } from './cells';
 import { uid } from './ops';
 import { cloneLocation, parseLocation } from '../locations/stairwell';
@@ -86,6 +87,7 @@ export function serializeProject(p: Project): ProjectJSON {
       wall: r.wall.map((x) => ({ finishId: x.finishId, weight: x.weight })),
       floor: r.floor.map((x) => ({ finishId: x.finishId, weight: x.weight })),
     })),
+    world: cloneWorld(p.world ?? newWorldSettings()),
   };
 }
 
@@ -482,7 +484,10 @@ export function parseProject(json: unknown): Project {
     fold: parseFold(g.fold),
   };
 
-  return { settings, props, items, rooms, generator, economy, finishes, finishRules };
+  // бесконечный мир (4D): биомы, квартиры, переходы; в старых проектах нет — по умолчанию
+  const world = normWorld(json.world);
+
+  return { settings, props, items, rooms, generator, economy, finishes, finishRules, world };
 }
 
 /** Пустой проект со значениями по умолчанию (без пресетов). */
@@ -496,5 +501,6 @@ export function emptyProject(): Project {
     economy: { tiers: [], shops: [], passes: [], dangerLimit: 100 },
     finishes: [],
     finishRules: [],
+    world: newWorldSettings(),
   };
 }

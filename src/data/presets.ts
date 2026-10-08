@@ -1,5 +1,6 @@
 // Стартовый проект: реальные типовые комнаты хрущёвок, мебель, предметы, экономика, отделка.
 import type { Project } from '../model/types';
+import { newWorldSettings } from '../gen4d/biomes';
 import { buildEconomy } from './economy';
 import { buildFinishes, buildFinishRules } from './finishes';
 import { buildItems } from './items';
@@ -30,5 +31,6 @@ export function createDefaultProject(): Project {
     economy: buildEconomy(),
     finishes: buildFinishes(),
     finishRules: buildFinishRules(),
+    world: newWorldSettings(),
   };
 }

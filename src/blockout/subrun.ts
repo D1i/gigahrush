@@ -87,7 +87,7 @@ export function layerRun(run: RunExport, w: number): RunExport {
 const adjCache = new WeakMap<RunExport, Map<string, string[]>>();
 
 /** Переход спец-локации на другой этаж ('descent' — вниз, 'lift' — выход лифта): не проём, не соседство. */
-const transit = (l: RunExport['links'][number]): boolean => l.kind === 'descent' || l.kind === 'lift';
+const transit = (l: RunExport['links'][number]): boolean => l.kind === 'descent' || l.kind === 'lift' || !!l.sealed;
 
 /** Соседи по связям-дверям (кэш на объект прогона; прогон после этого не мутировать). */
 export function adjacencyOf(run: RunExport): Map<string, string[]> {

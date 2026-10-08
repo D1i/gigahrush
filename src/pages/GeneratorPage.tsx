@@ -6,6 +6,7 @@ import type { FoldSettings, GeneratorMode, GeneratorSettings, MatchMode } from '
 import { normFold } from '../gen4d/fold';
 import { setUI, useUI } from '../model/ui';
 import { Btn, Check, NumField, Section, Select, TextField } from '../ui/kit';
+import { WorldSection } from '../panels/WorldSection';
 import { InstanceInfo } from '../preview/InstanceInfo';
 import { PreviewCanvas } from '../preview/PreviewCanvas';
 import { RunSummary } from '../preview/RunSummary';
@@ -265,6 +266,7 @@ export function GeneratorPage() {
           </div>
           <Check label="перегенерировать при изменении настроек" value={auto} onChange={setAuto} />
         </Section>
+        {isFold && <WorldSection />}
         <Section title="Экспорт раскладки">
           <div className="row">
             <Btn sm disabled={!run} onClick={() => run && downloadRun(run)} title="Скачать JSON готовой раскладки для движка (run-<сид>.json)">

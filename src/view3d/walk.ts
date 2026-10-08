@@ -10,7 +10,13 @@
 //    (экземпляры мира не меняются), у старых меняются только связи меток и «раскрыта ли дверь».
 //  • Автосохранение мира в localStorage по worldKey (сид + модификаторы) и отдельно — позиции игрока:
 //    после перезагрузки страницы прогулка продолжается с того же места.
-import { DEFAULT_STREAM, createStreamWorld, streamSettings, viewHorizonM, worldKey, type StreamSave, type StreamStats, type StreamWorld } from '../gen4d/stream';
+//  • Режим квартир (WalkOptions.clusters, настройки — Project.world, docs/GENERATOR-4D.md §16): мир растёт квартирами,
+//    закрытый выход квартиры — дверь-панель (метка с флагом exit), её открывает игрок (openDoor); исчезнувшие двери и
+//    лишние проёмы квартиры — стены; вход в комнату — счётчик переходов (world.enter).
+import {
+  DEFAULT_STREAM, createStreamWorld, streamSettings, viewHorizonM, worldKey,
+  type EnterResult, type StreamSave, type StreamStats, type StreamWorld,
+} from '../gen4d/stream';
 import { exportRunJSON } from '../gen/world';
 import type { Project } from '../model/types';
 import type { RunExport, RunFinish, RunInstance } from '../blockout/types';
@@ -23,9 +29,13 @@ export interface WalkOptions {
   branching: number;
   /** на сколько дверей вперёд мир раскрыт */
   aheadDoors: number;
+  /** режим квартир: биомы, квартиры с дверями-выходами, переходы (настройки — Project.world); false — прежний рост */
+  clusters: boolean;
 }
 
-export const DEFAULT_WALK: WalkOptions = { seed: 'гигахрущ', deadEndChance: DEFAULT_STREAM.deadEndChance, branching: DEFAULT_STREAM.branching, aheadDoors: DEFAULT_STREAM.aheadDoors };
+export const DEFAULT_WALK: WalkOptions = {
+  seed: 'гигахрущ', deadEndChance: DEFAULT_STREAM.deadEndChance, branching: DEFAULT_STREAM.branching, aheadDoors: DEFAULT_STREAM.aheadDoors, clusters: true,
+};
 
 const WALK_KEY = 'room-forge/walk';
 
@@ -38,6 +48,7 @@ export function readWalk(): WalkOptions & { on: boolean } {
       deadEndChance: Number.isFinite(o.deadEndChance) ? o.deadEndChance : DEFAULT_WALK.deadEndChance,
       branching: Number.isFinite(o.branching) ? o.branching : DEFAULT_WALK.branching,
       aheadDoors: Number.isFinite(o.aheadDoors) ? o.aheadDoors : DEFAULT_WALK.aheadDoors,
+      clusters: typeof o.clusters === 'boolean' ? o.clusters : DEFAULT_WALK.clusters,
       on: o.on === true,
     };
   } catch {
@@ -95,7 +106,8 @@ export class WalkSession {
     private readonly p: Project,
     readonly opts: WalkOptions,
   ) {
-    this.key = worldKey(opts.seed, []);
+    // режим квартир — свой ключ сохранения (у сида два разных мира: с квартирами и без)
+    this.key = worldKey(opts.seed, opts.clusters ? ['квартиры'] : []);
     let save: StreamSave | undefined;
     try {
       const s = localStorage.getItem(this.key);
@@ -112,6 +124,7 @@ export class WalkSession {
       deadEndChance: opts.deadEndChance,
       branching: opts.branching,
       aheadDoors: opts.aheadDoors,
+      world: opts.clusters ? p.world : null,
     });
     this.world = createStreamWorld(p, settings, save);
     if (save && !this.world.stale) this.saved = { at: save.savedAt, bytes: 0 };
@@ -131,12 +144,26 @@ export class WalkSession {
   /** Игрок в комнате id: раскрыть двери вперёд и всё, что из неё может попасть в кадр (после кадра):
    *  дальность — горизонт портального рендера (viewHorizonM), тумана нет — нераскрытая дверь в кадре была
    *  бы дырой в пустоту. */
-  enter(id: string) {
+  enter(id: string): EnterResult {
     setTimeout(() => {
       if (this.disposed) return;
       this.world.ensureAround(id);
       this.world.ensureVisible(id, viewHorizonM(this.world.settings.sightM));
     }, 0);
+    // режим квартир: счётчик переходов (впервые в комнате — +1, после trAfter — бросок)
+    const r = this.world.enter(id);
+    if (r.counted) this.scheduleSave();
+    return r;
+  }
+
+  /** Открыть закрытый выход квартиры (режим квартир): за ним — новая квартира или переход. null — не вышло. */
+  openDoor(inst: string, connector: string): string | null {
+    try {
+      return this.world.openDoor(inst, connector);
+    } catch (e) {
+      console.error(e);
+      return null;
+    }
   }
 
   private refresh() {
@@ -159,20 +186,26 @@ export class WalkSession {
     // переходы спец-локаций (kind 'descent': локация → комната-выход этажом ниже; 'lift': лифт → комната за
     // выходом этажом выше) — не проёмы: в JSON болванки их нет (иначе соседство по связям тянет локацию в куски
     // выхода); метка прихода выхода — тупик
-    const doors = run.links.filter((l) => l.kind !== 'descent' && l.kind !== 'lift');
+    // «исчезнувшие» двери (пропущенный переход) — тоже: обе метки — тупики
+    const doors = run.links.filter((l) => l.kind !== 'descent' && l.kind !== 'lift' && !l.sealed);
     const linkBy = new Map<string, { inst: string; connector: string }>();
     for (const l of doors) {
       linkBy.set(`${l.a.inst}/${l.a.connector}`, l.b);
       linkBy.set(`${l.b.inst}/${l.b.connector}`, l.a);
     }
+    // метки прихода переходов — панели (у них игрок выходит из локации и через них возвращается), даже когда прочие
+    // тупики — стены (режим квартир)
+    const arrival = new Set(run.links.filter((l) => (l.kind === 'descent' || l.kind === 'lift') && !l.sealed).map((l) => `${l.b.inst}/${l.b.connector}`));
     const instances: RunInstance[] = [];
     for (const i of run.instances) {
       let e = this.exp.get(i.id)!;
-      // подпись меток: связана / не раскрыта (проём в темноту) / заколочена
+      // подпись меток: связана / не раскрыта (проём в темноту) / закрытый выход квартиры (дверь) / приход перехода /
+      // заколочена
       let sig = '';
       for (const k of e.connectors) {
         const to = linkBy.get(`${i.id}/${k.id}`);
-        sig += to ? 'L' : k.len >= 1 && this.world.doorState(i.id, k.id) === 'pending' ? 'P' : 'D';
+        const st = to || k.len < 1 ? null : this.world.doorState(i.id, k.id);
+        sig += to ? 'L' : st === 'pending' ? 'P' : st === 'exit' ? 'X' : arrival.has(`${i.id}/${k.id}`) ? 'A' : 'D';
       }
       if (this.sig.get(i.id) !== sig) {
         changed.push(i.id);
@@ -180,8 +213,11 @@ export class WalkSession {
           ...e,
           connectors: e.connectors.map((k, n) => {
             const to = linkBy.get(`${i.id}/${k.id}`) ?? null;
-            const { cut: _c, ...rest } = k;
-            return sig[n] === 'P' ? { ...rest, linkedTo: null, cut: true } : { ...rest, linkedTo: to ? { ...to } : null };
+            const { cut: _c, exit: _x, arrival: _a, ...rest } = k;
+            if (sig[n] === 'P') return { ...rest, linkedTo: null, cut: true };
+            if (sig[n] === 'X') return { ...rest, linkedTo: null, exit: true };
+            if (sig[n] === 'A') return { ...rest, linkedTo: null, arrival: true };
+            return { ...rest, linkedTo: to ? { ...to } : null };
           }),
         };
         this.exp.set(i.id, e);
@@ -246,11 +282,12 @@ export class WalkSession {
 
   /** Стереть сохранение этого сида (мир и игрока). */
   static reset(seed: string) {
-    const key = worldKey(seed, []);
-    try {
-      localStorage.removeItem(key);
-      localStorage.removeItem(playerKey(key));
-    } catch {}
+    for (const key of [worldKey(seed, []), worldKey(seed, ['квартиры'])]) {
+      try {
+        localStorage.removeItem(key);
+        localStorage.removeItem(playerKey(key));
+      } catch {}
+    }
   }
 
   status(): WalkStatus {

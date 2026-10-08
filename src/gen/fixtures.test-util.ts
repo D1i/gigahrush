@@ -1,5 +1,6 @@
 // Ручные фикстуры для тестов генератора (строятся через rectCells, без TODO(core)-функций).
 import { expect } from 'vitest';
+import { newWorldSettings } from '../gen4d/biomes';
 import { cellKey, OPPOSITE, parseKey, rectCells } from '../model/cells';
 import type { Connector, Project, Room, Run, Side } from '../model/types';
 import { tagsCompatible } from '../model/segments';
@@ -60,6 +61,7 @@ export function project(rooms: Room[], extra: Partial<Project> = {}): Project {
     economy: { tiers: [], shops: [], passes: [], dangerLimit: 100 },
     finishes: [],
     finishRules: [],
+    world: newWorldSettings(),
     ...extra,
   };
 }

@@ -12,12 +12,17 @@
 // этаж(и) ниже создаёт только descend() (комната-выход на этаже floor − k и связь kind 'descent'), выход лифта на
 // этаже выше — только ascend() (комната за выходом на этаже floor + k и связь kind 'lift'); этаж — ещё одно
 // измерение занятости, как W (docs/LOCATIONS.md, docs/GENERATOR-4D.md §15.14).
+// Режим квартир (settings.world, docs/GENERATOR-4D.md §16): мир растёт квартирами — кластерами комнат с закрытыми
+// дверями-выходами; открыл выход — за ним новая квартира, остальные выходы исчезают; биомы задают веса комнат;
+// переходы (спец-комнаты) появляются по счётчику пройденных комнат рядом с игроком и ведут в другой биом или в
+// богатую квартиру. Без settings.world — прежний рост (магистраль, тупики по шансу).
 import { OPPOSITE } from '../model/cells';
 import { hashSeed, makeRng, type Rng } from '../model/rng';
 import type {
-  Connector, FoldSettings, FoldStats, InstanceContent, LairSpec, LiftSide, LiftSpec, Link, MatchMode, Project, Room, Rot, Run, Side,
-  StairwellSpec,
+  Biome, Connector, FoldSettings, FoldStats, InstanceContent, LairSpec, LiftSide, LiftSpec, Link, MatchMode, Pass, Project, Room, Rot, Run,
+  Side, StairwellSpec, WorldSettings,
 } from '../model/types';
+import { biomeMul, normWorld, plainBiomes, startBiomeOf, transitionChance } from './biomes';
 import { locationSeedKey, rollStairwell, type StairwellRoll } from '../locations/stairwell';
 import { isLair, rollLift, type LiftRoll } from '../locations/lift';
 import { rollContent } from '../gen/generate';
@@ -54,6 +59,49 @@ export interface StreamSettings {
   branching: number;
   /** на сколько дверей вперёд (по графу от комнаты игрока) мир должен быть уже сгенерирован */
   aheadDoors: number;
+  /** режим квартир, биомы и переходы (docs/GENERATOR-4D.md §16); null — прежний рост без квартир */
+  world: WorldSettings | null;
+}
+
+/** Состояние счётчика переходов: пройдено комнат (впервые, без спец-комнат) с последнего перехода, шанс для
+ *  следующей новой комнаты, выпал ли переход (появится за следующей открытой дверью), сколько раз сбрасывался. */
+export interface TransitionState {
+  count: number;
+  chance: number;
+  pending: boolean;
+  resets: number;
+}
+
+/** Итог входа в комнату (StreamWorld.enter): засчитана ли она и выпал ли переход именно сейчас. */
+export interface EnterResult extends TransitionState {
+  counted: boolean;
+  triggered: boolean;
+}
+
+/** Квартира экземпляра — для интерфейса. */
+export interface ClusterInfo {
+  id: number;
+  biome: Biome | null;
+  /** куда ведут её выходы (у богатой квартиры — биом, откуда в неё пришли) */
+  home: Biome | null;
+  rich: boolean;
+  rooms: number;
+  /** закрытых выходов */
+  exits: number;
+  /** спец-комната перехода в этой квартире (id) или null */
+  transition: string | null;
+}
+
+/** Сохранение режима квартир. */
+export interface WorldSave {
+  clusters: { biome: string; home: string; rich: boolean; entry: string; exits: string[]; opened: string[]; transition: string | null }[];
+  /** квартира каждого экземпляра по порядку instances (−1 — вне квартир) */
+  clusterOf: number[];
+  /** «исчезнувшие» двери: индексы связей-дверей (пропущенные переходы) */
+  sealed: number[];
+  /** комнаты, где игрок уже был */
+  visited: string[];
+  tr: { count: number; resets: number; pending: boolean };
 }
 
 /** Компактное сохранение мира: достаточно, чтобы восстановить его без генерации заново (раскладка, двери,
@@ -77,10 +125,12 @@ export interface StreamSave {
   spine?: string[];
   /** отпечатки комнат мира: roomId → хэш клеток и меток. Не сошёлся — мир «устарел» */
   rooms?: Record<string, string>;
+  /** режим квартир: квартиры, выходы, исчезнувшие двери, посещённые комнаты, счётчик переходов */
+  world?: WorldSave;
 }
 
-/** Состояние двери экземпляра: связана / заколочена (тупик) / ещё не раскрыта. */
-export type DoorState = 'linked' | 'dead' | 'pending';
+/** Состояние двери экземпляра: связана / заколочена (тупик) / ещё не раскрыта / закрытый выход квартиры (можно открыть). */
+export type DoorState = 'linked' | 'dead' | 'pending' | 'exit';
 
 /** Сводка мира — для отладки, тестов и интерфейса. */
 export interface StreamStats {
@@ -112,6 +162,10 @@ export interface StreamStats {
   floors: number;
   minFloor: number;
   maxFloor: number;
+  /** режим квартир: квартир, закрытых выходов, счётчик переходов (null — режим выключен) */
+  clusters: number;
+  exitsOpen: number;
+  transition: TransitionState | null;
 }
 
 /** Спец-локация экземпляра и её розыгрыш (по виду; kind — как spec.kind, для сужения типа): lair — без розыгрыша. */
@@ -160,6 +214,18 @@ export interface StreamWorld {
   ascend(instId: string, floor: number, side: LiftSide): string;
   /** комната за выходом лифта, если ascend уже был; иначе null */
   liftExitOf(instId: string, floor: number, side: LiftSide): string | null;
+  /** режим квартир: открыть закрытый выход квартиры — за ним встаёт новая квартира (того же биома), остальные
+   *  закрытые выходы этой квартиры исчезают, пропущенный в ней переход исчезает; выпал переход — он встаёт в новой
+   *  квартире рядом со входом. Возвращает id комнаты за дверью (null — ничего не встало, дверь стала глухой).
+   *  Ошибка, если это не закрытый выход */
+  openDoor(instId: string, connectorId: string): string | null;
+  /** режим квартир: игрок вошёл в комнату — счётчик переходов (впервые и не в спец-комнату — +1; после trAfter —
+   *  бросок шанса). Без режима квартир — ничего не делает */
+  enter(instId: string): EnterResult;
+  /** квартира экземпляра (null — вне квартир / режим выключен) */
+  clusterAt(instId: string): ClusterInfo | null;
+  /** счётчик переходов (null — режим выключен) */
+  transitionState(): TransitionState | null;
   stats(): StreamStats;
   /** сохранение / подписка на изменения (для автосохранения и перерисовки) */
   save(): StreamSave;
@@ -174,6 +240,7 @@ export const DEFAULT_STREAM: Omit<StreamSettings, 'seed' | 'fold' | 'startRoomId
   deadEndChance: 0.15,
   branching: 1,
   aheadDoors: 2,
+  world: null,
 };
 
 /** Складки бесконечного мира по умолчанию: бесшовность выключена (её даёт портальный рендер), localRadius 1
@@ -211,6 +278,7 @@ export function normStream(s: Partial<StreamSettings>): StreamSettings {
     deadEndChance: clamp(num(s.deadEndChance, D.deadEndChance), 0, 1),
     branching: clamp(num(s.branching, D.branching), 0, 100),
     aheadDoors: clamp(Math.floor(num(s.aheadDoors, D.aheadDoors)), 0, 16),
+    world: s.world ? normWorld(s.world) : null,
   };
 }
 
@@ -310,9 +378,51 @@ const round3 = (m: number) => Math.round(m * 1000) / 1000;
 const dk = (order: number, ci: number) => order * 1024 + ci;
 const lineKey = (side: string, line: number) => `${side}:${line}`;
 
-type DeadWhy = 'chance' | Why;
+/** Почему дверь глухая: 'chance' — тупик по шансу; 'cluster' — в квартире не нужна (стена); 'vanished' —
+ *  закрытый выход исчез (игрок ушёл через другой); иначе — почему не встала комната. */
+type DeadWhy = 'chance' | 'cluster' | 'vanished' | Why;
+const isWhy = (w: DeadWhy): w is Why => w !== 'chance' && w !== 'cluster' && w !== 'vanished';
 
 interface DoorRef { n: Node; ci: number }
+
+/** Квартира (режим квартир): кластер комнат с дверями-выходами. */
+interface Cluster {
+  id: number;
+  /** биом квартиры и биом, куда ведут её выходы (у богатой квартиры — откуда пришли) */
+  biome: string;
+  home: string;
+  rich: boolean;
+  /** входная комната и все комнаты (order) по порядку постановки; entry −1 — ещё не поставлена */
+  entry: number;
+  rooms: number[];
+  /** закрытые выходы (dk), открытые выходы (dk) */
+  exits: number[];
+  opened: number[];
+  /** переход (order спец-комнаты), поставленный в эту квартиру */
+  transition: number | null;
+}
+
+/** Метки «наружу» — двери из квартиры в общие места и в другие квартиры: входная дверь квартиры, двустворчатые
+ *  двери коридоров и площадок, марши, подвальные ходы. Только они бывают выходами квартиры; остальные (прихожая →
+ *  кухня, комната → балкон, коридор → комната общежития, подвал → клетушка…) — внутренние: квартира достраивает их
+ *  первыми, лишние становятся стенами. */
+export const OUTER_TAGS: readonly string[] = ['landing>apt', 'apt>landing', 'corridor', 'stair', 'basement'];
+
+/** Переход встаёт за дверью шириной от стольких клеток (0.7 м — межкомнатная дверь и шире). */
+const TRANSITION_MIN_LEN = 7;
+
+/** Сколько у комнаты дверей, кроме двери bi (в режиме квартир каждая — будущий проём или выход). */
+const doorsBesides = (info: Info, bi: number): number => {
+  let k = 0;
+  info.room.connectors.forEach((c, j) => { if (j !== bi && c.len >= 1) k++; });
+  return k;
+};
+
+/** Пул комнат биома: кандидаты и их веса. */
+interface Pool {
+  list: Info[];
+  weightOf(x: Info): number;
+}
 
 class Stream implements StreamWorld {
   readonly settings: StreamSettings;
@@ -380,6 +490,21 @@ class Stream implements StreamWorld {
   private cache: { v: number; run: Run } | null = null;
   private readonly listeners = new Set<(ids: string[]) => void>();
 
+  // режим квартир (settings.world)
+  private readonly W: WorldSettings | null;
+  private readonly clusters: Cluster[] = [];
+  /** квартира экземпляра (order → id; −1 — вне квартир) */
+  private readonly clusterOf: number[] = [];
+  /** закрытый выход (dk) → квартира */
+  private readonly exitDoors = new Map<number, number>();
+  /** «исчезнувшие» двери: индексы lay.links */
+  private readonly sealed = new Set<number>();
+  /** комнаты, где игрок уже был (order) */
+  private readonly visited = new Set<number>();
+  private tr = { count: 0, resets: 0, pending: false };
+  private readonly pools = new Map<string, Pool>();
+  private richPass: Pass | null = null;
+
   constructor(p: Project, settings: StreamSettings, save?: StreamSave) {
     this.p = p;
     const s = normStream(save ? save.settings : settings);
@@ -392,7 +517,10 @@ class Stream implements StreamWorld {
     const { infos, pool, tooLong } = buildPool(p, s.match, s.sightM, this.cellM);
     this.infos = infos;
     for (const i of infos) if (i) this.byRoom.set(i.room.id, i);
-    this.cands = pool.filter((i) => i.weight > 0 && i.effMax > 0);
+    this.W = s.world;
+    // режим квартир: спец-комнаты (лестница, лифт) обычным ростом не ставятся — только переходами
+    this.cands = pool.filter((i) => i.weight > 0 && i.effMax > 0 && !(this.W && i.room.location));
+    if (this.W) this.richPass = { id: '@rich', name: 'Богатая квартира', priceItemId: '', price: 0, tierBoost: this.W.richBoost, itemBoost: {}, note: '' };
     // веса выбора: ветвистость и модификаторы сида
     for (const i of this.cands) this.wt.set(i, Math.max(0, applyMods(s.mods, i.room, i.weight * branchMul(i.grow, s.branching))));
     this.gen = {
@@ -430,6 +558,15 @@ class Stream implements StreamWorld {
       else if (!this.infos[i]) this.warnings.push(`Стартовая комната «${p.rooms[i].name}» пуста — выбрана автоматически.`);
       else start = this.infos[i];
     }
+    // режим квартир: старт — в стартовом биоме (комната с тегом start, растущая в нём, иначе по весам биома)
+    const biome = this.W ? startBiomeOf(this.W) : null;
+    if (!start && biome) {
+      const pool = this.biomePool(biome.id);
+      const tagged = pool.list.filter((x) => x.room.tags.includes('start'));
+      const S = this.root.sub('start');
+      if (tagged.length) start = tagged[pickWeighted(S, tagged.map((x) => pool.weightOf(x)))];
+      else if (pool.list.length) start = pool.list[pickWeighted(S, pool.list.map((x) => pool.weightOf(x)))];
+    }
     if (!start) {
       const tagged = this.infos.filter((x): x is Info => !!x && x.room.tags.includes('start'));
       const S = this.root.sub('start');
@@ -446,8 +583,15 @@ class Stream implements StreamWorld {
     }
     const t0 = now();
     const n = place(this.ctx, this.lay, start, 0, 0, 0, 0, null);
-    this.onPlaced(n, null, ROOT_ADDR);
-    this.setSpine(n);
+    if (this.W) {
+      const id = biome?.id ?? '';
+      const cl = this.newCluster(id, id, !!biome?.rich);
+      this.onPlaced(n, null, ROOT_ADDR, true, cl);
+      this.fillCluster(cl);
+    } else {
+      this.onPlaced(n, null, ROOT_ADDR);
+      this.setSpine(n);
+    }
     this.startId = n.inst.id;
     this.ms += now() - t0;
   }
@@ -455,11 +599,16 @@ class Stream implements StreamWorld {
   // ───────── постановка и двери ─────────
 
   /** Учёт нового экземпляра (место, связь с родителем и PVS уже в Lay). portal = false — пришли не через дверь
-   *  (комната-выход спец-локации, комната за выходом лифта): проёма к родителю нет. */
-  private onPlaced(n: Node, parent: Node | null, addr: string, portal = true): void {
+   *  (комната-выход спец-локации, комната за выходом лифта): проёма к родителю нет. cl — квартира (режим квартир). */
+  private onPlaced(n: Node, parent: Node | null, addr: string, portal = true, cl: Cluster | null = null): void {
     const lay = this.lay;
     const i = n.inst.order;
     this.addr[i] = addr;
+    this.clusterOf[i] = cl ? cl.id : -1;
+    if (cl) {
+      cl.rooms.push(i);
+      if (cl.entry < 0) cl.entry = i;
+    }
     this.expandedF[i] = false;
     this.spine[i] = false;
     this.kids[i] = [];
@@ -469,7 +618,8 @@ class Stream implements StreamWorld {
     n.conns.forEach((c, ci) => {
       if (c.len < 1 || n.linked[ci]) return;
       this.indexDoor(n, ci);
-      if (n.info.grow[ci]) this.growPending++;
+      // ростовые двери считаются только в прежнем росте (в режиме квартир все комнаты раскрыты сразу)
+      if (n.info.grow[ci] && !this.W) this.growPending++;
     });
     // PVS: при бесшовности записан пробой кандидата, без неё — считаем по поставленной геометрии
     if (this.pvsOpt) {
@@ -505,10 +655,11 @@ class Stream implements StreamWorld {
     return k;
   }
 
-  /** Наполнение — от адреса экземпляра (не от порядка раскрытий). */
+  /** Наполнение — от адреса экземпляра (не от порядка раскрытий). В богатой квартире элитность — с усилением. */
   private rollFor(n: Node, parent: Node | null): InstanceContent {
     const a = this.addr[n.inst.order];
-    const c = rollContent(this.p, n.info.room, n.inst, this.root.sub(`content:${a}`), null, this.root.sub(`finish:${a}`));
+    const pass = this.clusters[this.clusterOf[n.inst.order] ?? -1]?.rich ? this.richPass : null;
+    const c = rollContent(this.p, n.info.room, n.inst, this.root.sub(`content:${a}`), pass, this.root.sub(`finish:${a}`));
     c.dangerAcc = (parent ? this.content[parent.inst.order].dangerAcc : 0) + c.danger;
     for (const l of c.loot) this.totals[l.itemId] = (this.totals[l.itemId] ?? 0) + l.count;
     for (const sp of c.spots) if (sp.content && sp.content.kind === 'item') this.totals[sp.content.id] = (this.totals[sp.content.id] ?? 0) + 1;
@@ -677,12 +828,13 @@ class Stream implements StreamWorld {
     if (why === 'chance') this.deadChance++;
     else {
       this.deadFail++;
-      P.why[ci] = why;
+      if (isWhy(why)) P.why[ci] = why;
     }
   }
 
-  /** Петля к нераскрытой двери напротив (в любом слое); кандидаты — в каноническом порядке. */
-  private tryLoop(P: Node, ci: number): boolean {
+  /** Петля к нераскрытой двери напротив (в любом слое); кандидаты — в каноническом порядке. cluster — только к
+   *  дверям своей квартиры (режим квартир). */
+  private tryLoop(P: Node, ci: number, cluster?: number): boolean {
     const A = P.conns[ci];
     const gap = this.settings.gap;
     const list = this.loopIdx.get(lineKey(OPPOSITE[A.side], segLine(A) + gap * OUT_SIGN[A.side]));
@@ -693,6 +845,7 @@ class Stream implements StreamWorld {
       if (d.n.linked[d.ci] || this.expandedF[d.n.inst.order]) continue; // дверь уже решена — вычистить
       list[w++] = d;
       const B = d.n.conns[d.ci];
+      if (cluster !== undefined && this.clusterOf[d.n.inst.order] !== cluster) continue;
       if (d.n !== P && d.n.floor === P.floor && compatible(A, B, this.settings.match) && facing(A, B, gap)) found.push(d);
     }
     list.length = w;
@@ -711,13 +864,15 @@ class Stream implements StreamWorld {
     return false;
   }
 
-  /** Кандидаты и складчатая стыковка к двери ci экземпляра P. */
-  private grow(P: Node, ci: number, D: Rng, growFirst: boolean, win: Map<Info, number>): { child: Node | null; why: Why } {
+  /** Кандидаты и складчатая стыковка к двери ci экземпляра P. pool — комнаты и веса биома (режим квартир). */
+  /** growMin > 0 (режим квартир) — только комнаты, у которых кроме двери стыковки не меньше growMin дверей (запас под
+   *  выходы квартиры), без отступления к любым. */
+  private grow(P: Node, ci: number, D: Rng, growFirst: boolean, win: Map<Info, number>, pool: Pool | null = null, growMin = 0): { child: Node | null; why: Why } {
     const A = P.conns[ci];
     const match = this.settings.match;
     // все совместимые комнаты; запрещённые сейчас (unique уже стоит, max в окрестности) остаются в списке
     // весов и пропускаются, только если выпали, — выбор остальных от них не зависит
-    const g = this.cands.filter((info) => info.room.connectors.some((b) => b.len >= 1 && compatible(A, b, match)));
+    const g = (pool ? pool.list : this.cands).filter((info) => info.room.connectors.some((b) => b.len >= 1 && compatible(A, b, match)));
     let skipped = 0;
     const skip = (info: Info) => {
       const no = (info.room.unique && this.uniqueUsed.has(info)) || (win.get(info) ?? 0) >= info.effMax;
@@ -725,10 +880,10 @@ class Stream implements StreamWorld {
       return no;
     };
     const fails: Fails = { space: 0, rule: 0, sight: 0, seam: 0 };
-    const opts = { weightOf: (x: Info) => this.wt.get(x) ?? x.weight, skip, stick: true };
-    for (const growOnly of growFirst ? [true, false] : [false]) {
+    const opts = { weightOf: pool ? pool.weightOf : (x: Info) => this.wt.get(x) ?? x.weight, skip, stick: true };
+    for (const growOnly of growMin > 0 ? [true] : growFirst ? [true, false] : [false]) {
       const okB = (info: Info, b: Room['connectors'][number], bi: number) =>
-        b.len >= 1 && compatible(A, b, match) && (!growOnly || growOthers(info, bi) > 0);
+        b.len >= 1 && compatible(A, b, match) && (!growOnly || (growMin > 0 ? doorsBesides(info, bi) >= growMin : growOthers(info, bi) > 0));
       const group = growOnly ? g.filter((info) => info.room.connectors.some((b, bi) => okB(info, b, bi))) : g;
       const child = growFrom(this.ctx, this.lay, P, ci, [group], okB, D, fails, opts);
       if (child) return { child, why: 'space' };
@@ -820,8 +975,17 @@ class Stream implements StreamWorld {
     if (!n) return null;
     const ci = n.info.room.connectors.findIndex((c) => c.id === connectorId);
     if (ci < 0) return null;
-    if (n.linked[ci]) return 'linked';
-    return this.dead.has(dk(n.inst.order, ci)) ? 'dead' : 'pending';
+    if (n.linked[ci]) {
+      // «исчезнувшая» дверь (пропущенный переход) — глухая
+      for (const li of this.sealed) {
+        const l = this.lay.links[li];
+        if ((l.a.inst === instId && l.a.connector === connectorId) || (l.b.inst === instId && l.b.connector === connectorId)) return 'dead';
+      }
+      return 'linked';
+    }
+    const key = dk(n.inst.order, ci);
+    if (this.exitDoors.has(key)) return 'exit';
+    return this.dead.has(key) ? 'dead' : 'pending';
   }
 
   addressOf(instId: string): string | null {
@@ -864,6 +1028,8 @@ class Stream implements StreamWorld {
     const v0 = this.version;
     const t0 = now();
     const exit = this.placeExit(L, spec);
+    // прошёл через переход — счётчик переходов с нуля
+    this.resetTransitions();
     this.version++;
     this.ms += now() - t0;
     this.notify([exit.inst.id], v0);
@@ -885,7 +1051,8 @@ class Stream implements StreamWorld {
     const k = this.rollOf(L, spec).floorsDown;
     const floor = L.floor - k;
     const E = this.root.sub(`descent:${addr}`);
-    const pick = this.pickExit(E, ARRIVAL_TAG);
+    const dest = this.W ? this.transitionTarget(L, `descent:${addr}`) : null;
+    const pick = this.pickExit(E, ARRIVAL_TAG, dest ? this.biomePool(dest.biome) : null);
     if (!pick) throw new Error(`descend: в проекте нет комнаты-выхода для «${L.info.room.name}» (нужна комната с меткой)`);
     const { info, arrive } = pick;
     const ci = arrive[E.int(0, arrive.length - 1)];
@@ -897,6 +1064,13 @@ class Stream implements StreamWorld {
     n.linked[ci] = true;
     this.trans.push({ a: { inst: L.inst.id, connector: '' }, b: { inst: n.inst.id, connector: info.room.connectors[ci].id }, kind: 'descent', floors: k });
     this.exitBy.set(L.inst.order, n);
+    if (dest) {
+      // режим квартир: за переходом — квартира другого биома или богатая квартира
+      const cl = this.newCluster(dest.biome, dest.home, dest.rich);
+      this.onPlaced(n, L, childAddr(addr, DESCENT_CONN), false, cl);
+      this.fillCluster(cl);
+      return n;
+    }
     this.onPlaced(n, L, childAddr(addr, DESCENT_CONN), false);
     if (this.canGrow(n)) this.setSpine(n);
     return n;
@@ -910,9 +1084,10 @@ class Stream implements StreamWorld {
    *  2) то же без требования тега комнаты;
    *  3) тег из EXIT_TAGS или 'start' и ≥ 2 меток — приходят через любую, кроме которой есть ростовая;
    *  4) любая комната с меткой.
-   * Вес — как при росте (weight × ветвистость × модификаторы). arrive — индексы меток прихода.
+   * Вес — как при росте (weight × ветвистость × модификаторы). arrive — индексы меток прихода. pool — комнаты и веса
+   * биома (режим квартир; в нём ступени 1–3 — из пула биома, 4 — любые).
    */
-  private pickExit(E: Rng, tag: string): { info: Info; arrive: number[] } | null {
+  private pickExit(E: Rng, tag: string, pool: Pool | null = null): { info: Info; arrive: number[] } | null {
     const ok = (i: Info) => !i.room.location && !(i.room.unique && this.uniqueUsed.has(i)) && i.room.connectors.some((c) => c.len >= 1);
     const tagged = (i: Info, extra: string[] = []) => i.room.tags.some((t) => EXIT_TAGS.includes(t) || extra.includes(t));
     // метки прихода ci: кроме ci есть ростовая метка (мир пойдёт дальше)
@@ -924,16 +1099,20 @@ class Stream implements StreamWorld {
       return v.length ? v : i.room.connectors.map((c, ci) => (c.len >= 1 ? ci : -1)).filter((ci) => ci >= 0);
     };
     const all = this.infos.filter((x): x is Info => !!x);
+    const cands = pool ? pool.list : this.cands;
     const tiers: [Info[], (i: Info) => number[]][] = [
-      [this.cands.filter((i) => ok(i) && tagged(i)), (i) => via(i, true)],
-      [this.cands.filter(ok), (i) => via(i, true)],
-      [this.cands.filter((i) => ok(i) && tagged(i, ['start']) && i.room.connectors.filter((c) => c.len >= 1).length >= 2), (i) => via(i, false)],
+      [cands.filter((i) => ok(i) && tagged(i)), (i) => via(i, true)],
+      [cands.filter(ok), (i) => via(i, true)],
+      [cands.filter((i) => ok(i) && tagged(i, ['start']) && i.room.connectors.filter((c) => c.len >= 1).length >= 2), (i) => via(i, false)],
+      // в биоме — любая его комната с меткой (приходят через любую), затем любая комната вообще
+      ...(pool ? [[cands.filter(ok), any] as [Info[], (i: Info) => number[]]] : []),
       [all.filter(ok), any],
     ];
     for (const [list, arr] of tiers) {
       const c = list.map((info) => ({ info, arrive: arr(info) })).filter((x) => x.arrive.length > 0);
       if (c.length === 0) continue;
-      return c[pickWeighted(E, c.map((x) => this.wt.get(x.info) ?? x.info.weight))];
+      const wOf = (x: Info) => (pool && pool.weightOf(x) > 0 ? pool.weightOf(x) : this.wt.get(x) ?? x.weight);
+      return c[pickWeighted(E, c.map((x) => wOf(x.info)))];
     }
     return null;
   }
@@ -998,6 +1177,8 @@ class Stream implements StreamWorld {
     const v0 = this.version;
     const t0 = now();
     const exit = this.placeLiftExit(L, roll, floor, side);
+    // прошёл через переход — счётчик переходов с нуля
+    this.resetTransitions();
     this.version++;
     this.ms += now() - t0;
     this.notify([exit.inst.id], v0);
@@ -1032,7 +1213,9 @@ class Stream implements StreamWorld {
           'по розыгрышу логово, но в проекте нет комнаты-логова (спец-локация «Логово босса» с меткой) — поставлен обычный выход.');
       }
     }
-    pick ??= this.pickExit(E, LIFT_ARRIVAL_TAG);
+    const lair = !!pick;
+    const dest = this.W ? this.transitionTarget(L, `lift:${addr}:${floor}:${side}`) : null;
+    pick ??= this.pickExit(E, LIFT_ARRIVAL_TAG, dest ? this.biomePool(dest.biome) : null);
     if (!pick) throw new Error(`ascend: в проекте нет комнаты для выхода лифта «${L.info.room.name}» (нужна комната с меткой)`);
     const { info, arrive } = pick;
     const ci = arrive[E.int(0, arrive.length - 1)];
@@ -1047,6 +1230,13 @@ class Stream implements StreamWorld {
     n.linked[ci] = true;
     this.trans.push({ a: { inst: L.inst.id, connector: '' }, b: { inst: n.inst.id, connector: info.room.connectors[ci].id }, kind: 'lift', floors: floor, side });
     this.liftBy.set(`${L.inst.order}:${floor}:${side}`, n);
+    if (dest) {
+      // режим квартир: за выходом — квартира другого биома / богатая квартира; логово — тупик в биоме, откуда пришли
+      const cl = lair ? this.newCluster(dest.home, dest.home, false) : this.newCluster(dest.biome, dest.home, dest.rich);
+      this.onPlaced(n, L, childAddr(addr, liftConn(floor, side)), false, cl);
+      this.fillCluster(cl);
+      return n;
+    }
     this.onPlaced(n, L, childAddr(addr, liftConn(floor, side)), false);
     if (this.canGrow(n)) this.setSpine(n);
     return n;
@@ -1069,6 +1259,361 @@ class Stream implements StreamWorld {
     if (c.length <= 1) return c[0] ?? null;
     const ws = c.map((x) => x.info.weight);
     return c[pickWeighted(E, ws.some((v) => v > 0) ? ws : ws.map(() => 1))];
+  }
+
+  // ───────── режим квартир (docs/GENERATOR-4D.md §16) ─────────
+
+  /** Комнаты биома и их веса: вес роста × ветвистость × модификаторы × множитель биома (0 — не растёт). Нет биома с
+   *  таким id — все комнаты пула с прежними весами. */
+  private biomePool(id: string): Pool {
+    let p = this.pools.get(id);
+    if (!p) {
+      const b = this.W?.biomes.find((x) => x.id === id) ?? null;
+      const w = new Map<Info, number>();
+      for (const i of this.cands) {
+        const v = (this.wt.get(i) ?? i.weight) * (b ? biomeMul(b, i.room) : 1);
+        if (v > 0) w.set(i, v);
+      }
+      p = { list: [...w.keys()], weightOf: (x) => w.get(x) ?? 0 };
+      this.pools.set(id, p);
+    }
+    return p;
+  }
+
+  private newCluster(biome: string, home: string, rich: boolean): Cluster {
+    const cl: Cluster = { id: this.clusters.length, biome, home, rich, entry: -1, rooms: [], exits: [], opened: [], transition: null };
+    this.clusters.push(cl);
+    return cl;
+  }
+
+  /**
+   * Вырастить квартиру от её входной комнаты (уже поставлена). Поток ГСЧ квартиры C = root.sub("cluster:" + адрес входа):
+   * N = C.int(clusterRooms), K = C.int(clusterExits). Открытые двери комнат квартиры — две очереди по порядку постановки:
+   * внутренние (OUTER_TAGS нет) — первыми, чтобы квартиры достраивались; наружные — когда внутренних нет. Для двери:
+   * петля к двери своей квартиры напротив — связать; иначе складчатая стыковка из пула биома на потоке двери (как обычный
+   * рост); у наружной двери, когда наружных впереди меньше K + 1, — сначала комнаты, дающие рост. Запас под выходы:
+   * открытых дверей (с текущей) не больше clusterExits[0] — за дверью встаёт только комната, дающая рост, петля не
+   * замыкается (−2 двери); не встала — дверь остаётся под выход (стена 'cluster', см. ниже). Иначе замкнутая квартира
+   * (все двери связаны, как у квартиры за входной дверью) осталась бы без выходов. Набрали N комнат —
+   * оставшиеся внутренние двери — стены ('cluster'); из оставшихся наружных K (C.shuffle) — закрытые выходы, остальные —
+   * стены. Выходов меньше clusterExits[0] — выходами становятся глухие двери квартиры (сначала наружные). Все комнаты
+   * квартиры — раскрыты (ensureAround / ensureVisible их не трогают).
+   */
+  private fillCluster(cl: Cluster): void {
+    const W = this.W!;
+    const E = this.lay.nodes[cl.entry];
+    const C = this.root.sub(`cluster:${this.addr[cl.entry]}`);
+    const N = C.int(W.clusterRooms[0], W.clusterRooms[1]);
+    const K = C.int(W.clusterExits[0], W.clusterExits[1]);
+    const Kmin = W.clusterExits[0];
+    const pool = this.biomePool(cl.biome);
+    const win = this.windowCounts(E);
+    const inner: DoorRef[] = [], outer: DoorRef[] = [];
+    let ii = 0, oi = 0;
+    const open = (n: Node, ci: number) => n.conns[ci].len >= 1 && !n.linked[ci] && !this.dead.has(dk(n.inst.order, ci)) && !this.exitDoors.has(dk(n.inst.order, ci));
+    const push = (n: Node) => n.conns.forEach((c, ci) => { if (open(n, ci)) (OUTER_TAGS.includes(c.tag) ? outer : inner).push({ n, ci }); });
+    push(E);
+    /** открытых дверей в очередях, начиная с текущих позиций */
+    const openLeft = () => {
+      let k = 0;
+      for (let j = ii; j < inner.length; j++) if (open(inner[j].n, inner[j].ci)) k++;
+      for (let j = oi; j < outer.length; j++) if (open(outer[j].n, outer[j].ci)) k++;
+      return k;
+    };
+    while (cl.rooms.length < N) {
+      const isIn = ii < inner.length;
+      if (!isIn && oi >= outer.length) break;
+      const { n: P, ci } = isIn ? inner[ii] : outer[oi];
+      if (!open(P, ci)) {
+        if (isIn) ii++;
+        else oi++;
+        continue;
+      }
+      const left = openLeft();
+      if (isIn) ii++;
+      else oi++;
+      const reserve = left <= Kmin;
+      if (left - 2 >= Kmin && this.tryLoop(P, ci, cl.id)) continue;
+      const daddr = childAddr(this.addr[P.inst.order], P.info.room.connectors[ci].id);
+      const scarce = reserve || (!isIn && outer.length - oi < K + 1);
+      const { child, why } = this.grow(P, ci, this.root.sub(`door:${daddr}`), scarce, win, pool, reserve ? 1 : 0);
+      if (!child) {
+        this.markDead(P, ci, reserve ? 'cluster' : why);
+        continue;
+      }
+      this.grown++;
+      this.onPlaced(child, P, daddr, true, cl);
+      win.set(child.info, (win.get(child.info) ?? 0) + 1);
+      push(child);
+    }
+    for (const { n, ci } of inner.slice(ii)) if (open(n, ci)) this.markDead(n, ci, 'cluster');
+    const rest = outer.slice(oi).filter(({ n, ci }) => open(n, ci));
+    const order = C.shuffle(rest.map((_, i) => i));
+    const take = new Set(order.slice(0, K));
+    rest.forEach(({ n, ci }, i) => {
+      if (take.has(i)) {
+        const key = dk(n.inst.order, ci);
+        cl.exits.push(key);
+        this.exitDoors.set(key, cl.id);
+      } else this.markDead(n, ci, 'cluster');
+    });
+    // выходов меньше минимума (двери ушли на рост или за ними ничего не встало) — выходами становятся глухие двери
+    // квартиры от входа: наружные неиспользованные, наружные, где не встало (при открытии пробуются снова, в т.ч. другие
+    // слои), затем так же внутренние, — квартира без выходов остановила бы мир
+    const need = W.clusterExits[0] - cl.exits.length;
+    if (need > 0) {
+      const lists: number[][] = [[], [], [], []];
+      for (const i of cl.rooms) {
+        const n = this.lay.nodes[i];
+        n.conns.forEach((c, ci) => {
+          const key = dk(i, ci);
+          const why = this.dead.get(key);
+          if (c.len < 1 || n.linked[ci] || why === undefined || why === 'vanished' || why === 'chance') return;
+          lists[(OUTER_TAGS.includes(c.tag) ? 0 : 2) + (why === 'cluster' ? 0 : 1)].push(key);
+        });
+      }
+      for (const key of lists.flat().slice(0, need)) {
+        this.dead.delete(key);
+        this.deadFail--;
+        cl.exits.push(key);
+        this.exitDoors.set(key, cl.id);
+      }
+    }
+    for (const i of cl.rooms) this.expandedF[i] = true;
+  }
+
+  openDoor(instId: string, connectorId: string): string | null {
+    if (!this.W) throw new Error('openDoor: мир без квартир (settings.world = null)');
+    const n = this.byId.get(instId);
+    if (!n) throw new Error(`openDoor: нет экземпляра ${instId}`);
+    const ci = n.info.room.connectors.findIndex((c) => c.id === connectorId);
+    const key = dk(n.inst.order, ci);
+    const cid = ci < 0 ? undefined : this.exitDoors.get(key);
+    if (cid === undefined) throw new Error(`openDoor: ${instId}/${connectorId} — не закрытый выход квартиры`);
+    const cl = this.clusters[cid];
+    const v0 = this.version;
+    const t0 = now();
+    // выпал переход — он прямо за этой дверью (100%); игрок из квартиры не ушёл: остальные выходы на месте, а если он
+    // пойдёт через другой выход, не зайдя в переход, — переход исчезнет
+    if (this.tr.pending) {
+      const t = this.placeTransition(cl, [{ n, ci }]);
+      if (t) {
+        this.version++;
+        this.ms += now() - t0;
+        this.notify([t.inst.id], v0);
+        return t.inst.id;
+      }
+    }
+    const daddr = childAddr(this.addr[n.inst.order], connectorId);
+    const win = this.windowCounts(n);
+    this.exitDoors.delete(key);
+    cl.exits = cl.exits.filter((e) => e !== key);
+    // за дверью — квартира того же биома (у богатой квартиры — биома, откуда в неё пришли). Вход — комната с запасом
+    // дверей: сначала не меньше clusterExits[0] ростовых, потом хоть одна (из биома, затем из любых комнат), и только
+    // потом любая — тупиковая комната за дверью (санузел, балкон) оставила бы квартиру без выходов
+    // потом любая — тупиковая комната за дверью (санузел, балкон) оставила бы квартиру без выходов. По меткам с запасом
+    // не встаёт (за дверью прихожая → комната — только комнаты-тупики) — вход стыкуется любой своей дверью (4D-шов, как
+    // у перехода; связь loose): прихожая, площадка, коридор другой квартиры
+    const ncl = this.newCluster(cl.home, cl.home, false);
+    const home = this.biomePool(cl.home);
+    const Kmin = this.W.clusterExits[0];
+    const D = () => this.root.sub(`door:${daddr}`);
+    const tries: (() => Node | null)[] = [
+      () => this.grow(n, ci, D(), true, win, home, Kmin + 2).child,
+      () => this.growLoose(n, ci, D(), win, home, Kmin + 2),
+      () => this.grow(n, ci, D(), true, win, home, Kmin).child,
+      () => this.growLoose(n, ci, D(), win, home, Kmin),
+      () => this.grow(n, ci, D(), true, win, null, Kmin).child,
+      () => this.growLoose(n, ci, D(), win, null, Kmin),
+      () => this.grow(n, ci, D(), true, win, home, 1).child,
+      () => this.growLoose(n, ci, D(), win, home, 1),
+      () => this.grow(n, ci, D(), true, win, null, 1).child,
+      () => this.grow(n, ci, D(), true, win, home).child,
+      () => this.grow(n, ci, D(), true, win, null).child,
+    ];
+    let child: Node | null = null;
+    for (const t of tries) if ((child = t())) break;
+    if (!child) {
+      this.clusters.pop();
+      this.markDead(n, ci, 'space');
+      this.version++;
+      this.ms += now() - t0;
+      this.notify([], v0);
+      return null;
+    }
+    cl.opened.push(key);
+    this.grown++;
+    this.onPlaced(child, n, daddr, true, ncl);
+    this.fillCluster(ncl);
+    const ids = ncl.rooms.map((i) => this.lay.instances[i].id);
+    // переход не встал за дверью (нет места) — в новой квартире, поближе ко входу
+    if (this.tr.pending) {
+      const t = this.placeTransition(ncl, this.clusterDoors(ncl));
+      if (t) ids.push(t.inst.id);
+    }
+    // остальные закрытые выходы старой квартиры исчезают, пропущенный в ней переход — тоже. Новая квартира вышла совсем
+    // без выходов и перехода (вырожденный случай) — старые выходы остаются: мир не должен встать
+    if (ncl.exits.length > 0 || ncl.transition !== null) {
+      for (const e of cl.exits) {
+        this.exitDoors.delete(e);
+        this.markDead(this.lay.nodes[Math.floor(e / 1024)], e % 1024, 'vanished');
+      }
+      cl.exits = [];
+      this.sealSkipped(cl);
+    }
+    this.version++;
+    const dt = now() - t0;
+    this.ms += dt;
+    this.times.push(dt);
+    this.notify(ids, v0);
+    return child.inst.id;
+  }
+
+  /** Вход новой квартиры через любую свою дверь (метки не сверяются): комната пула (null — все), у которой кроме неё
+   *  не меньше minOthers дверей. Связь — loose (validateFoldRun не сверяет теги и ширину). */
+  private growLoose(P: Node, ci: number, D: Rng, win: Map<Info, number>, pool: Pool | null, minOthers: number): Node | null {
+    const okB = (info: Info, b: Connector, bi: number) => b.len >= 1 && doorsBesides(info, bi) >= minOthers;
+    const list = (pool ? pool.list : this.cands).filter((info) => info.room.connectors.some((b, bi) => okB(info, b, bi)));
+    if (!list.length) return null;
+    const skip = (info: Info) => (info.room.unique && this.uniqueUsed.has(info)) || (win.get(info) ?? 0) >= info.effMax;
+    const fails: Fails = { space: 0, rule: 0, sight: 0, seam: 0 };
+    const weightOf = pool ? pool.weightOf : (x: Info) => this.wt.get(x) ?? x.weight;
+    const child = growFrom(this.ctx, this.lay, P, ci, [list], okB, D, fails, { weightOf, skip, stick: true });
+    if (child) this.lay.links[this.lay.links.length - 1].loose = true;
+    return child;
+  }
+
+  /** Двери квартиры для перехода: от входа (по порядку комнат) — сначала неиспользованные проёмы-стены, потом
+   *  закрытые выходы. */
+  private clusterDoors(cl: Cluster): DoorRef[] {
+    const walls: DoorRef[] = [], exits: DoorRef[] = [];
+    for (const i of cl.rooms) {
+      const n = this.lay.nodes[i];
+      n.conns.forEach((c, ci) => {
+        if (c.len < 1 || n.linked[ci]) return;
+        const key = dk(i, ci);
+        if (this.dead.get(key) === 'cluster') walls.push({ n, ci });
+        else if (this.exitDoors.has(key)) exits.push({ n, ci });
+      });
+    }
+    return [...walls, ...exits];
+  }
+
+  /**
+   * Переход (выпал по счётчику): спец-комната (лестница, лифт — по весу роста, поток root.sub("transition:" + адрес
+   * двери)) пристыковывается к первой из дверей doors, где встанет. Метка любая шириной от TRANSITION_MIN_LEN (переход
+   * встаёт за дверью любого биома — проёмы разной ширины совмещаются по центру). Выход, за которым встал переход,
+   * ведёт в него; стена становится проёмом. Не встал — переход ждёт следующей открытой двери.
+   */
+  private placeTransition(cl: Cluster, doors: DoorRef[]): Node | null {
+    const specials = this.infos.filter((x): x is Info => !!x && (x.room.location?.kind === 'stairwell' || x.room.location?.kind === 'lift') && x.room.gen.weight > 0);
+    if (!specials.length) return null;
+    for (const { n: P, ci } of doors) {
+      const A = P.conns[ci];
+      if (A.len < TRANSITION_MIN_LEN) continue;
+      const key = dk(P.inst.order, ci);
+      const daddr = childAddr(this.addr[P.inst.order], P.info.room.connectors[ci].id);
+      const R = this.root.sub(`transition:${daddr}`);
+      const info = specials[pickWeighted(R, specials.map((x) => x.room.gen.weight))];
+      const okB = (_: Info, b: Connector) => b.len >= 1;
+      const fails: Fails = { space: 0, rule: 0, sight: 0, seam: 0 };
+      // предел обзора и бесшовность — не для перехода: внутри спец-комнаты своя сцена, длинная лестница или шахта не
+      // должны мешать ей встать за дверью
+      const child = growFrom({ ...this.ctx, lim: null, seam: null }, this.lay, P, ci, [[info]], okB, R.sub(daddr), fails, { weightOf: () => 1, stick: true });
+      if (!child) continue;
+      if (this.exitDoors.has(key)) {
+        this.exitDoors.delete(key);
+        cl.exits = cl.exits.filter((e) => e !== key);
+      } else {
+        this.dead.delete(key);
+        this.deadFail--;
+      }
+      this.onPlaced(child, P, daddr, true, cl);
+      // дверь в переход: метки любые (validateFoldRun не сверяет теги и ширину)
+      this.lay.links[this.lay.links.length - 1].loose = true;
+      this.expandedF[child.inst.order] = true;
+      cl.transition = child.inst.order;
+      this.tr.pending = false;
+      return child;
+    }
+    return null;
+  }
+
+  /** Игрок уходит из квартиры: переход в ней, в который он не заходил, исчезает (дверь к нему — глухая). */
+  private sealSkipped(cl: Cluster): void {
+    const t = cl.transition;
+    if (t === null || this.visited.has(t)) return;
+    const id = this.lay.instances[t].id;
+    this.lay.links.forEach((l, li) => {
+      if (l.a.inst === id || l.b.inst === id) this.sealed.add(li);
+    });
+  }
+
+  /**
+   * Куда ведёт переход из спец-комнаты L (поток root.sub("trdest:" + ключ выхода)): с вероятностью trToBiome — в другой
+   * обычный биом (равновероятно), иначе — в богатую квартиру (её выходы — в биом, откуда пришли). Нет другого биома —
+   * богатая квартира; нет богатой — другой биом; нет ничего — тот же биом.
+   */
+  private transitionTarget(L: Node, key: string): { biome: string; home: string; rich: boolean } {
+    const W = this.W!;
+    const cur = this.clusters[this.clusterOf[L.inst.order] ?? -1];
+    const here = cur?.home ?? startBiomeOf(W)?.id ?? '';
+    const R = this.root.sub(`trdest:${key}`);
+    const toBiome = R.next() < W.trToBiome;
+    const others = plainBiomes(W).filter((b) => b.id !== here);
+    const rich = W.biomes.filter((b) => b.rich);
+    if ((toBiome || !rich.length) && others.length) {
+      const b = others[R.int(0, others.length - 1)];
+      return { biome: b.id, home: b.id, rich: false };
+    }
+    if (rich.length) {
+      const b = rich[R.int(0, rich.length - 1)];
+      return { biome: b.id, home: here, rich: true };
+    }
+    return { biome: here, home: here, rich: false };
+  }
+
+  /** Прошёл через переход — счётчик с нуля (новый поток бросков). */
+  private resetTransitions(): void {
+    if (!this.W) return;
+    this.tr = { count: 0, resets: this.tr.resets + 1, pending: false };
+  }
+
+  enter(instId: string): EnterResult {
+    const n = this.byId.get(instId);
+    if (!this.W || !n) return { count: 0, chance: 0, pending: false, resets: 0, counted: false, triggered: false };
+    const i = n.inst.order;
+    const res = (counted: boolean, triggered: boolean): EnterResult => ({ ...this.transitionState()!, counted, triggered });
+    if (this.visited.has(i)) return res(false, false);
+    this.visited.add(i);
+    // спец-комнаты (переходы) в счёт не идут
+    if (n.info.room.location) return res(false, false);
+    this.tr.count++;
+    // сводка прогона (run().warnings) показывает счётчик — кэш прогона устарел
+    this.version++;
+    let triggered = false;
+    const p = transitionChance(this.W, this.tr.count);
+    if (!this.tr.pending && p > 0 && makeRng(`${seedKey(this.settings.seed, this.settings.mods)}#tr:${this.tr.resets}:${this.tr.count}`).next() < p) {
+      this.tr.pending = true;
+      triggered = true;
+    }
+    return res(true, triggered);
+  }
+
+  transitionState(): TransitionState | null {
+    if (!this.W) return null;
+    return { count: this.tr.count, chance: transitionChance(this.W, this.tr.count + 1), pending: this.tr.pending, resets: this.tr.resets };
+  }
+
+  clusterAt(instId: string): ClusterInfo | null {
+    const n = this.byId.get(instId);
+    const cl = n ? this.clusters[this.clusterOf[n.inst.order] ?? -1] : undefined;
+    if (!this.W || !cl) return null;
+    const b = (id: string) => this.W!.biomes.find((x) => x.id === id) ?? null;
+    return {
+      id: cl.id, biome: b(cl.biome), home: b(cl.home), rich: cl.rich, rooms: cl.rooms.length, exits: cl.exits.length,
+      transition: cl.transition === null ? null : this.lay.instances[cl.transition].id,
+    };
   }
 
   stats(): StreamStats {
@@ -1096,6 +1641,9 @@ class Stream implements StreamWorld {
       floors: this.floorSet.size,
       minFloor: this.minFloor,
       maxFloor: this.maxFloor,
+      clusters: this.clusters.length,
+      exitsOpen: this.exitDoors.size,
+      transition: this.transitionState(),
     };
   }
 
@@ -1108,7 +1656,11 @@ class Stream implements StreamWorld {
       (st.descents || st.lifts
         ? ` Переходов на другие этажи: вниз из спец-локаций ${st.descents}, выходов лифтов ${st.lifts}; этажей ${st.floors} (от ${sg(st.minFloor)} до ${sg(st.maxFloor)}).`
         : '') +
-      (st.pendingGrow === 0 && st.instances > 0 ? ' Мир заглох: ростовых дверей не осталось, заколоченных по шансу нет — все отказали по месту/обзору.' : '');
+      (this.W
+        ? ` Квартир ${st.clusters}, закрытых выходов ${st.exitsOpen}; переходы: пройдено комнат ${st.transition!.count}` +
+          `${st.transition!.pending ? ', переход выпал — за следующей открытой дверью' : `, шанс следующей ${Math.round(st.transition!.chance * 100)}%`}.` +
+          (st.exitsOpen === 0 && st.instances > 0 ? ' Закрытых выходов не осталось — мир дальше не растёт (выходы исчезли или не встали).' : '')
+        : st.pendingGrow === 0 && st.instances > 0 ? ' Мир заглох: ростовых дверей не осталось, заколоченных по шансу нет — все отказали по месту/обзору.' : '');
   }
 
   run(): Run {
@@ -1127,8 +1679,8 @@ class Stream implements StreamWorld {
       seed: this.settings.seed,
       settings: { ...this.gen, count: Math.max(1, lay.instances.length), fold: { ...this.settings.fold } },
       instances: lay.instances.slice(),
-      // двери (их индексы = индексы проёмов), затем переходы спец-локаций и выходы лифтов
-      links: [...lay.links, ...this.trans],
+      // двери (их индексы = индексы проёмов), затем переходы спец-локаций и выходы лифтов; «исчезнувшие» двери помечены
+      links: [...lay.links.map((l, li) => (this.sealed.has(li) ? { ...l, sealed: true as const } : l)), ...this.trans],
       openConnectors,
       content: this.content.slice(),
       totals: { ...this.totals },
@@ -1171,7 +1723,26 @@ class Stream implements StreamWorld {
       deadWhy,
       spine: lay.nodes.filter((n) => this.spine[n.inst.order]).map((n) => n.inst.id),
       rooms,
+      ...(this.W ? { world: this.saveWorld() } : {}),
       savedAt: Date.now(),
+    };
+  }
+
+  private saveWorld(): WorldSave {
+    const lay = this.lay;
+    const door = (k: number) => {
+      const n = lay.nodes[Math.floor(k / 1024)];
+      return `${n.inst.id}/${n.info.room.connectors[k % 1024].id}`;
+    };
+    return {
+      clusters: this.clusters.map((c) => ({
+        biome: c.biome, home: c.home, rich: c.rich, entry: lay.instances[c.entry].id, exits: c.exits.map(door), opened: c.opened.map(door),
+        transition: c.transition === null ? null : lay.instances[c.transition].id,
+      })),
+      clusterOf: lay.nodes.map((n) => this.clusterOf[n.inst.order] ?? -1),
+      sealed: [...this.sealed].sort((a, b) => a - b),
+      visited: [...this.visited].sort((a, b) => a - b).map((i) => lay.instances[i].id),
+      tr: { ...this.tr },
     };
   }
 
@@ -1186,6 +1757,8 @@ class Stream implements StreamWorld {
   private checkSave(sv: StreamSave): string[] {
     if (!sv || sv.format !== 'room-forge-world' || sv.version !== 1 || !sv.run || !Array.isArray(sv.run.instances)) return ['неизвестный формат сохранения'];
     const bad: string[] = [];
+    if (!!this.W !== !!sv.world) return [this.W ? 'сохранение без квартир (мир до биомов и переходов)' : 'сохранение с квартирами'];
+    if (sv.world && (!Array.isArray(sv.world.clusterOf) || sv.world.clusterOf.length !== sv.run.instances.length)) return ['квартиры сохранения не сходятся с комнатами'];
     const ids = new Set<string>();
     sv.run.instances.forEach((inst, k) => {
       if (inst.id !== `i${k}` || inst.order !== k) bad.push(`экземпляр ${inst.id} не на своём месте`);
@@ -1260,7 +1833,7 @@ class Stream implements StreamWorld {
       a.nb.push(b);
       b.nb.push(a);
       lay.sight.addPortal(a.inst.order, a.conns[ai], b.inst.order, b.conns[bi]);
-      lay.links.push({ a: { ...l.a }, b: { ...l.b }, dw: b.w - a.w });
+      lay.links.push({ a: { ...l.a }, b: { ...l.b }, dw: b.w - a.w, ...(l.loose ? { loose: true as const } : {}) });
       // связь дерева роста — первая связь родитель → ребёнок (петли всегда позже)
       if (b.inst.parent === a.inst.id && !parentConn.has(b.inst.id)) parentConn.set(b.inst.id, l.a.connector);
       if (a.w !== b.w) this.shifted++;
@@ -1271,6 +1844,8 @@ class Stream implements StreamWorld {
     const exp = new Set(sv.expanded);
     const sp = new Set(sv.spine ?? []);
     const derive = !Array.isArray(run.content) || run.content.length !== run.instances.length;
+    // режим квартир: квартиры — до наполнения (элитность богатой квартиры зависит от неё)
+    if (sv.world && this.W) this.restoreWorld(sv.world);
     for (const n of lay.nodes) {
       const i = n.inst.order;
       const parent = n.inst.parent ? this.byId.get(n.inst.parent)! : null;
@@ -1309,7 +1884,7 @@ class Stream implements StreamWorld {
       const w = (why[k] ?? 'space') as DeadWhy;
       this.dead.set(dk(n.inst.order, ci), w);
       if (w === 'chance') this.deadChance++;
-      else { this.deadFail++; n.why[ci] = w; }
+      else { this.deadFail++; if (isWhy(w)) n.why[ci] = w; }
     });
     if (this.pvsOpt && run.pvs) {
       const order = new Map(lay.instances.map((x) => [x.id, x.order]));
@@ -1328,6 +1903,32 @@ class Stream implements StreamWorld {
     this.warnings.push(...(run.warnings ?? []));
     this.startId = lay.nodes.length ? lay.nodes[0].inst.id : null;
     this.ms = run.ms ?? 0;
+  }
+
+  /** Квартиры, выходы, исчезнувшие двери, посещённые комнаты и счётчик переходов — из сохранения. */
+  private restoreWorld(ws: WorldSave): void {
+    const key = (s: string): number | null => {
+      const cut = s.lastIndexOf('/');
+      const n = this.byId.get(s.slice(0, cut));
+      const ci = n ? n.info.room.connectors.findIndex((c) => c.id === s.slice(cut + 1)) : -1;
+      return n && ci >= 0 ? dk(n.inst.order, ci) : null;
+    };
+    const order = (id: string | null) => (id === null ? null : this.byId.get(id)?.inst.order ?? null);
+    ws.clusterOf.forEach((c, i) => (this.clusterOf[i] = c));
+    ws.clusters.forEach((c, id) => {
+      const cl: Cluster = {
+        id, biome: c.biome, home: c.home, rich: c.rich, entry: order(c.entry) ?? -1, rooms: [],
+        exits: c.exits.map(key).filter((k): k is number => k !== null),
+        opened: c.opened.map(key).filter((k): k is number => k !== null),
+        transition: order(c.transition),
+      };
+      for (const k of cl.exits) this.exitDoors.set(k, id);
+      this.clusters.push(cl);
+    });
+    ws.clusterOf.forEach((c, i) => { if (c >= 0 && this.clusters[c]) this.clusters[c].rooms.push(i); });
+    for (const li of ws.sealed) this.sealed.add(li);
+    for (const id of ws.visited) { const i = order(id); if (i !== null) this.visited.add(i); }
+    this.tr = { count: ws.tr.count, resets: ws.tr.resets, pending: ws.tr.pending };
   }
 }
 

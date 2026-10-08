@@ -21,8 +21,8 @@ import { LiftLayer, type LiftRequest } from './LiftLayer';
 import { LairDecor } from './lairDecor';
 import { lairSign } from '../locations/lair';
 import type { LiftSide } from '../model/types';
-import { locationSeedKey } from '../locations/stairwell';
-import { seedKey as worldSeedKey } from '../gen4d/stream';
+import { locationSeedKey, parseLocation } from '../locations/stairwell';
+import { seedKey as worldSeedKey, type ClusterInfo } from '../gen4d/stream';
 import { viewHorizonM } from '../gen4d/pvs';
 import './view3d.css';
 
@@ -148,6 +148,9 @@ export default function View3DPage() {
   const [walkRun, setWalkRun] = useState({ seed: walkOpts.seed, n: 0 });
   const [walkRx, setWalkRx] = useState<RunExport | null>(null);
   const [walkStatus, setWalkStatus] = useState<WalkStatus | null>(null);
+  /** режим квартир: закрытый выход рядом с игроком (подсказка «E — открыть») и квартира под ногами */
+  const [doorAt, setDoorAt] = useState<{ inst: string; connector: string } | null>(null);
+  const [walkHere, setWalkHere] = useState<ClusterInfo | null>(null);
   const walkRef = useRef<WalkSession | null>(null);
   const setWalkOpt = <K extends keyof WalkOptions>(k: K, v: WalkOptions[K]) => {
     const next = { ...walkOpts, [k]: v };
@@ -204,7 +207,11 @@ export default function View3DPage() {
     }
   }, [source, ui.run, roomSel, file, p, walkRx, walkRun]);
 
-  const effOpts = useMemo(() => (source === 'room' ? { ...opts, deadEnds: deadRoom } : opts), [opts, source, deadRoom]);
+  // «Комната» — свои тупики; «Прогулка» в режиме квартир — глухие двери стенами (закрытые выходы — двери-панели)
+  const effOpts = useMemo(
+    () => (source === 'room' ? { ...opts, deadEnds: deadRoom } : source === 'walk' && walkOpts.clusters ? { ...opts, deadEnds: 'wall' as const } : opts),
+    [opts, source, deadRoom, walkOpts.clusters],
+  );
   // складчатый (4D) прогон: целиком не строится — частями через FoldDriver
   const fold = useMemo(() => isFoldRun(rx.data), [rx.data]);
 
@@ -480,12 +487,54 @@ export default function View3DPage() {
       };
       go(0);
     };
+    // режим квартир: закрытый выход квартиры рядом (ближе 1.3 м к его двери-панели) — подсказка «E — открыть»
+    let door: { inst: string; connector: string } | null = null;
+    let hereRoom: string | null = null;
+    const nearDoor = (s: WalkSession, dd: FoldDriver, room: string) => {
+      let best: { inst: string; connector: string } | null = null;
+      let bd = 1.3;
+      const c = v.fps.position;
+      for (const k of s.rx.instances.find((i) => i.id === room)?.connectors ?? []) {
+        if (!k.exit) continue;
+        const de = dd.deadEndAt(room, k.id);
+        if (!de || Math.abs(c.y - 1.65 - de.center.y) > 1.5) continue;
+        const dist = Math.hypot(c.x - de.center.x, c.z - de.center.z);
+        if (dist < bd) {
+          bd = dist;
+          best = { inst: room, connector: k.id };
+        }
+      }
+      if (best?.inst !== door?.inst || best?.connector !== door?.connector) {
+        door = best;
+        setDoorAt(best);
+      }
+    };
+    const onDoorKey = (e: KeyboardEvent) => {
+      const s = session;
+      if (e.code !== 'KeyE' || !s || !door || v.hasOverlay || v.mode !== 'fps') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+      const { inst, connector } = door;
+      door = null;
+      setDoorAt(null);
+      const id = s.openDoor(inst, connector);
+      if (!id) notify('Дверь не открылась: за ней ничего не встало', 'error');
+    };
+    window.addEventListener('keydown', onDoorKey);
     // возврат в лифт: игрок в комнате за выходом лифта шагнул к стене, через которую пришёл
     const liftTimer = window.setInterval(() => {
       const s = session, dd = d;
-      if (!s || !dd || v.hasOverlay || v.mode !== 'fps' || performance.now() < liftCool) return;
+      if (!s || !dd || v.hasOverlay || v.mode !== 'fps') return;
       const room = dd.portal?.current ?? dd.current.center;
       if (!room) return;
+      if (s.world.transitionState()) {
+        nearDoor(s, dd, room);
+        if (room !== hereRoom) {
+          hereRoom = room;
+          setWalkHere(s.world.clusterAt(room));
+        }
+      }
+      if (performance.now() < liftCool) return;
       if (s.world.locationOf(room)?.kind === 'lift') return;
       const c = v.fps.position;
       for (const l of s.world.run().links) {
@@ -608,6 +657,9 @@ export default function View3DPage() {
       window.removeEventListener('beforeunload', onUnload);
       clearInterval(timer);
       clearInterval(liftTimer);
+      window.removeEventListener('keydown', onDoorKey);
+      setDoorAt(null);
+      setWalkHere(null);
       lair.hide();
       savePlayer();
       d?.dispose();
@@ -765,6 +817,59 @@ export default function View3DPage() {
     setLoc(null);
     if (document.pointerLockElement) document.exitPointerLock();
   };
+
+  // ── «Прогон» / «Файл»: шагнул в комнату со спец-локацией (лестница, лифт) — её сцена. Мира за переходом здесь нет
+  // (переходы в другие биомы — в «Прогулке»): любой выход — обратно к двери, через которую вошёл ──
+  const runLocSkip = useRef<string | null>(null);
+  const runRoom = source === 'run' || source === 'file' ? (fold ? fs?.center ?? null : here) : null;
+  /** Поставить игрока в соседнюю комнату у проёма в комнату id, лицом от проёма. */
+  const exitToDoor = (id: string) => {
+    const v = viewer.current;
+    const data = rx.data;
+    if (!v || !data) return;
+    const l = data.links.find((x) => (!x.kind || x.kind === 'door') && !x.sealed && (x.a.inst === id || x.b.inst === id));
+    const nb = l ? (l.a.inst === id ? l.b.inst : l.a.inst) : null;
+    if (!nb) return;
+    if (fold) {
+      driver.current?.placeAtDoor(nb, id);
+      return;
+    }
+    const op = model?.openings.find((o) => (o.a.inst === id && o.b.inst === nb) || (o.b.inst === id && o.a.inst === nb));
+    const ri = model?.rooms.find((r) => r.inst === id);
+    if (!op || !ri) return;
+    const cx = (op.rect.x0 + op.rect.x1) / 2, cy = (op.rect.y0 + op.rect.y1) / 2;
+    // направление в соседнюю комнату: по оси прохода проёма, от спец-комнаты
+    const dx = op.axis === 'x' ? Math.sign(cx - ri.anchor[0]) || 1 : 0;
+    const dy = op.axis === 'y' ? Math.sign(cy - ri.anchor[1]) || 1 : 0;
+    // план (x вправо, y вниз) → Babylon (x, −y)
+    v.fps.position.set(cx + dx * 0.9, v.fps.position.y, -(cy + dy * 0.9));
+    v.fps.rotation.set(0.05, Math.atan2(dx, -dy), 0);
+    v.fps.cameraDirection.setAll(0);
+  };
+  useEffect(() => {
+    const data = rx.data;
+    if (!runRoom || mode !== 'fps' || loc || !data) return;
+    if (runLocSkip.current === runRoom) return;
+    runLocSkip.current = null;
+    const inst = data.instances.find((i) => i.id === runRoom);
+    const spec = parseLocation(inst?.location);
+    if (!inst || !spec || spec.kind === 'lair') return;
+    const n = roomAttempts.current.get(inst.id) ?? 0;
+    roomAttempts.current.set(inst.id, n + 1);
+    const base = { key: `run:${inst.id}:${Date.now()}`, seedKey: locationSeedKey(data.seed, inst.id), attempt: n, title: inst.roomName, mode: 'walk' as const };
+    const back = (text: string | null) => {
+      setLoc(null);
+      runLocSkip.current = inst.id;
+      exitToDoor(inst.id);
+      if (text) notify(text, 'ok');
+    };
+    const far = 'в «Прогулке» отсюда — квартира другого биома или богатая квартира';
+    if (spec.kind === 'lift') {
+      setLoc({ kind: 'lift', ...base, spec, onExit: (kind, floor) => back(kind === 'entry' ? null : `Выход ${SIDE_RU[kind]} на этаже ${floor > 0 ? '+' : '−'}${Math.abs(floor)}: ${far}`) });
+    } else {
+      setLoc({ kind: 'stairwell', ...base, spec, onExit: (kind, floors) => back(kind === 'descend' ? `Лестница вывела вниз на ${floors} эт.: ${far}` : null) });
+    }
+  }, [runRoom, mode, loc, rx.data]);
 
   // ── «Комната» со спец-локацией: войти в её сцену без мира ──
   const selRoom = p.rooms.find((r) => r.id === roomSel) ?? null;
@@ -948,11 +1053,17 @@ export default function View3DPage() {
                   Открыть
                 </Btn>
               </div>
-              <div className="grid2">
-                <NumField label="Тупики" value={walkOpts.deadEndChance * 100} min={0} max={100} step={5} digits={0} suffix="%" title="Вероятность, что нераскрытая дверь окажется заколоченной" onChange={(v) => setWalkOpt('deadEndChance', Math.min(1, Math.max(0, v / 100)))} />
-                <NumField label="Ветвистость" value={walkOpts.branching} min={0} max={10} step={0.25} title="Множитель веса развилок: 1 — как в пуле, больше — ветвистее" onChange={(v) => setWalkOpt('branching', Math.max(0, v))} />
-                <NumField label="Вперёд дверей" value={walkOpts.aheadDoors} min={0} max={16} step={1} digits={0} title="На сколько дверей вперёд мир раскрыт заранее" onChange={(v) => setWalkOpt('aheadDoors', Math.round(v))} />
-              </div>
+              <label className="check" title="Мир растёт квартирами с закрытыми дверями-выходами, биомами и переходами (настройки — «Генератор» → «Бесконечный мир»). Выключено — прежний рост с тупиками по шансу">
+                <input type="checkbox" checked={walkOpts.clusters} onChange={(e) => setWalkOpt('clusters', e.target.checked)} />
+                Квартиры, биомы и переходы
+              </label>
+              {!walkOpts.clusters && (
+                <div className="grid2">
+                  <NumField label="Тупики" value={walkOpts.deadEndChance * 100} min={0} max={100} step={5} digits={0} suffix="%" title="Вероятность, что нераскрытая дверь окажется заколоченной" onChange={(v) => setWalkOpt('deadEndChance', Math.min(1, Math.max(0, v / 100)))} />
+                  <NumField label="Ветвистость" value={walkOpts.branching} min={0} max={10} step={0.25} title="Множитель веса развилок: 1 — как в пуле, больше — ветвистее" onChange={(v) => setWalkOpt('branching', Math.max(0, v))} />
+                  <NumField label="Вперёд дверей" value={walkOpts.aheadDoors} min={0} max={16} step={1} digits={0} title="На сколько дверей вперёд мир раскрыт заранее" onChange={(v) => setWalkOpt('aheadDoors', Math.round(v))} />
+                </div>
+              )}
               <div className="v3-seg">
                 <Btn sm onClick={() => startWalk('мир-' + Math.random().toString(36).slice(2, 7))} title="Новый мир со случайным сидом и настройками выше">
                   Новый мир
@@ -965,8 +1076,25 @@ export default function View3DPage() {
                 <div className="v3-kv">
                   <span>комнат</span>
                   <span>{walkStatus.rooms} · слоёв {walkStatus.layers}</span>
-                  <span>тупиков</span>
-                  <span>{walkStatus.dead} · не раскрыто дверей {walkStatus.pending}</span>
+                  {walkStatus.stats.transition ? (
+                    <>
+                      <span>квартир</span>
+                      <span>
+                        {walkStatus.stats.clusters} · закрытых выходов {walkStatus.stats.exitsOpen}
+                      </span>
+                      <span>переход</span>
+                      <span>
+                        {walkStatus.stats.transition.pending
+                          ? 'выпал — за следующей открытой дверью'
+                          : `пройдено ${walkStatus.stats.transition.count} комн. · шанс ${Math.round(walkStatus.stats.transition.chance * 100)}%`}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span>тупиков</span>
+                      <span>{walkStatus.dead} · не раскрыто дверей {walkStatus.pending}</span>
+                    </>
+                  )}
                   <span>сохранение</span>
                   <span className={walkStatus.error ? 'v3-err' : 'muted'}>
                     {walkStatus.error ?? (walkStatus.saved ? `${new Date(walkStatus.saved.at).toLocaleTimeString()}${walkStatus.saved.bytes ? ` · ${fmtKB(walkStatus.saved.bytes)}` : ''}` : 'ещё нет')}
@@ -1229,12 +1357,20 @@ export default function View3DPage() {
                 <span>глубина {rx.data?.instances.find((i) => i.id === shown.inst)?.depth ?? 0}</span>
               </>
             )}
-            <span>тупиков {walkStatus.dead}</span>
+            {walkHere?.biome ? (
+              <span style={{ color: walkHere.biome.color }} title={walkHere.rich ? 'богатая квартира: элитность выше' : 'биом квартиры'}>
+                {walkHere.biome.name}
+                {walkHere.rich ? ' ★' : ''}
+              </span>
+            ) : (
+              <span>тупиков {walkStatus.dead}</span>
+            )}
             <span className={walkStatus.error ? 'v3-err' : 'muted'} title={walkStatus.error ?? 'автосохранение мира в localStorage'}>
               {walkStatus.error ? '⚠ не сохранено' : walkStatus.saved ? `✓ сохранено ${new Date(walkStatus.saved.at).toLocaleTimeString()}` : '…'}
             </span>
           </div>
         )}
+        {source === 'walk' && mode === 'fps' && doorAt && !loc && <div className="float hud v3-lift-prompt">E — открыть дверь</div>}
         {flash && mode === 'fps' && !loc && (
           <div key={flash.seq} className="v3-flash" style={{ color: flash.color }}>
             {flash.text}
