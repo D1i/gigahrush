@@ -16,6 +16,8 @@ export interface SRoom {
   sh: FShape;
   dx: number;
   dy: number;
+  /** длинный обзор (ходы и хабы подвала): линия, зашедшая в комнату, пределом обзора не ограничена */
+  long: boolean;
   /** индексы проёмов этой комнаты (в порядке связей) */
   portals: number[];
 }
@@ -50,10 +52,12 @@ function lineOf(sx: number, sy: number, dx: number, dy: number, k: number): [num
 export class SightSpace {
   readonly rooms: SRoom[] = [];
   readonly portals: SPortal[] = [];
+  /** последний walk заходил в комнату с длинным обзором */
+  private hitLong = false;
   constructor(readonly gap: number) {}
 
-  addRoom(sh: FShape, dx: number, dy: number): number {
-    this.rooms.push({ sh, dx, dy, portals: [] });
+  addRoom(sh: FShape, dx: number, dy: number, long = false): number {
+    this.rooms.push({ sh, dx, dy, portals: [], long });
     return this.rooms.length - 1;
   }
 
@@ -149,6 +153,7 @@ export class SightSpace {
         // быстрый путь: шаги, не выходящие из комнаты (у диагонали и обе угловые клетки — в комнате);
         // на границе — общий шаг move (там проёмы и угол двери)
         const R = this.rooms[ctx];
+        if (R.long) this.hitLong = true;
         const m = R.sh.own;
         const bits = m.bits, w = m.w, h = m.h;
         const ox = R.dx + m.x0, oy = R.dy + m.y0;
@@ -183,16 +188,20 @@ export class SightSpace {
     return out;
   }
 
-  /** Все линии через проём pi не длиннее предела (в клетках по прямой и по диагонали). */
+  /** Все линии через проём pi не длиннее предела (в клетках по прямой и по диагонали). Линия, заходящая в комнату с
+   *  длинным обзором (ход, хаб подвала), не ограничена. */
   portalOk(pi: number, lim: { ortho: number; diag: number }): boolean {
     const seeds = this.portalSeeds(pi);
+    const P = this.portals[pi];
+    if (this.rooms[P.a]?.long || this.rooms[P.b]?.long) return true;
     for (const [dx, dy] of SIGHT_DIRS) {
       const max = dx !== 0 && dy !== 0 ? lim.diag : lim.ortho;
       for (const [c, sx, sy] of seeds) {
+        this.hitLong = false;
         const back = this.walk(c, sx, sy, -dx, -dy, max);
-        if (1 + back > max) return false;
+        if (1 + back > max && !this.hitLong) return false;
         const fwd = this.walk(c, sx, sy, dx, dy, max - back);
-        if (1 + back + fwd > max) return false;
+        if (1 + back + fwd > max && !this.hitLong) return false;
       }
     }
     return true;

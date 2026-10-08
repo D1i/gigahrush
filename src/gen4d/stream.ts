@@ -16,13 +16,16 @@
 // дверями-выходами; открыл выход — за ним новая квартира, остальные выходы исчезают; биомы задают веса комнат;
 // переходы (спец-комнаты) появляются по счётчику пройденных комнат рядом с игроком и ведут в другой биом или в
 // богатую квартиру. Без settings.world — прежний рост (магистраль, тупики по шансу).
+// Подвал (биом с layout 'tunnels', docs/GENERATOR-4D.md §17): вместо квартир — сеть ходов, растущая на ходу: длинные
+// ходы, редкие хабы (через них вход и выход), ответвления-кладовые, кольца из хаба в хаб через слои W и бесконечные
+// прямые участки — шов со сдвигом (связь wrap: дошёл до конца — снова в начале).
 import { OPPOSITE } from '../model/cells';
 import { hashSeed, makeRng, type Rng } from '../model/rng';
 import type {
   Biome, Connector, FoldSettings, FoldStats, InstanceContent, LairSpec, LiftSide, LiftSpec, Link, MatchMode, Pass, Project, Room, Rot, Run,
   Side, StairwellSpec, WorldSettings,
 } from '../model/types';
-import { biomeMul, normWorld, plainBiomes, startBiomeOf, transitionChance } from './biomes';
+import { apartmentBiomes, biomeMul, isTunnels, normWorld, plainBiomes, startBiomeOf, transitionChance, tunnelBiomes } from './biomes';
 import { locationSeedKey, rollStairwell, type StairwellRoll } from '../locations/stairwell';
 import { isLair, rollLift, type LiftRoll } from '../locations/lift';
 import { rollContent } from '../gen/generate';
@@ -30,7 +33,7 @@ import { walkWarning } from '../gen/walk';
 import { compatible, dockTarget, facing, OUT_SIGN, rotFor, segLine, turnSide, type SegGeom } from '../gen/geom';
 import { sightLimits } from '../gen/sight';
 import {
-  addPvs, around, buildPool, growFrom, growOthers, layerFree, LIMIT, newLay, normFold, pickWeighted, place, PVS_TOL_M, RESERVE_MAX, tryLink,
+  addPvs, around, buildPool, growFrom, growOthers, layerFree, LIMIT, link, newLay, normFold, pickWeighted, place, PVS_TOL_M, RESERVE_MAX, tryLink,
   Buckets, type Ctx, type Fails, type FoldGenSettings, type Info, type Lay, type Node, type Why,
 } from './foldcore';
 import type { Body } from './space';
@@ -90,11 +93,15 @@ export interface ClusterInfo {
   exits: number;
   /** спец-комната перехода в этой квартире (id) или null */
   transition: string | null;
+  /** подвал: сеть ходов (растёт на ходу), а не квартира */
+  tunnels: boolean;
 }
 
 /** Сохранение режима квартир. */
 export interface WorldSave {
-  clusters: { biome: string; home: string; rich: boolean; entry: string; exits: string[]; opened: string[]; transition: string | null }[];
+  clusters: { biome: string; home: string; rich: boolean; entry: string; exits: string[]; opened: string[]; transition: string | null; tunnels?: true }[];
+  /** подвал: метры хода от прошлого хаба по порядку instances (−1 — не ход) */
+  tdist?: number[];
   /** квартира каждого экземпляра по порядку instances (−1 — вне квартир) */
   clusterOf: number[];
   /** «исчезнувшие» двери: индексы связей-дверей (пропущенные переходы) */
@@ -166,6 +173,10 @@ export interface StreamStats {
   clusters: number;
   exitsOpen: number;
   transition: TransitionState | null;
+  /** подвал: хабов, замкнутых колец, бесконечных прямых участков (швов) */
+  hubs: number;
+  rings: number;
+  wraps: number;
 }
 
 /** Спец-локация экземпляра и её розыгрыш (по виду; kind — как spec.kind, для сужения типа): lair — без розыгрыша. */
@@ -400,6 +411,8 @@ interface Cluster {
   opened: number[];
   /** переход (order спец-комнаты), поставленный в эту квартиру */
   transition: number | null;
+  /** подвал: сеть ходов — комнаты не раскрыты заранее, растут на ходу (expandTunnel) */
+  tunnels: boolean;
 }
 
 /** Метки «наружу» — двери из квартиры в общие места и в другие квартиры: входная дверь квартиры, двустворчатые
@@ -422,6 +435,67 @@ const doorsBesides = (info: Info, bi: number): number => {
 interface Pool {
   list: Info[];
   weightOf(x: Info): number;
+}
+
+// ───────── подвал: сеть ходов (docs/GENERATOR-4D.md §17) ─────────
+
+/** Проход хода — проём 1.0 м во всю ширину хода. */
+const TUNNEL_TAG = 'basement';
+/** Выход хаба наверх (марш) — закрытая дверь, ведёт в квартиры. */
+const HUB_EXIT_TAG = 'stair';
+/** Метки кусков роста ходов (кроме хабов): проход, дверь в кладовую, дверь в служебку. */
+const TUNNEL_DOORS: ReadonlySet<string> = new Set([TUNNEL_TAG, 'basement>storage', 'corridor>service']);
+/** Бесконечный прямой участок — не ближе стольких метров хода к хабу. */
+const LOOP_MIN_DIST = 12;
+type TunKind = 'hub' | 'straight' | 'turn' | 'branch';
+/** Направления: N, E, S, W (по часовой) — индекс курса. */
+const HEADS: readonly Side[] = ['N', 'E', 'S', 'W'];
+const DIR: Record<Side, [number, number]> = { N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] };
+
+/** Вид куска хода: хаб (тег «хаб»), прямой (два прохода на противоположных стенах), поворот (на соседних), развилка
+ *  (три и больше); null — не кусок хода (у него есть другие двери: марш, квартирная…). */
+function tunKind(info: Info): TunKind | null {
+  const r = info.room;
+  if (r.tags.includes('хаб')) return 'hub';
+  if (!r.connectors.every((c) => c.len < 1 || TUNNEL_DOORS.has(c.tag))) return null;
+  const t = r.connectors.filter((c) => c.len >= 1 && c.tag === TUNNEL_TAG);
+  if (t.length >= 3) return 'branch';
+  if (t.length !== 2) return null;
+  return t[0].side === OPPOSITE[t[1].side] ? 'straight' : 'turn';
+}
+
+/** Якорь двери: середина проёма на линии стены (клетки плана). */
+function anchorOf(c: SegGeom): [number, number] {
+  const line = segLine(c);
+  return c.side === 'N' || c.side === 'S' ? [c.cx + c.len / 2, line] : [line, c.cy + c.len / 2];
+}
+
+/** Метка-образец ширины len с якорем в (0, 0), смотрит на side. */
+function probeDoor(side: Side, len: number): SegGeom {
+  switch (side) {
+    case 'N': return { side, cx: -len / 2, cy: 0, len };
+    case 'S': return { side, cx: -len / 2, cy: -1, len };
+    case 'W': return { side, cx: 0, cy: -len / 2, len };
+    case 'E': return { side, cx: -1, cy: -len / 2, len };
+  }
+}
+
+/** Кусок кольца: в (in) и из (out) — метки прохода; шаг — сдвиг якоря курсора и новый курс по каждому курсу. */
+interface RingPiece {
+  info: Info;
+  in: number;
+  out: number;
+  /** по курсу (индекс HEADS): сдвиг якоря и курс после куска */
+  step: { d: [number, number]; h: number }[];
+}
+
+/** Детали колец и бесконечных участков биома: прямые куски (шаг без сдвига вбок), поворот направо и налево,
+ *  развилка-тройник (две метки оси и боковая). */
+interface RingKit {
+  straights: RingPiece[];
+  right: RingPiece | null;
+  left: RingPiece | null;
+  tee: { info: Info; a1: number; a2: number; side: number } | null;
 }
 
 class Stream implements StreamWorld {
@@ -504,6 +578,17 @@ class Stream implements StreamWorld {
   private tr = { count: 0, resets: 0, pending: false };
   private readonly pools = new Map<string, Pool>();
   private richPass: Pass | null = null;
+  // подвал
+  /** стыковка ходов: без предела обзора и бесшовности — ходы длинные по замыслу */
+  private readonly tctx: Ctx;
+  /** метры хода от прошлого хаба (order → м; −1 — не ход) */
+  private readonly tdist: number[] = [];
+  private readonly kits = new Map<string, RingKit | null>();
+  /** проект с правилами отделки биома поверх своих (наполнение комнат биома) */
+  private readonly projs = new Map<string, Project>();
+  private hubs = 0;
+  private rings = 0;
+  private wraps = 0;
 
   constructor(p: Project, settings: StreamSettings, save?: StreamSave) {
     this.p = p;
@@ -526,11 +611,15 @@ class Stream implements StreamWorld {
     this.gen = {
       seed: s.seed, count: 1, gap: s.gap, match: s.match, startRoomId: s.startRoomId, passId: null,
       sightM: s.sightM, fill: false, mode: 'fold', fold: s.fold,
+      // режим квартир: ходы и хабы подвала — длинный обзор (validateFoldRun смотрит этот флаг прогона)
+      ...(s.world ? { longSight: true } : {}),
     };
     this.ctx = {
       s: this.gen, f: s.fold, gap: s.gap, shapes: new Shapes(s.gap), pool, lim,
       seam: s.fold.seamless && lim ? { reach, tol } : null,
+      long: !!s.world,
     };
+    this.tctx = { ...this.ctx, lim: null, seam: null };
     this.lay = newLay(s.gap, true);
     if (save) {
       const bad = this.checkSave(save);
@@ -558,10 +647,12 @@ class Stream implements StreamWorld {
       else if (!this.infos[i]) this.warnings.push(`Стартовая комната «${p.rooms[i].name}» пуста — выбрана автоматически.`);
       else start = this.infos[i];
     }
-    // режим квартир: старт — в стартовом биоме (комната с тегом start, растущая в нём, иначе по весам биома)
+    // режим квартир: старт — в стартовом биоме (комната с тегом start, растущая в нём, иначе по весам биома); в подвале —
+    // хаб (через хабы в подвал входят). Заданная стартовая комната — только если она из тех, с которых биом начинается
     const biome = this.W ? startBiomeOf(this.W) : null;
+    if (start && biome && !this.entryPool(biome.id).list.includes(start)) start = null;
     if (!start && biome) {
-      const pool = this.biomePool(biome.id);
+      const pool = this.entryPool(biome.id);
       const tagged = pool.list.filter((x) => x.room.tags.includes('start'));
       const S = this.root.sub('start');
       if (tagged.length) start = tagged[pickWeighted(S, tagged.map((x) => pool.weightOf(x)))];
@@ -587,7 +678,7 @@ class Stream implements StreamWorld {
       const id = biome?.id ?? '';
       const cl = this.newCluster(id, id, !!biome?.rich);
       this.onPlaced(n, null, ROOT_ADDR, true, cl);
-      this.fillCluster(cl);
+      this.beginCluster(cl);
     } else {
       this.onPlaced(n, null, ROOT_ADDR);
       this.setSpine(n);
@@ -636,6 +727,20 @@ class Stream implements StreamWorld {
     if (n.w > this.maxW) this.maxW = n.w;
     this.addFloor(n.floor);
     if (parent && portal && n.w !== parent.w) this.shifted++;
+    // подвал: метры хода от прошлого хаба; у хаба двери-марши наверх — сразу закрытые выходы (не «нераскрытые»)
+    if (cl?.tunnels) {
+      const hub = tunKind(n.info) === 'hub';
+      this.tdist[i] = hub || !parent ? 0 : Math.max(0, this.tdist[parent.inst.order] ?? 0) + this.lenM(n.info);
+      if (hub) {
+        this.hubs++;
+        n.conns.forEach((c, ci) => {
+          if (c.len < 1 || n.linked[ci] || c.tag !== HUB_EXIT_TAG) return;
+          const key = dk(i, ci);
+          cl.exits.push(key);
+          this.exitDoors.set(key, cl.id);
+        });
+      }
+    } else this.tdist[i] = -1;
     this.content.push(this.rollFor(n, parent));
   }
 
@@ -658,8 +763,9 @@ class Stream implements StreamWorld {
   /** Наполнение — от адреса экземпляра (не от порядка раскрытий). В богатой квартире элитность — с усилением. */
   private rollFor(n: Node, parent: Node | null): InstanceContent {
     const a = this.addr[n.inst.order];
-    const pass = this.clusters[this.clusterOf[n.inst.order] ?? -1]?.rich ? this.richPass : null;
-    const c = rollContent(this.p, n.info.room, n.inst, this.root.sub(`content:${a}`), pass, this.root.sub(`finish:${a}`));
+    const cl = this.clusters[this.clusterOf[n.inst.order] ?? -1];
+    const pass = cl?.rich ? this.richPass : null;
+    const c = rollContent(this.projOf(cl?.biome ?? null), n.info.room, n.inst, this.root.sub(`content:${a}`), pass, this.root.sub(`finish:${a}`));
     c.dangerAcc = (parent ? this.content[parent.inst.order].dangerAcc : 0) + c.danger;
     for (const l of c.loot) this.totals[l.itemId] = (this.totals[l.itemId] ?? 0) + l.count;
     for (const sp of c.spots) if (sp.content && sp.content.kind === 'item') this.totals[sp.content.id] = (this.totals[sp.content.id] ?? 0) + 1;
@@ -723,6 +829,8 @@ class Stream implements StreamWorld {
   private expandNode(P: Node): string[] {
     const i = P.inst.order;
     if (this.expandedF[i]) return [];
+    const tcl = this.W ? this.clusters[this.clusterOf[i] ?? -1] : undefined;
+    if (tcl?.tunnels) return this.expandTunnel(P, tcl);
     const t0 = now();
     this.expandedF[i] = true;
     const win = this.windowCounts(P);
@@ -834,7 +942,7 @@ class Stream implements StreamWorld {
 
   /** Петля к нераскрытой двери напротив (в любом слое); кандидаты — в каноническом порядке. cluster — только к
    *  дверям своей квартиры (режим квартир). */
-  private tryLoop(P: Node, ci: number, cluster?: number): boolean {
+  private tryLoop(P: Node, ci: number, cluster?: number, ctx: Ctx = this.ctx): boolean {
     const A = P.conns[ci];
     const gap = this.settings.gap;
     const list = this.loopIdx.get(lineKey(OPPOSITE[A.side], segLine(A) + gap * OUT_SIGN[A.side]));
@@ -852,7 +960,7 @@ class Stream implements StreamWorld {
     if (found.length === 0) return false;
     found.sort((a, b) => this.canon(a.n, b.n) || a.ci - b.ci);
     for (const d of found) {
-      if (!tryLink(this.ctx, this.lay, P, ci, d.n, d.ci, this.ctx.seam ? null : this.pvsOpt)) continue;
+      if (!tryLink(ctx, this.lay, P, ci, d.n, d.ci, ctx.seam ? null : this.pvsOpt)) continue;
       if (d.n.info.grow[d.ci]) this.growPending--;
       this.loops++;
       const x = P.inst.order, y = d.n.inst.order;
@@ -1052,7 +1160,7 @@ class Stream implements StreamWorld {
     const floor = L.floor - k;
     const E = this.root.sub(`descent:${addr}`);
     const dest = this.W ? this.transitionTarget(L, `descent:${addr}`) : null;
-    const pick = this.pickExit(E, ARRIVAL_TAG, dest ? this.biomePool(dest.biome) : null);
+    const pick = this.pickExit(E, ARRIVAL_TAG, dest ? this.entryPool(dest.biome) : null);
     if (!pick) throw new Error(`descend: в проекте нет комнаты-выхода для «${L.info.room.name}» (нужна комната с меткой)`);
     const { info, arrive } = pick;
     const ci = arrive[E.int(0, arrive.length - 1)];
@@ -1065,10 +1173,10 @@ class Stream implements StreamWorld {
     this.trans.push({ a: { inst: L.inst.id, connector: '' }, b: { inst: n.inst.id, connector: info.room.connectors[ci].id }, kind: 'descent', floors: k });
     this.exitBy.set(L.inst.order, n);
     if (dest) {
-      // режим квартир: за переходом — квартира другого биома или богатая квартира
+      // режим квартир: за переходом — квартира другого биома, богатая квартира или подвал (хаб)
       const cl = this.newCluster(dest.biome, dest.home, dest.rich);
       this.onPlaced(n, L, childAddr(addr, DESCENT_CONN), false, cl);
-      this.fillCluster(cl);
+      this.beginCluster(cl);
       return n;
     }
     this.onPlaced(n, L, childAddr(addr, DESCENT_CONN), false);
@@ -1215,7 +1323,7 @@ class Stream implements StreamWorld {
     }
     const lair = !!pick;
     const dest = this.W ? this.transitionTarget(L, `lift:${addr}:${floor}:${side}`) : null;
-    pick ??= this.pickExit(E, LIFT_ARRIVAL_TAG, dest ? this.biomePool(dest.biome) : null);
+    pick ??= this.pickExit(E, LIFT_ARRIVAL_TAG, dest ? this.entryPool(dest.biome) : null);
     if (!pick) throw new Error(`ascend: в проекте нет комнаты для выхода лифта «${L.info.room.name}» (нужна комната с меткой)`);
     const { info, arrive } = pick;
     const ci = arrive[E.int(0, arrive.length - 1)];
@@ -1232,9 +1340,9 @@ class Stream implements StreamWorld {
     this.liftBy.set(`${L.inst.order}:${floor}:${side}`, n);
     if (dest) {
       // режим квартир: за выходом — квартира другого биома / богатая квартира; логово — тупик в биоме, откуда пришли
-      const cl = lair ? this.newCluster(dest.home, dest.home, false) : this.newCluster(dest.biome, dest.home, dest.rich);
+      const cl = lair ? this.newCluster(dest.home, dest.home, false, false) : this.newCluster(dest.biome, dest.home, dest.rich);
       this.onPlaced(n, L, childAddr(addr, liftConn(floor, side)), false, cl);
-      this.fillCluster(cl);
+      this.beginCluster(cl);
       return n;
     }
     this.onPlaced(n, L, childAddr(addr, liftConn(floor, side)), false);
@@ -1280,10 +1388,29 @@ class Stream implements StreamWorld {
     return p;
   }
 
-  private newCluster(biome: string, home: string, rich: boolean): Cluster {
-    const cl: Cluster = { id: this.clusters.length, biome, home, rich, entry: -1, rooms: [], exits: [], opened: [], transition: null };
+  /** tunnels — по умолчанию по биому (layout 'tunnels'); логово — всегда «квартира». */
+  private newCluster(biome: string, home: string, rich: boolean, tunnels?: boolean): Cluster {
+    const t = tunnels ?? isTunnels(this.W?.biomes.find((b) => b.id === biome));
+    const cl: Cluster = { id: this.clusters.length, biome, home, rich, entry: -1, rooms: [], exits: [], opened: [], transition: null, tunnels: t };
     this.clusters.push(cl);
     return cl;
+  }
+
+  /** Квартира — вырастить целиком (fillCluster); подвал — растёт на ходу: от входа отсчёт метров до хаба. */
+  private beginCluster(cl: Cluster): void {
+    if (!cl.tunnels) {
+      this.fillCluster(cl);
+      return;
+    }
+    if (cl.entry >= 0 && (this.tdist[cl.entry] ?? -1) < 0) this.tdist[cl.entry] = 0;
+  }
+
+  /** Комнаты, которыми начинается квартира биома: в подвале — хабы (есть — только они), иначе весь пул биома. */
+  private entryPool(biome: string): Pool {
+    const b = this.W?.biomes.find((x) => x.id === biome);
+    if (!isTunnels(b)) return this.biomePool(biome);
+    const hubs = this.tunPool(biome, 'hub');
+    return hubs.list.length ? hubs : this.biomePool(biome);
   }
 
   /**
@@ -1408,14 +1535,41 @@ class Stream implements StreamWorld {
     const win = this.windowCounts(n);
     this.exitDoors.delete(key);
     cl.exits = cl.exits.filter((e) => e !== key);
-    // за дверью — квартира того же биома (у богатой квартиры — биома, откуда в неё пришли). Вход — комната с запасом
+    // подвал: «Спуск в подвал» (выход с меткой хода) — в подвал, в хаб; выход хаба наверх — в квартиры
+    const W = this.W;
+    if (!cl.tunnels && n.conns[ci].tag === TUNNEL_TAG && tunnelBiomes(W).length) {
+      const bs = tunnelBiomes(W);
+      const target = bs[this.root.sub(`basement:${daddr}`).int(0, bs.length - 1)].id;
+      const hubs = this.tunPool(target, 'hub');
+      const D = () => this.root.sub(`door:${daddr}`);
+      const child = this.grow(n, ci, D(), true, win, hubs).child ?? this.growLoose(n, ci, D(), win, hubs, 1);
+      if (child) {
+        const ncl = this.newCluster(target, cl.home, false, true);
+        cl.opened.push(key);
+        this.grown++;
+        this.onPlaced(child, n, daddr, true, ncl);
+        this.beginCluster(ncl);
+        // выпавший, но не вставший за дверью переход встанет за ближайшим проходом хода (tunnelStep)
+        const ids = [child.inst.id];
+        this.vanishExits(cl);
+        this.version++;
+        const dt = now() - t0;
+        this.ms += dt;
+        this.times.push(dt);
+        this.notify(ids, v0);
+        return child.inst.id;
+      }
+    }
+    // за дверью — квартира того же биома (у богатой квартиры — биома, откуда в неё пришли; из подвала — наверх, в квартиры
+    // биома, откуда в подвал спустились). Вход — комната с запасом
     // дверей: сначала не меньше clusterExits[0] ростовых, потом хоть одна (из биома, затем из любых комнат), и только
     // потом любая — тупиковая комната за дверью (санузел, балкон) оставила бы квартиру без выходов
     // потом любая — тупиковая комната за дверью (санузел, балкон) оставила бы квартиру без выходов. По меткам с запасом
     // не встаёт (за дверью прихожая → комната — только комнаты-тупики) — вход стыкуется любой своей дверью (4D-шов, как
     // у перехода; связь loose): прихожая, площадка, коридор другой квартиры
-    const ncl = this.newCluster(cl.home, cl.home, false);
-    const home = this.biomePool(cl.home);
+    const up = cl.tunnels ? this.upBiome(cl, daddr) : cl.home;
+    const ncl = this.newCluster(up, up, false);
+    const home = this.biomePool(up);
     const Kmin = this.W.clusterExits[0];
     const D = () => this.root.sub(`door:${daddr}`);
     const tries: (() => Node | null)[] = [
@@ -1453,14 +1607,7 @@ class Stream implements StreamWorld {
     }
     // остальные закрытые выходы старой квартиры исчезают, пропущенный в ней переход — тоже. Новая квартира вышла совсем
     // без выходов и перехода (вырожденный случай) — старые выходы остаются: мир не должен встать
-    if (ncl.exits.length > 0 || ncl.transition !== null) {
-      for (const e of cl.exits) {
-        this.exitDoors.delete(e);
-        this.markDead(this.lay.nodes[Math.floor(e / 1024)], e % 1024, 'vanished');
-      }
-      cl.exits = [];
-      this.sealSkipped(cl);
-    }
+    if (ncl.exits.length > 0 || ncl.transition !== null) this.vanishExits(cl);
     this.version++;
     const dt = now() - t0;
     this.ms += dt;
@@ -1481,6 +1628,27 @@ class Stream implements StreamWorld {
     const child = growFrom(this.ctx, this.lay, P, ci, [list], okB, D, fails, { weightOf, skip, stick: true });
     if (child) this.lay.links[this.lay.links.length - 1].loose = true;
     return child;
+  }
+
+  /** Остальные закрытые выходы квартиры (подвала) исчезают, пропущенный в ней переход — тоже. */
+  private vanishExits(cl: Cluster): void {
+    for (const e of cl.exits) {
+      this.exitDoors.delete(e);
+      this.markDead(this.lay.nodes[Math.floor(e / 1024)], e % 1024, 'vanished');
+    }
+    cl.exits = [];
+    this.sealSkipped(cl);
+  }
+
+  /** Куда ведут выходы подвала наверх: биом, откуда в подвал спустились; если и он подвал (старт в подвале, переход
+   *  из подвала в подвал) — квартирный биом по броску. */
+  private upBiome(cl: Cluster, daddr: string): string {
+    const W = this.W!;
+    const home = W.biomes.find((b) => b.id === cl.home);
+    if (home && !isTunnels(home)) return home.id;
+    const flats = apartmentBiomes(W);
+    if (!flats.length) return cl.home;
+    return flats[this.root.sub(`up:${daddr}`).int(0, flats.length - 1)].id;
   }
 
   /** Двери квартиры для перехода: от входа (по порядку комнат) — сначала неиспользованные проёмы-стены, потом
@@ -1524,10 +1692,7 @@ class Stream implements StreamWorld {
       if (this.exitDoors.has(key)) {
         this.exitDoors.delete(key);
         cl.exits = cl.exits.filter((e) => e !== key);
-      } else {
-        this.dead.delete(key);
-        this.deadFail--;
-      }
+      } else if (this.dead.delete(key)) this.deadFail--;
       this.onPlaced(child, P, daddr, true, cl);
       // дверь в переход: метки любые (validateFoldRun не сверяет теги и ширину)
       this.lay.links[this.lay.links.length - 1].loose = true;
@@ -1613,7 +1778,390 @@ class Stream implements StreamWorld {
     return {
       id: cl.id, biome: b(cl.biome), home: b(cl.home), rich: cl.rich, rooms: cl.rooms.length, exits: cl.exits.length,
       transition: cl.transition === null ? null : this.lay.instances[cl.transition].id,
+      tunnels: cl.tunnels,
     };
+  }
+
+  // ───────── подвал: сеть ходов (docs/GENERATOR-4D.md §17) ─────────
+
+  /** Длина куска по оси хода, м (больший габарит). */
+  private lenM(info: Info): number {
+    const sh = this.ctx.shapes.get(info.room, 0);
+    return Math.max(sh.x1 - sh.x0, sh.y1 - sh.y0) * this.cellM;
+  }
+
+  /** Проект для наполнения комнат биома: правила отделки биома — поверх правил проекта. */
+  private projOf(biome: string | null): Project {
+    const b = biome ? this.W?.biomes.find((x) => x.id === biome) : undefined;
+    if (!b?.finishRules?.length) return this.p;
+    let p = this.projs.get(b.id);
+    if (!p) {
+      p = { ...this.p, finishRules: [...b.finishRules, ...(this.p.finishRules ?? [])] };
+      this.projs.set(b.id, p);
+    }
+    return p;
+  }
+
+  /** Куски хода вида kind из пула биома (кладовые — kind 'storage': комнаты с дверью к ходу). */
+  private tunPool(biome: string, kind: TunKind | 'storage'): Pool {
+    const key = `${biome}|${kind}`;
+    let p = this.pools.get(key);
+    if (!p) {
+      const base = this.biomePool(biome);
+      const list = base.list.filter((x) => (kind === 'storage' ? x.room.connectors.some((c) => c.len >= 1 && c.tag === 'storage>basement') : tunKind(x) === kind));
+      p = { list, weightOf: base.weightOf };
+      this.pools.set(key, p);
+    }
+    return p;
+  }
+
+  /** Стыковка куска хода вида kind к двери ci (без предела обзора). */
+  private growKind(P: Node, ci: number, D: Rng, pool: Pool, win: Map<Info, number>, fails: Fails): Node | null {
+    const A = P.conns[ci];
+    const match = this.settings.match;
+    const okB = (_: Info, b: Connector) => b.len >= 1 && compatible(A, b, match);
+    const list = pool.list.filter((info) => info.room.connectors.some((b) => okB(info, b)));
+    if (!list.length) return null;
+    const skip = (info: Info) => (info.room.unique && this.uniqueUsed.has(info)) || (win.get(info) ?? 0) >= info.effMax;
+    return growFrom(this.tctx, this.lay, P, ci, [list], okB, D, fails, { weightOf: pool.weightOf, skip, stick: true });
+  }
+
+  /**
+   * Раскрыть кусок подвала P (на ходу, как в §15.4, но по правилам ходов). Хаб: с шансом tunnels.ring — кольцо из одной
+   * его свободной двери хода в другую (до остальных дверей). Затем двери по порядку room.connectors, поток двери
+   * D = root.sub("door:" + адрес двери):
+   *  • проход хода — tunnelStep;
+   *  • дверь в кладовую — D.next() < tunnels.storage: кладовая из пула биома, иначе стена;
+   *  • другая (служебка) — любая совместимая комната биома; не встала — стена.
+   * Двери-марши хаба — закрытые выходы (поставлены при постановке хаба).
+   */
+  private expandTunnel(P: Node, cl: Cluster): string[] {
+    const i = P.inst.order;
+    this.expandedF[i] = true;
+    const t0 = now();
+    const T = this.W!.tunnels;
+    const out: string[] = [];
+    const win = this.windowCounts(P);
+    const take = (n: Node | null) => {
+      if (!n) return;
+      out.push(n.inst.id);
+      win.set(n.info, (win.get(n.info) ?? 0) + 1);
+    };
+    const open = (ci: number) => P.conns[ci].len >= 1 && !P.linked[ci] && !this.dead.has(dk(i, ci)) && !this.exitDoors.has(dk(i, ci));
+    if (tunKind(P.info) === 'hub') {
+      const free = P.conns.map((c, ci) => (c.tag === TUNNEL_TAG && open(ci) ? ci : -1)).filter((ci) => ci >= 0);
+      const R = this.root.sub(`ring:${this.addr[i]}`);
+      if (free.length >= 2 && R.next() < T.ring) {
+        const a = free[R.int(0, free.length - 1)];
+        const rest = free.filter((x) => x !== a);
+        for (const n of this.buildRing(P, a, rest[R.int(0, rest.length - 1)], cl, R)) take(n);
+      }
+    }
+    for (let ci = 0; ci < P.conns.length; ci++) {
+      if (!open(ci)) continue;
+      const tag = P.conns[ci].tag;
+      const daddr = childAddr(this.addr[i], P.info.room.connectors[ci].id);
+      const D = this.root.sub(`door:${daddr}`);
+      if (tag === TUNNEL_TAG) {
+        for (const n of this.tunnelStep(P, ci, cl, D, win, daddr)) take(n);
+        continue;
+      }
+      const fails: Fails = { space: 0, rule: 0, sight: 0, seam: 0 };
+      let child: Node | null = null;
+      if (tag === 'basement>storage') {
+        if (D.next() < T.storage) child = this.growKind(P, ci, D, this.tunPool(cl.biome, 'storage'), win, fails);
+      } else child = this.growKind(P, ci, D, this.biomePool(cl.biome), win, fails);
+      if (!child) {
+        this.markDead(P, ci, 'cluster');
+        continue;
+      }
+      this.grown++;
+      this.onPlaced(child, P, daddr, true, cl);
+      take(child);
+    }
+    this.version++;
+    const dt = now() - t0;
+    this.ms += dt;
+    this.times.push(dt);
+    return out;
+  }
+
+  /**
+   * Продолжение хода за проходом ci куска P. По порядку: выпавший переход — прямо здесь (как за открытой дверью);
+   * петля к проходу напротив; броски u = D.next(), v = D.next():
+   *  • хаб — u < pHub, pHub = 0 ближе hubEvery[0] м хода от прошлого хаба, 1 дальше hubEvery[1], между — линейно;
+   *  • иначе по v: [0, loop) — бесконечный прямой участок (не ближе LOOP_MIN_DIST м к хабу; не встал — дальше как
+   *    развилка), затем развилка (branch), поворот (turn), остальное — прямой кусок.
+   * Вид не встал — следующий из списка (прямой, поворот, развилка); ничего — стена.
+   */
+  private tunnelStep(P: Node, ci: number, cl: Cluster, D: Rng, win: Map<Info, number>, daddr: string): Node[] {
+    const T = this.W!.tunnels;
+    if (this.tr.pending) {
+      const t = this.placeTransition(cl, [{ n: P, ci }]);
+      if (t) return [t];
+    }
+    if (this.tryLoop(P, ci, cl.id, this.tctx)) return [];
+    const dist = Math.max(0, this.tdist[P.inst.order] ?? 0);
+    const u = D.next(), v = D.next();
+    const [h0, h1] = T.hubEvery;
+    const pHub = dist < h0 ? 0 : dist >= h1 ? 1 : (dist - h0) / Math.max(1e-9, h1 - h0);
+    let kinds: TunKind[];
+    if (u < pHub) kinds = ['hub', 'straight', 'turn', 'branch'];
+    else {
+      if (v < T.loop && dist >= LOOP_MIN_DIST && tunKind(P.info) !== 'hub') {
+        const loop = this.buildWrapLoop(P, ci, cl, this.root.sub(`loop:${daddr}`));
+        if (loop.length) return loop;
+      }
+      kinds = v < T.loop + T.branch ? ['branch', 'straight', 'turn']
+        : v < T.loop + T.branch + T.turn ? ['turn', 'straight', 'branch']
+        : ['straight', 'turn', 'branch'];
+    }
+    const fails: Fails = { space: 0, rule: 0, sight: 0, seam: 0 };
+    for (const k of kinds) {
+      const child = this.growKind(P, ci, D, this.tunPool(cl.biome, k), win, fails);
+      if (!child) continue;
+      this.grown++;
+      this.onPlaced(child, P, daddr, true, cl);
+      return [child];
+    }
+    this.markDead(P, ci, fails.space > 0 ? 'space' : 'nomatch');
+    return [];
+  }
+
+  /** Детали колец биома (кэш): шаги кусков — пробной стыковкой к образцу двери по каждому курсу. */
+  private ringKit(biome: string): RingKit | null {
+    if (this.kits.has(biome)) return this.kits.get(biome)!;
+    const g = this.settings.gap;
+    const passes = (info: Info) => info.room.connectors.map((c, k) => (c.len >= 1 && c.tag === TUNNEL_TAG ? k : -1)).filter((k) => k >= 0);
+    // сначала куски ходов (тег «ход»), из них — меньшие (проходы во всю ширину хода 1 м: тройник 1×2, поворот 1×1)
+    const own = (list: Info[]) => [...list].sort((x, y) => Number(y.room.tags.includes('ход')) - Number(x.room.tags.includes('ход')) || x.room.cells.size - y.room.cells.size);
+    const piece = (info: Info, a: number, b: number): RingPiece | null => {
+      const len = info.room.connectors[a].len;
+      if (info.room.connectors[b].len !== len) return null;
+      const step: RingPiece['step'] = [];
+      for (let h = 0; h < 4; h++) {
+        const A = probeDoor(HEADS[h], len);
+        const B0 = info.room.connectors[a];
+        const rot = rotFor(B0.side, OPPOSITE[A.side]);
+        const sh = this.ctx.shapes.get(info.room, rot);
+        const t = dockTarget(A, sh.conns[a].len, g);
+        const dx = t.cx - sh.conns[a].cx, dy = t.cy - sh.conns[a].cy;
+        const o = sh.conns[b];
+        const out = { side: o.side, cx: o.cx + dx, cy: o.cy + dy, len: o.len };
+        step.push({ d: anchorOf(out), h: HEADS.indexOf(out.side) });
+      }
+      return { info, in: a, out: b, step };
+    };
+    const straights: RingPiece[] = [];
+    for (const info of own(this.tunPool(biome, 'straight').list)) {
+      const t = passes(info);
+      const p = t.length === 2 ? piece(info, t[0], t[1]) : null;
+      // по оси, без сдвига вбок (как шаг решётки колец)
+      if (p && p.step.every((s, h) => s.h === h && (DIR[HEADS[h]][0] === 0 ? s.d[0] === 0 : s.d[1] === 0))) straights.push(p);
+    }
+    let right: RingPiece | null = null, left: RingPiece | null = null;
+    for (const info of own(this.tunPool(biome, 'turn').list)) {
+      const t = passes(info);
+      if (t.length !== 2) continue;
+      for (const [a, b] of [[t[0], t[1]], [t[1], t[0]]]) {
+        const p = piece(info, a, b);
+        if (!p) continue;
+        if (p.step[0].h === 1 && !right) right = p;
+        if (p.step[0].h === 3 && !left) left = p;
+      }
+      if (right && left) break;
+    }
+    let tee: RingKit['tee'] = null;
+    for (const info of own(this.tunPool(biome, 'branch').list)) {
+      const t = passes(info);
+      if (t.length !== 3) continue;
+      const cs = info.room.connectors;
+      for (const s of t) {
+        const ax = t.filter((x) => x !== s);
+        if (cs[ax[0]].side === OPPOSITE[cs[ax[1]].side] && cs[s].side !== cs[ax[0]].side && cs[s].side !== cs[ax[1]].side) {
+          tee = { info, a1: ax[0], a2: ax[1], side: s };
+          break;
+        }
+      }
+      if (tee) break;
+    }
+    const kit = straights.length ? { straights, right, left, tee } : null;
+    this.kits.set(biome, kit);
+    return kit;
+  }
+
+  /**
+   * Поставить кусок info меткой bi к двери ci экземпляра P — как складчатая стыковка, но слой — ближайший к wPref
+   * (не дальше maxShift от P): кольцо держится у слоя хаба, чтобы замкнуться. null — некуда (все слои заняты).
+   */
+  private placeFixed(P: Node, ci: number, info: Info, bi: number, wPref: number): Node | null {
+    const A = P.conns[ci];
+    const B0 = info.room.connectors[bi];
+    const rot = rotFor(B0.side, OPPOSITE[A.side]);
+    const sh = this.ctx.shapes.get(info.room, rot);
+    const Bw = sh.conns[bi];
+    const g = this.settings.gap;
+    const t = dockTarget(A, Bw.len, g);
+    const dx = t.cx - Bw.cx, dy = t.cy - Bw.cy;
+    if (sh.x0 + dx - g < -LIMIT || sh.y0 + dy - g < -LIMIT || sh.x1 + dx + g > LIMIT || sh.y1 + dy + g > LIMIT) return null;
+    const body: Body = { sh, dx, dy };
+    const near = [...around(P, this.ctx.f.localRadius - 1).keys()];
+    if (near.some((x) => x.floor === P.floor && this.ctx.shapes.conflict(body, x.body))) return null;
+    const f = this.ctx.f;
+    const ws: number[] = [];
+    for (let k = 0; k <= 2 * f.maxShift + 1; k++) {
+      const w = wPref + (k % 2 ? (k + 1) / 2 : -k / 2);
+      if (Math.abs(w - P.w) <= f.maxShift && Math.abs(w) <= f.maxLayer && !ws.includes(w)) ws.push(w);
+    }
+    for (const w of ws) {
+      if (!layerFree(this.ctx, this.lay, w, body, P.floor)) continue;
+      const child = place(this.ctx, this.lay, info, rot, dx, dy, w, P);
+      link(this.lay, P, ci, child, bi);
+      return child;
+    }
+    return null;
+  }
+
+  /** Поставить цепочку кусков от двери ci экземпляра P; слой — к wPref. Возвращает поставленные и последнюю дверь. */
+  private placeChain(P: Node, ci: number, chain: RingPiece[], cl: Cluster, wPref: number): { placed: Node[]; end: DoorRef | null } {
+    const placed: Node[] = [];
+    let cur: DoorRef = { n: P, ci };
+    for (const pc of chain) {
+      const daddr = childAddr(this.addr[cur.n.inst.order], cur.n.info.room.connectors[cur.ci].id);
+      const child = this.placeFixed(cur.n, cur.ci, pc.info, pc.in, wPref);
+      if (!child) return { placed, end: null };
+      this.grown++;
+      this.onPlaced(child, cur.n, daddr, true, cl);
+      placed.push(child);
+      cur = { n: child, ci: pc.out };
+    }
+    return { placed, end: cur };
+  }
+
+  /**
+   * Кольцо из хаба (§17.4): от прохода a хаба H — по кругу — в его же проход b. Путь — прямые прогоны и n поворотов в
+   * одну сторону (n = 1…4, чтобы последний курс смотрел в проход b); длины прогонов — суммы шагов прямых кусков
+   * (1, 2, 4, 6, 8 м + порог — 11, 21, 41… клеток: любая длина от ~20 м складывается точно до клетки). Уравнение
+   * замыкания — по двум осям; свободные прогоны — броски R, зависимые (последний по каждой оси) — из уравнения;
+   * длина кольца — в tunnels.ringLen. Куски ставятся у слоя хаба (сквозь занятые места — в соседних слоях W), в конце
+   * связь последнего прохода с b (tryLink: |dw| ≤ maxShift). Не вышло на любом шаге — поставленное остаётся обычным
+   * ходом (его проходы растут дальше), проход b — тоже.
+   */
+  private buildRing(H: Node, a: number, b: number, cl: Cluster, R: Rng): Node[] {
+    const kit = this.ringKit(cl.biome);
+    const T = this.W!.tunnels;
+    if (!kit || (!kit.right && !kit.left)) return [];
+    const g = this.settings.gap;
+    const S = H.conns[a], E = H.conns[b];
+    const start = anchorOf(S);
+    const ea = anchorOf(E);
+    const goal: [number, number] = [ea[0] + g * DIR[E.side][0], ea[1] + g * DIR[E.side][1]];
+    const h0 = HEADS.indexOf(S.side), hf = HEADS.indexOf(OPPOSITE[E.side]);
+    // прогоны: длина (клетки) → куски (меньше кусков — лучше), до 1000 клеток
+    const MAX = Math.min(1000, Math.round((T.ringLen[1] / this.cellM) * 0.8));
+    const steps = kit.straights.map((p) => ({ p, s: Math.abs(p.step[0].d[1]) }));
+    const best: (RingPiece[] | null)[] = new Array(MAX + 1).fill(null);
+    best[0] = [];
+    for (let x = 1; x <= MAX; x++) {
+      for (const { p, s } of steps) {
+        const prev = x - s >= 0 ? best[x - s] : null;
+        if (prev && (!best[x] || prev.length + 1 < best[x]!.length)) best[x] = [...prev, p];
+      }
+    }
+    const reach: number[] = [];
+    for (let x = 0; x <= MAX; x++) if (best[x]) reach.push(x);
+    const lo = T.ringLen[0] / this.cellM, hi = T.ringLen[1] / this.cellM;
+    type Plan = { turn: RingPiece; heads: number[]; runs: number[] };
+    let plan: Plan | null = null;
+    const opts: { turn: RingPiece; d: number; n: number }[] = [];
+    for (const [turn, d] of [[kit.right, 1], [kit.left, -1]] as const) {
+      if (!turn) continue;
+      for (let n = 1; n <= 4; n++) if ((((h0 + n * d) % 4) + 4) % 4 === hf) opts.push({ turn, d, n });
+    }
+    for (let tries = 0; tries < 600 && !plan && opts.length; tries++) {
+      const { turn, d, n } = opts[R.int(0, opts.length - 1)];
+      const heads: number[] = [];
+      for (let k = 0; k <= n; k++) heads.push((((h0 + k * d) % 4) + 4) % 4);
+      // сдвиг поворотов
+      let tx = 0, ty = 0;
+      for (let k = 0; k < n; k++) { tx += turn.step[heads[k]].d[0]; ty += turn.step[heads[k]].d[1]; }
+      const need = [goal[0] - start[0] - tx, goal[1] - start[1] - ty];
+      // по оси: последний прогон оси — зависимый, остальные — броски
+      const runs = new Array(n + 1).fill(0);
+      const axisOf = (h: number) => (h % 2 === 1 ? 0 : 1);
+      const dep: (number | null)[] = [null, null];
+      for (let k = n; k >= 0; k--) if (dep[axisOf(heads[k])] === null) dep[axisOf(heads[k])] = k;
+      for (let k = 0; k <= n; k++) if (k !== dep[0] && k !== dep[1]) runs[k] = reach[R.int(0, reach.length - 1)];
+      let ok = true;
+      for (const ax of [0, 1]) {
+        const k = dep[ax];
+        let sum = 0;
+        for (let j = 0; j <= n; j++) if (j !== k && axisOf(heads[j]) === ax) sum += runs[j] * DIR[HEADS[heads[j]]][ax];
+        const rest = need[ax] - sum;
+        if (k === null) { if (rest !== 0) ok = false; continue; }
+        const r = rest / DIR[HEADS[heads[k]]][ax];
+        if (!Number.isInteger(r) || r < 0 || r > MAX || !best[r]) { ok = false; continue; }
+        runs[k] = r;
+      }
+      if (!ok) continue;
+      const total = runs.reduce((s2, r) => s2 + r, 0) + n * 10;
+      if (total < lo || total > hi) continue;
+      plan = { turn, heads, runs };
+    }
+    if (!plan) return [];
+    const chain: RingPiece[] = [];
+    plan.runs.forEach((r, k) => {
+      chain.push(...R.shuffle([...best[r]!]));
+      if (k < plan!.runs.length - 1) chain.push(plan!.turn);
+    });
+    const { placed, end } = this.placeChain(H, a, chain, cl, H.w);
+    if (!end || !facing(end.n.conns[end.ci], E, g)) return placed;
+    if (!tryLink(this.tctx, this.lay, end.n, end.ci, H, b, this.pvsOpt)) return placed;
+    this.loops++;
+    this.rings++;
+    if (end.n.w !== H.w) this.shifted++;
+    this.sightAdd(null, this.lay.links.length - 1);
+    if (this.pvsOpt) for (const z of [end.n.inst.order, H.inst.order, ...this.lay.pvs[end.n.inst.order], ...this.lay.pvs[H.inst.order]]) this.dirty.add(z);
+    return placed;
+  }
+
+  /**
+   * Бесконечный прямой участок (§17.5): тройник боком к проходу ci (вход сбоку), от одного его прохода оси — прямые
+   * куски на tunnels.loopLen м (не меньше двух), последний проход сшит со вторым проходом оси тройника связью wrap
+   * (сдвиг, при котором они стоят лицом к лицу): идёшь вдоль — и снова тот же тройник с проходом, откуда пришёл.
+   */
+  private buildWrapLoop(P: Node, ci: number, cl: Cluster, R: Rng): Node[] {
+    const kit = this.ringKit(cl.biome);
+    const T = this.W!.tunnels;
+    if (!kit?.tee) return [];
+    const tee = kit.tee;
+    const tNode = this.placeFixed(P, ci, tee.info, tee.side, P.w);
+    if (!tNode) return [];
+    this.grown++;
+    this.onPlaced(tNode, P, childAddr(this.addr[P.inst.order], P.info.room.connectors[ci].id), true, cl);
+    const target = R.int(T.loopLen[0], T.loopLen[1]) / this.cellM;
+    const chain: RingPiece[] = [];
+    let total = 0;
+    while (total < target || chain.length < 2) {
+      const p = kit.straights[R.int(0, kit.straights.length - 1)];
+      chain.push(p);
+      total += Math.abs(p.step[0].d[1]);
+    }
+    const { placed, end } = this.placeChain(tNode, tee.a1, chain, cl, tNode.w);
+    const all = [tNode, ...placed];
+    if (!end || placed.length < 2) return all;
+    const A = end.n.conns[end.ci], B = tNode.conns[tee.a2];
+    if (B.side !== OPPOSITE[A.side]) return all;
+    const t = dockTarget(A, B.len, this.settings.gap);
+    const wrap: [number, number] = [t.cx - B.cx, t.cy - B.cy];
+    end.n.linked[end.ci] = tNode.linked[tee.a2] = true;
+    end.n.nb.push(tNode);
+    tNode.nb.push(end.n);
+    this.trans.push({
+      a: { inst: end.n.inst.id, connector: A.id }, b: { inst: tNode.inst.id, connector: B.id }, dw: tNode.w - end.n.w, wrap,
+    });
+    this.wraps++;
+    return all;
   }
 
   stats(): StreamStats {
@@ -1644,6 +2192,9 @@ class Stream implements StreamWorld {
       clusters: this.clusters.length,
       exitsOpen: this.exitDoors.size,
       transition: this.transitionState(),
+      hubs: this.hubs,
+      rings: this.rings,
+      wraps: this.wraps,
     };
   }
 
@@ -1659,7 +2210,8 @@ class Stream implements StreamWorld {
       (this.W
         ? ` Квартир ${st.clusters}, закрытых выходов ${st.exitsOpen}; переходы: пройдено комнат ${st.transition!.count}` +
           `${st.transition!.pending ? ', переход выпал — за следующей открытой дверью' : `, шанс следующей ${Math.round(st.transition!.chance * 100)}%`}.` +
-          (st.exitsOpen === 0 && st.instances > 0 ? ' Закрытых выходов не осталось — мир дальше не растёт (выходы исчезли или не встали).' : '')
+          (st.hubs ? ` Подвал: хабов ${st.hubs}, колец ${st.rings}, бесконечных участков ${st.wraps}.` : '') +
+          (st.exitsOpen === 0 && st.instances > 0 && !this.clusters.some((c) => c.tunnels) ? ' Закрытых выходов не осталось — мир дальше не растёт (выходы исчезли или не встали).' : '')
         : st.pendingGrow === 0 && st.instances > 0 ? ' Мир заглох: ростовых дверей не осталось, заколоченных по шансу нет — все отказали по месту/обзору.' : '');
   }
 
@@ -1738,8 +2290,10 @@ class Stream implements StreamWorld {
       clusters: this.clusters.map((c) => ({
         biome: c.biome, home: c.home, rich: c.rich, entry: lay.instances[c.entry].id, exits: c.exits.map(door), opened: c.opened.map(door),
         transition: c.transition === null ? null : lay.instances[c.transition].id,
+        ...(c.tunnels ? { tunnels: true as const } : {}),
       })),
       clusterOf: lay.nodes.map((n) => this.clusterOf[n.inst.order] ?? -1),
+      ...(this.clusters.some((c) => c.tunnels) ? { tdist: lay.nodes.map((n) => Math.round((this.tdist[n.inst.order] ?? -1) * 100) / 100) } : {}),
       sealed: [...this.sealed].sort((a, b) => a - b),
       visited: [...this.visited].sort((a, b) => a - b).map((i) => lay.instances[i].id),
       tr: { ...this.tr },
@@ -1810,6 +2364,16 @@ class Stream implements StreamWorld {
     const parentConn = new Map<string, string>();
     for (const l of run.links) {
       const a = this.byId.get(l.a.inst)!, b = this.byId.get(l.b.inst)!;
+      if (l.wrap) {
+        // шов бесконечного прямого хода: обе метки заняты, соседи по графу, проёма в пространстве лучей нет
+        a.linked[a.info.room.connectors.findIndex((c) => c.id === l.a.connector)] = true;
+        b.linked[b.info.room.connectors.findIndex((c) => c.id === l.b.connector)] = true;
+        a.nb.push(b);
+        b.nb.push(a);
+        this.trans.push({ a: { ...l.a }, b: { ...l.b }, dw: b.w - a.w, wrap: [l.wrap[0], l.wrap[1]] });
+        this.wraps++;
+        continue;
+      }
       if (l.kind === 'descent' || l.kind === 'lift') {
         // переход спец-локации / выход лифта: метка прихода занята, проёма и соседства нет
         b.linked[b.info.room.connectors.findIndex((c) => c.id === l.b.connector)] = true;
@@ -1921,6 +2485,7 @@ class Stream implements StreamWorld {
         exits: c.exits.map(key).filter((k): k is number => k !== null),
         opened: c.opened.map(key).filter((k): k is number => k !== null),
         transition: order(c.transition),
+        tunnels: c.tunnels === true,
       };
       for (const k of cl.exits) this.exitDoors.set(k, id);
       this.clusters.push(cl);
@@ -1928,6 +2493,8 @@ class Stream implements StreamWorld {
     ws.clusterOf.forEach((c, i) => { if (c >= 0 && this.clusters[c]) this.clusters[c].rooms.push(i); });
     for (const li of ws.sealed) this.sealed.add(li);
     for (const id of ws.visited) { const i = order(id); if (i !== null) this.visited.add(i); }
+    ws.clusterOf.forEach((_, i) => (this.tdist[i] = Array.isArray(ws.tdist) && typeof ws.tdist[i] === 'number' ? ws.tdist[i] : -1));
+    this.hubs = this.lay.nodes.filter((n) => this.clusters[this.clusterOf[n.inst.order] ?? -1]?.tunnels && tunKind(n.info) === 'hub').length;
     this.tr = { count: ws.tr.count, resets: ws.tr.resets, pending: ws.tr.pending };
   }
 }

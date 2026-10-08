@@ -19,6 +19,7 @@ import type { Material } from '@babylonjs/core/Materials/material';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import '@babylonjs/core/Collisions/collisionCoordinator';
 import { buildBabylonBlockout, type BabylonBlockout, type BlockoutMeta } from '../blockout/babylon';
+import { PropModels } from './propModels';
 import type { BlockoutModel, DeadEnd, Rect } from '../blockout/types';
 
 export type CamMode = 'orbit' | 'fps';
@@ -31,6 +32,8 @@ export interface ViewerCallbacks {
   /** раз в ~0.5 с: кадры в секунду и draw calls */
   onStats?(fps: number, drawCalls: number): void;
   onPointerLock?(locked: boolean): void;
+  /** догрузились модели предметов (props): болванки, построенные до этого, — с боксами; стоит пересобрать */
+  onPropsReady?(): void;
 }
 
 /** Глаза на 1.6 м: эллипсоид 0.3/0.85/0.3 с центром на 0.75 м ниже камеры → низ ровно у пола. */
@@ -72,6 +75,8 @@ export interface SetModelOptions {
 export class BlockoutViewer {
   readonly engine: Engine;
   readonly scene: Scene;
+  /** модели предметов из ассетов (подвал: стеллажи, трубы, лампочки…) — грузятся при создании просмотрщика */
+  readonly props: PropModels;
   readonly orbit: ArcRotateCamera;
   readonly fps: UniversalCamera;
   mode: CamMode = 'orbit';
@@ -106,6 +111,10 @@ export class BlockoutViewer {
     scene.ambientColor = new Color3(0.12, 0.12, 0.12);
     scene.collisionsEnabled = true;
     scene.gravity = new Vector3(0, -9.81 / 60, 0);
+    this.props = new PropModels(scene);
+    void this.props.loaded.then(() => {
+      if (!this.disposed && this.props.size) this.cb.onPropsReady?.();
+    });
     // ховер-пикинг на каждое движение мыши не нужен: на 150 комнатах это ~1000 мешей
     scene.skipPointerMovePicking = true;
 
@@ -235,6 +244,7 @@ export class BlockoutViewer {
         propTextures: o.propTextures,
         finishes: o.finishes !== false,
         deadEndColor: p.deadEndColor,
+        propModel: (id) => this.props.get(id),
       });
       const y = p.y ?? 0;
       bo.root.position.y = y;
@@ -539,6 +549,7 @@ export class BlockoutViewer {
     this.overlay = null;
     this.clearModel();
     this.instr.dispose();
+    this.props.dispose();
     this.scene.dispose();
     this.engine.dispose();
   }

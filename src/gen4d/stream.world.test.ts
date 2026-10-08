@@ -100,8 +100,12 @@ describe('бесконечный мир: квартиры, биомы, пере�
       let id = w.startId!;
       for (let k = 0; k < 25; k++) {
         const cl = w.clusterAt(id)!;
-        expect(cl.exits, `${seed}: квартира ${cl.id} (${cl.rooms} комн.)`).toBeGreaterThanOrEqual(ex[0]);
-        expect(cl.exits).toBeLessThanOrEqual(ex[1]);
+        // подвал («Спуск в подвал» привёл в хаб): выходы — марши хабов, не квартирное правило
+        if (cl.tunnels) expect(cl.exits, `${seed}: подвал ${cl.id}`).toBeGreaterThanOrEqual(1);
+        else {
+          expect(cl.exits, `${seed}: квартира ${cl.id} (${cl.rooms} комн.)`).toBeGreaterThanOrEqual(ex[0]);
+          expect(cl.exits).toBeLessThanOrEqual(ex[1]);
+        }
         const exits = exitsOf(w).filter(([x]) => w.clusterAt(x)!.id === cl.id);
         const [a, c] = exits[k % exits.length];
         const next = w.openDoor(a, c);

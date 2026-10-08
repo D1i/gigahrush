@@ -8,6 +8,13 @@
 // Пропорции картинки совпадают с tileW:tileH.
 import type { Finish, FinishRule, FinishSurface } from '../model/types';
 import damaskUrl from './assets/wallpaper-damask.jpg?inline';
+// набор подвала пользователя (basement-3d, tools/optimize-basement.mjs): бесшовные 512 px
+import bsmBrickUrl from './assets/basement/brick_limewash.jpg?inline';
+import bsmConcreteUrl from './assets/basement/concrete_dusty.jpg?inline';
+import bsmPlasterUrl from './assets/basement/plaster_blue.jpg?inline';
+import bsmWoodUrl from './assets/basement/wood_old.jpg?inline';
+import bsmDampUrl from './assets/basement/concrete_damp.jpg?inline';
+import bsmWaterUrl from './assets/basement/water.jpg?inline';
 import { makeFinishTexture, type FinishTexKind, type FinishTexOpts } from './finishTextures';
 
 /** Текстура пользователя: зелёные обои «Дамаск» (фото → бесшовная плитка, см. tools/make-seamless.html).
@@ -22,8 +29,8 @@ interface FinishDef {
   tileW: number;
   tileH: number;
   tags: string[];
-  /** процедурная текстура: вид, размер картинки px, параметры; 'damask' — текстура пользователя */
-  tex: { kind: FinishTexKind; w: number; h: number; opts?: FinishTexOpts } | 'damask' | null;
+  /** процедурная текстура: вид, размер картинки px, параметры; 'damask' — текстура пользователя; { url } — картинка */
+  tex: { kind: FinishTexKind; w: number; h: number; opts?: FinishTexOpts } | 'damask' | { url: string } | null;
   dado?: { finishId: string; heightM: number };
 }
 
@@ -32,6 +39,21 @@ const WHITEWASH = { kind: 'whitewash', w: 256, h: 256 } as const;
 const PAINT_GREEN = { kind: 'paint', w: 256, h: 256, opts: { base: '#5a8463' } } as const;
 const PAINT_BLUE = { kind: 'paint', w: 256, h: 256, opts: { base: '#4a6f96' } } as const;
 const PAINT_PALE = { kind: 'paint', w: 256, h: 256, opts: { base: '#dfe3d6' } } as const;
+
+/** Отделки подвала (набор пользователя). Повтор — по реальному размеру: кирпич 250×65 мм — ряд ~0.1 м в картинке
+ *  из 10 рядов → 1 м; доски ~0.12 м (10 штук) → 1.2 м; бетон и вода без масштаба — 1.5 м. В биомах
+ *  подвала — правила отделки биома (src/gen4d/biomes.ts): сухой — кирпич с побелкой, заброшенный — синяя
+ *  штукатурка, затопленный — сырой бетон и вода на полу. */
+const BASEMENT_FINISHES: FinishDef[] = [
+  { id: 'f_bsm_brick', name: 'Подвал: кирпич с побелкой', surface: 'wall', color: '#a88f80', tileW: 1, tileH: 1, tags: ['подвал', 'кирпич'], tex: { url: bsmBrickUrl } },
+  { id: 'f_bsm_plaster', name: 'Подвал: синяя облупленная штукатурка', surface: 'wall', color: '#4f6b80', tileW: 1, tileH: 1, tags: ['подвал', 'штукатурка'], tex: { url: bsmPlasterUrl } },
+  { id: 'f_bsm_damp', name: 'Подвал: сырой бетон с плесенью', surface: 'wall', color: '#7a8270', tileW: 1.5, tileH: 1.5, tags: ['подвал', 'бетон', 'сырость'], tex: { url: bsmDampUrl } },
+  { id: 'f_bsm_planks', name: 'Подвал: дощатая перегородка', surface: 'wall', color: '#6f6150', tileW: 1.2, tileH: 1.2, tags: ['подвал', 'доски'], tex: { url: bsmWoodUrl } },
+  { id: 'f_bsm_concrete', name: 'Подвал: пыльный бетон (пол)', surface: 'floor', color: '#8c867c', tileW: 1.5, tileH: 1.5, tags: ['подвал', 'бетон'], tex: { url: bsmConcreteUrl } },
+  { id: 'f_bsm_boards', name: 'Подвал: старые доски (пол)', surface: 'floor', color: '#6f6150', tileW: 1.2, tileH: 1.2, tags: ['подвал', 'доски'], tex: { url: bsmWoodUrl } },
+  { id: 'f_bsm_damp_floor', name: 'Подвал: сырой бетон (пол)', surface: 'floor', color: '#737a68', tileW: 1.5, tileH: 1.5, tags: ['подвал', 'бетон', 'сырость'], tex: { url: bsmDampUrl } },
+  { id: 'f_bsm_water', name: 'Подвал: вода по щиколотку (пол)', surface: 'floor', color: '#4a4a2a', tileW: 1.5, tileH: 1.5, tags: ['подвал', 'вода'], tex: { url: bsmWaterUrl } },
+];
 
 export const FINISH_DEFS: FinishDef[] = [
   // ── Стены: обои ──
@@ -71,6 +93,7 @@ export const FINISH_DEFS: FinishDef[] = [
   { id: 'f_concrete_floor', name: 'Бетон (пол)', surface: 'floor', color: '#807d76', tileW: 1.2, tileH: 1.2, tags: ['бетон', 'подвал'], tex: { kind: 'concrete', w: 256, h: 256, opts: { base: '#7f7c76', cracks: true } } },
   { id: 'f_boards', name: 'Крашеная доска (сурик)', surface: 'floor', color: '#873f2b', tileW: 1.2, tileH: 0.6, tags: ['доска'], tex: { kind: 'boards', w: 512, h: 256 } },
   { id: 'f_tile_floor', name: 'Кафель (пол) 20×20', surface: 'floor', color: '#b2aa99', tileW: 0.6, tileH: 0.6, tags: ['кафель', 'санузел'], tex: { kind: 'tile_floor', w: 384, h: 384, opts: { base: '#b7ae9c', accent: '#6f685d', n: 3 } } },
+  ...BASEMENT_FINISHES,
 ];
 
 /** Правила по тегу (первому тегу комнаты из групп спавна): варианты стен и пола с весами. */
@@ -95,6 +118,7 @@ const RULES: [string, [string, number][], [string, number][]][] = [
 function texOf(d: FinishDef): string | null {
   if (d.tex === 'damask') return DAMASK.url || null;
   if (!d.tex) return null;
+  if ('url' in d.tex) return d.tex.url || null;
   return makeFinishTexture(d.tex.kind, d.tex.w, d.tex.h, d.tex.opts ?? {});
 }
 

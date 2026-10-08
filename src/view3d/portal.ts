@@ -33,7 +33,7 @@ import { Constants } from '@babylonjs/core/Engines/constants';
 import { ShaderStore } from '@babylonjs/core/Engines/shaderStore';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { Plane } from '@babylonjs/core/Maths/math.plane';
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import type { Camera } from '@babylonjs/core/Cameras/camera';
@@ -102,6 +102,8 @@ export interface PortalDef extends PiecePortal {
   center: Vector3;
   /** отсечение для комнаты to: остаётся только её сторона плоскости (Babylon: discard при n·p + d > 0) */
   clip: Plane;
+  /** шов бесконечного хода: комната to видна сдвинутой на shiftB (Babylon); null — обычный проём */
+  shiftB: Vector3 | null;
 }
 
 export interface PortalPiece {
@@ -123,6 +125,8 @@ export interface PortalPiece {
 export interface PieceCacheOptions {
   blockout: Partial<BlockoutOptions>;
   propTextures?: Record<string, string>;
+  /** модели предметов (src/view3d/propModels.ts) */
+  propModel?: (propId: string) => Mesh | null;
   finishes?: boolean;
   /** предел памяти мешей кусков, байт (по умолчанию 96 МБ) и число кусков (по умолчанию 80) */
   limitBytes?: number;
@@ -176,6 +180,12 @@ export class PieceCache {
     return { model, ms: now() - t0 };
   }
 
+  /** Пересобрать все куски (например, догрузились модели предметов). */
+  rebuildAll() {
+    for (const [id, p] of [...this.pieces]) this.drop(id, p);
+    this.models.clear();
+  }
+
   /** Прогон вырос (бесконечный мир): у комнат changed (новые связи, раскрытые двери) кусок — заново. */
   setRun(run: RunExport, changed: Iterable<string>) {
     this.run = run;
@@ -211,12 +221,15 @@ export class PieceCache {
       propTextures: this.opts.propTextures,
       finishes: this.opts.finishes !== false,
       shared: this.shared,
+      propModel: this.opts.propModel,
     });
     bo.setCeilingsVisible(true);
-    const meshes = bo.root.getChildMeshes(false) as Mesh[];
+    const all = bo.root.getChildMeshes(false) as Mesh[];
+    // рисуются только видимые (невидимые — коллайдеры, например бокс под моделью предмета)
+    const meshes = all.filter((m) => m.isVisible);
     const collidable: Mesh[] = [];
     let bytes = 0;
-    for (const m of meshes) {
+    for (const m of all) {
       if (m.checkCollisions) collidable.push(m);
       m.checkCollisions = false;
       m.layerMask = PORTAL_LAYER;
@@ -337,7 +350,8 @@ export class PieceCache {
     // плоскости — отсечение точно по ней резало бы их край по точности интерполяции (пунктир щелей).
     const clip = new Plane(-u.x, -u.y, -u.z, Vector3.Dot(u, p0) - CLIP_E);
     const key = `${p.a.inst}/${p.a.connector}|${p.b.inst}/${p.b.connector}`;
-    return { ...p, key, mask, thin, p0, u, corners, center, clip };
+    const shiftB = p.shift ? new Vector3(p.shift[0], 0, -p.shift[1]) : null;
+    return { ...p, key, mask, thin, p0, u, corners, center, clip, shiftB };
   }
 
   dispose() {
@@ -392,6 +406,8 @@ interface Job {
   level: number;
   /** связь, сквозь которую в неё вошли (назад сквозь неё не смотрим) */
   came: string | null;
+  /** сдвиг сцены (за швами бесконечного хода): комната рисуется на своём месте + off; clip и planes — в её системе */
+  off: Vector3;
 }
 
 /** Scene.FOGMODE_LINEAR (без импорта класса сцены) */
@@ -422,6 +438,12 @@ export class PortalRenderer {
   private onCross?: (from: string, to: string) => void;
   /** колбэки «кадр с текущей комнатой отрисован» (crossTo в QA) */
   private frameWaiters: (() => void)[] = [];
+  /** матрицы камеры кадра и текущий сдвиг сцены */
+  private view0 = new Matrix();
+  private proj0 = new Matrix();
+  private offNow = new Vector3();
+  /** игрок прошёл шов бесконечного хода: камеру перенесли на −shift (колбэк — драйверу) */
+  onWrap?: (shift: Vector3) => void;
 
   constructor(
     readonly scene: Scene,
@@ -501,31 +523,40 @@ export class PortalRenderer {
     st.rooms = st.portals = st.levels = st.far = st.capped = 0;
     if (this.trace) this.trace = [];
     this.lastRooms.clear();
-    const eye = this.camera.globalPosition;
-    if (this.autoTrack) this.track(eye);
+    const sc = this.scene;
+    this.view0.copyFrom(sc.getViewMatrix());
+    this.proj0.copyFrom(sc.getProjectionMatrix());
+    this.offNow.setAll(0);
+    const eye = this.camera.globalPosition.clone();
+    // прошёл шов бесконечного хода — камера перенесена на −shift; этот кадр (матрицы — до переноса) рисуется со
+    // сдвигом +shift: картинка та же, что за швом
+    const wrapped = this.autoTrack ? this.track(eye) : null;
+    const root = wrapped ?? new Vector3();
     const cur = this.current ? this.cache.get(this.current) : null;
     if (!cur) {
       st.ms = now() - t0;
       return;
     }
-    this.updateCollisions(cur, eye);
+    this.updateCollisions(cur, eye.subtract(root));
     const e = this.engine;
-    const sc = this.scene;
     this.stencilNext = 1;
     e.setAlphaMode(Constants.ALPHA_DISABLE);
     e.setDepthBuffer(true);
     e.setStencilBuffer(true);
     e.setStencilFunctionMask(0xff);
-    this.drawRoom(cur, 0, NOOP_CLIP, sc.frustumPlanes);
+    const rootPlanes = movePlanes(sc.frustumPlanes, root.negate());
+    this.setOffset(root);
+    this.drawRoom(cur, 0, NOOP_CLIP, rootPlanes);
     this.capUsed = false;
     // туман — необязательная атмосфера: если он есть, за его пределом проёмы не открываем
     this.fogM = sc.fogEnabled && sc.fogMode === FOGMODE_LINEAR && sc.fogEnd > 0 ? sc.fogEnd : 0;
     if (this.openPortals && this.fillMat.isReady(this.fill) && this.cache.maskMaterial.isReady()) {
       // очередь в ширину: ближние уровни первыми получают номера стенсила
-      const queue: Job[] = [{ p: cur, ref: 0, clip: NOOP_CLIP, planes: sc.frustumPlanes, level: 1, came: null }];
+      const queue: Job[] = [{ p: cur, ref: 0, clip: NOOP_CLIP, planes: rootPlanes, level: 1, came: null, off: root }];
       for (let k = 0; k < queue.length; k++) this.portals(queue[k], eye, queue);
       if (this.capUsed) this.fillRegion(CAP);
     }
+    this.setOffset(new Vector3());
     // вернуть состояние, которого ждёт Babylon (и чтобы очистка кадра чистила весь стенсил)
     e.setStencilMask(0xff);
     e.setStencilBuffer(false);
@@ -545,6 +576,14 @@ export class PortalRenderer {
     st.unique = this.lastRooms.size;
     st.ms = now() - t0;
     this.flushWaiters();
+  }
+
+  /** Сдвиг сцены: вид = перенос на off · вид камеры (комнаты за швами бесконечного хода рисуются со своих мест). */
+  private setOffset(off: Vector3) {
+    if (off.equalsWithEpsilon(this.offNow, 1e-9)) return;
+    this.offNow.copyFrom(off);
+    const v = Matrix.Translation(off.x, off.y, off.z).multiply(this.view0);
+    this.scene.setTransformMatrix(v, this.proj0);
   }
 
   /** Стенсил: тест func(ref), операции при прохождении, маска записи. */
@@ -592,9 +631,12 @@ export class PortalRenderer {
 
   /** Проёмы комнаты задания j (её область — стенсил j.ref): комнаты за ними рисуются сейчас, их проёмы —
    *  в очередь. Назад сквозь проём, которым вошли (j.came), не смотрим (оттуда видна своя же сторона). */
-  private portals(j: Job, eye: Vector3, queue: Job[]) {
+  private portals(j: Job, eyeW: Vector3, queue: Job[]) {
     const e = this.engine;
     const { ref, clip, planes, level } = j;
+    // всё — в системе комнаты задания: глаз без сдвига сцены
+    const eye = eyeW.subtract(j.off);
+    this.setOffset(j.off);
     const cands: Cand[] = [];
     for (const q of j.p.portals) {
       if (q.key === j.came) continue;
@@ -635,10 +677,20 @@ export class PortalRenderer {
       this.fillRegion(c.v);
       const next = this.cache.get(q.to);
       if (!next) continue;
-      const sub = planes.concat(portalPlanes(q, eye));
-      this.drawRoom(next, c.v, q.clip, sub);
+      let sub = planes.concat(portalPlanes(q, eye));
+      let qclip = q.clip;
+      let off = j.off;
+      if (q.shiftB) {
+        // шов: комната to — на своём месте, сцена сдвинута ещё на shiftB; плоскости — в её систему (p = p' + shiftB)
+        off = j.off.add(q.shiftB);
+        sub = movePlanes(sub, q.shiftB.negate());
+        qclip = movePlanes([q.clip], q.shiftB.negate())[0];
+      }
+      this.setOffset(off);
+      this.drawRoom(next, c.v, qclip, sub);
+      this.setOffset(j.off);
       // за горизонтом комната видна целиком, но её проёмы не открываются (в них — цвет фона)
-      if (!c.far) queue.push({ p: next, ref: c.v, clip: q.clip, planes: sub, level: level + 1, came: q.key });
+      if (!c.far) queue.push({ p: next, ref: c.v, clip: qclip, planes: sub, level: level + 1, came: q.key, off });
     }
   }
 
@@ -679,22 +731,40 @@ export class PortalRenderer {
 
   // ───────────────────────── текущая комната и физика ─────────────────────────
 
-  /** Текущая комната по полу под глазом: своя или соседа (граница — плоскость проёма). */
-  private track(eye: Vector3) {
-    if (!this.current) return;
+  /** Текущая комната по полу под глазом: своя или соседа (граница — плоскость проёма). Шов бесконечного хода: глаз
+   *  за плоскостью шва (в его проёме) — камера переносится на −shift, текущая — комната за швом; возвращает shift. */
+  private track(eye: Vector3): Vector3 | null {
+    if (!this.current) return null;
     const cur = this.cache.get(this.current);
-    if (!cur) return;
-    const x = eye.x, y = -eye.z;
-    if (inRects(cur.floor, x, y)) return;
+    if (!cur) return null;
     for (const q of cur.portals) {
+      if (!q.shiftB) continue;
+      const s = (eye.x - q.p0.x) * q.u.x + (eye.z - q.p0.z) * q.u.z;
+      const t = q.axis === 'x' ? -eye.z : eye.x;
+      if (s <= 0 || s > 0.6 || t < q.lo || t > q.hi) continue;
+      const cam = this.camera as Camera & { position?: Vector3 };
+      if (!cam.position) continue;
+      cam.position.subtractInPlace(q.shiftB);
+      this.camera.computeWorldMatrix();
+      const from = this.current;
+      this.current = q.to;
+      this.onWrap?.(q.shiftB);
+      this.onCross?.(from, q.to);
+      return q.shiftB.clone();
+    }
+    const x = eye.x, y = -eye.z;
+    if (inRects(cur.floor, x, y)) return null;
+    for (const q of cur.portals) {
+      if (q.shiftB) continue;
       const n = this.cache.get(q.to);
       if (n && inRects(n.floor, x, y)) {
         const from = this.current;
         this.current = q.to;
         this.onCross?.(from, q.to);
-        return;
+        return null;
       }
     }
+    return null;
   }
 
   private updateCollisions(cur: PortalPiece, eye: Vector3) {
@@ -702,6 +772,8 @@ export class PortalRenderer {
     let best: string | null = null;
     let bd = COLLIDE_NEAR;
     for (const q of cur.portals) {
+      // за швом соседа нет рядом (он на своём месте) — его коллизии не нужны
+      if (q.shiftB) continue;
       const r = q.rect;
       const d = Math.hypot(Math.max(0, r.x0 - x, x - r.x1), Math.max(0, r.y0 - y, y - r.y1));
       if (d < bd) {
@@ -764,6 +836,12 @@ function portalPlanes(q: PortalDef, eye: Vector3): Plane[] {
     out.push(new Plane(n.x, n.y, n.z, -Vector3.Dot(n, eye)));
   }
   return out;
+}
+
+/** Плоскости, перенесённые на d (точки p → p + d): n·(p − d) + c = 0 → свободный член c − n·d. */
+function movePlanes(planes: Plane[], d: Vector3): Plane[] {
+  if (d.x === 0 && d.y === 0 && d.z === 0) return planes;
+  return planes.map((pl) => new Plane(pl.normal.x, pl.normal.y, pl.normal.z, pl.d - Vector3.Dot(pl.normal, d)));
 }
 
 /** Расстояние от точки до прямоугольника проёма (в его плоскости), м. */

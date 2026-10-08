@@ -407,6 +407,13 @@ export class FoldDriver {
   }
 
   /** Построить сцену под текущий режим камеры. refit — вписать облёт заново. */
+  /** Догрузились модели предметов: куски и части — заново (с моделями вместо боксов). */
+  refreshProps() {
+    if (this.disposed) return;
+    this.pieces?.rebuildAll();
+    this.apply(false);
+  }
+
   apply(refit = false) {
     if (this.disposed) return;
     this.clearExtras();
@@ -471,7 +478,12 @@ export class FoldDriver {
   // ───────────────────────── от первого лица: портальный рендер ─────────────────────────
 
   private ensurePortal(): PortalRenderer {
-    if (!this.pieces) this.pieces = new PieceCache(this.v.scene, this.rx, { blockout: this.partOpts('vis'), propTextures: this.build.propTextures, finishes: this.build.finishes, openCut: this.openCut });
+    if (!this.pieces) {
+      this.pieces = new PieceCache(this.v.scene, this.rx, {
+        blockout: this.partOpts('vis'), propTextures: this.build.propTextures, finishes: this.build.finishes, openCut: this.openCut,
+        propModel: (id) => this.v.props.get(id),
+      });
+    }
     if (!this.portal) {
       this.portal = new PortalRenderer(this.v.scene, this.v.fps, this.pieces, {
         horizonM: this.horizonM,

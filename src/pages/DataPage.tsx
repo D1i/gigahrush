@@ -114,17 +114,17 @@ export function DataPage() {
   };
 
   const missing = useMemo(() => missingPresets(p), [p, getVersion()]);
-  const missingTotal = missing.rooms + missing.props + missing.items + missing.economy + missing.finishes;
+  const missingTotal = missing.rooms + missing.props + missing.items + missing.economy + missing.finishes + missing.biomes;
   const merge = () => {
-    let r = { rooms: 0, props: 0, items: 0, economy: 0, finishes: 0 };
+    let r = { rooms: 0, props: 0, items: 0, economy: 0, finishes: 0, biomes: 0 };
     mutate((pp) => (r = mergePresets(pp)));
-    notify(`Добавлено из пресетов: комнат ${r.rooms}, декора ${r.props}, предметов ${r.items}, экономики ${r.economy}, отделки ${r.finishes}`, 'ok');
+    notify(`Добавлено из пресетов: комнат ${r.rooms}, декора ${r.props}, предметов ${r.items}, экономики ${r.economy}, отделки ${r.finishes}, биомов ${r.biomes}`, 'ok');
   };
 
   const outdated = useMemo(() => outdatedPresets(p), [p, getVersion()]);
   const update = () => {
     if (!confirm(`Обновить пресеты до последней версии? ${outdated} пресетных комнат/предметов/тиров будут заменены свежими — ваши правки в НИХ потеряются (свои комнаты не тронутся). Старт, предел обзора и дозаполнение возьмутся из пресетов (сид, число комнат и зазор останутся). Ctrl+Z — отменить.`)) return;
-    let r = { rooms: 0, props: 0, items: 0, economy: 0, finishes: 0 };
+    let r = { rooms: 0, props: 0, items: 0, economy: 0, finishes: 0, biomes: 0 };
     mutate((pp) => (r = updatePresets(pp)));
     setUI({ run: null, runInst: null, selection: null });
     notify(`Пресеты обновлены: комнат ${r.rooms}, декора ${r.props}, предметов ${r.items}`, 'ok');
@@ -298,7 +298,7 @@ export function DataPage() {
         <Section title="Пресеты">
           <div className="hint">
             {missingTotal
-              ? `В пресетах есть то, чего нет в проекте: комнат ${missing.rooms}, декора ${missing.props}, предметов ${missing.items}, экономики ${missing.economy}, отделки ${missing.finishes}. Ваши правки не тронутся.`
+              ? `В пресетах есть то, чего нет в проекте: комнат ${missing.rooms}, декора ${missing.props}, предметов ${missing.items}, экономики ${missing.economy}, отделки ${missing.finishes}, биомов ${missing.biomes}. Ваши правки не тронутся.`
               : 'Все пресеты уже в проекте.'}
           </div>
           <Btn variant="primary" onClick={merge} disabled={!missingTotal}>

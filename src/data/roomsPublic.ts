@@ -416,7 +416,7 @@ function svcLaundry(): Room {
 
 function bsmStairs(): Room {
   return room('bsm_stairs', 'Спуск в подвал', {
-    tags: ['подвал'],
+    tags: ['подвал', 'спуск'],
     gen: { weight: 0.7, min: 0, max: 99 },
     elite: NONE,
     note: 'Марш в подвал из-под лестницы первого этажа (1.1 м) и нижняя площадка 2.4×1.2 м с дверью в подвальный ход.',
@@ -437,7 +437,7 @@ function bsmStairs(): Room {
 
 function bsmPassageL(): Room {
   return room('bsm_passage_L', 'Подвальный ход Г-образный', {
-    tags: ['подвал'],
+    tags: ['подвал', 'ход', 'поворот'],
     gen: { weight: 0.4, min: 0, max: 99 },
     elite: NONE,
     note: 'Подвал пятиэтажки: ход 1.1 м вдоль клетушек жильцов, поворот под прямым углом (плечи 4.0 и 4.5 м).',
@@ -461,7 +461,7 @@ function bsmPassageL(): Room {
 
 function bsmNode(): Room {
   return room('bsm_node', 'Подвальный узел с колонной', {
-    tags: ['подвал'],
+    tags: ['подвал', 'ход', 'развилка'],
     gen: { weight: 0.3, min: 0, max: 99 },
     elite: NONE,
     note: 'Развилка подвальных ходов 3.0×3.0 м вокруг колонны 0.4×0.4 м: три хода и дверь в служебку, «вертушкой» у разных углов.',
@@ -484,7 +484,7 @@ function bsmNode(): Room {
 
 function bsmColumns(): Room {
   return room('bsm_columns', 'Техподполье с колоннами', {
-    tags: ['подвал'],
+    tags: ['подвал', 'ход'],
     gen: { weight: 0.3, min: 0, max: 99 },
     elite: NONE,
     note: 'Техподполье панельного дома: 5.0×4.2 м, две колонны 0.4×0.4 м, трубы отопления вдоль стены, три клетушки.',

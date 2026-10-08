@@ -128,6 +128,8 @@ export default function View3DPage() {
   const [locked, setLocked] = useState(false);
   const [glErr, setGlErr] = useState<string | null>(null);
   const [sceneInfo, setSceneInfo] = useState<{ ms: number; meshes: number } | null>(null);
+  /** модели предметов догрузились (меняется раз) — пересобрать болванку с ними */
+  const [propsVer, setPropsVer] = useState(0);
   const [sceneErr, setSceneErr] = useState<string | null>(null);
   const [glbBusy, setGlbBusy] = useState(false);
   /** спец-локация (src/locations/): своя сцена поверх болванки, пока задана */
@@ -267,6 +269,7 @@ export default function View3DPage() {
         onPick: (inst) => onPickRef.current(inst),
         onRoom: setHere,
         onPointerLock: setLocked,
+        onPropsReady: () => setPropsVer((x) => x + 1),
         onStats: (fps, dc) => {
           // портальный рендер: сколько комнат и проёмов в кадре
           if (v?.hasOverlay) {
@@ -313,7 +316,12 @@ export default function View3DPage() {
       setSceneInfo(null);
       setSceneErr(String(e?.message ?? e));
     }
-  }, [model, propTextures, view.finishes, fold]);
+  }, [model, propTextures, view.finishes, fold, propsVer]);
+
+  // модели предметов догрузились — у складчатого прогона и прогулки куски пересобираются с ними
+  useEffect(() => {
+    if (propsVer) driver.current?.refreshProps();
+  }, [propsVer]);
 
   // ── складчатый прогон: драйвер частей; при смене настроек того же прогона — с той же комнаты ──
   const foldResume = useRef<{ key: string; snap: FoldResume } | null>(null);
@@ -1082,6 +1090,14 @@ export default function View3DPage() {
                       <span>
                         {walkStatus.stats.clusters} · закрытых выходов {walkStatus.stats.exitsOpen}
                       </span>
+                      {walkStatus.stats.hubs > 0 && (
+                        <>
+                          <span>подвал</span>
+                          <span title="хабов в подвалах мира · замкнутых колец из хаба в хаб · бесконечных прямых участков (шов)">
+                            хабов {walkStatus.stats.hubs} · колец {walkStatus.stats.rings} · бесконечных {walkStatus.stats.wraps}
+                          </span>
+                        </>
+                      )}
                       <span>переход</span>
                       <span>
                         {walkStatus.stats.transition.pending

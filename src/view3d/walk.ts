@@ -233,7 +233,8 @@ export class WalkSession {
       settings: { ...run.settings, mode: 'fold' },
       ...this.tables,
       instances,
-      links: doors.map((l) => ({ a: { ...l.a }, b: { ...l.b }, dw: l.dw ?? 0 })),
+      // шов бесконечного хода подвала (wrap, клетки): куски портального рендера открывают его как проём со сдвигом
+      links: doors.map((l) => ({ a: { ...l.a }, b: { ...l.b }, dw: l.dw ?? 0, ...(l.wrap ? { wrap: [l.wrap[0], l.wrap[1]] as [number, number] } : {}) })),
       openConnectors: run.openConnectors.map((o) => ({ ...o })),
       mode: 'fold',
       fold: run.fold ?? null,

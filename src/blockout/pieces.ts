@@ -13,7 +13,7 @@
 // границы «A | сосед», а их задают две комнаты.
 import { buildBlockoutModel } from './core';
 import { adjacencyOf, subRun } from './subrun';
-import type { BlockoutModel, BlockoutOptions, Opening, Rect, RunExport, Side, Surface } from './types';
+import type { BlockoutModel, BlockoutOptions, Opening, Rect, RunExport, RunInstance, Side, Surface } from './types';
 
 /** Соседи по связям (каждый один раз, в порядке run.instances). */
 export function neighborIds(run: RunExport, id: string): string[] {
@@ -30,11 +30,58 @@ export function neighborIds(run: RunExport, id: string): string[] {
  * темноту ('open'), а не стена.
  */
 export function neighborhoodModel(run: RunExport, id: string, opts?: Partial<BlockoutOptions>, openCut = false): BlockoutModel {
-  const sub = subRun(run, [id, ...neighborIds(run, id)]);
+  const sub = unwrapAround(subRun(run, [id, ...neighborIds(run, id)]), id);
   if (!openCut) return buildBlockoutModel(sub, { ...(opts ?? {}), ownership: true, cutEnds: 'wall' });
   // у соседей cut снимается (обычный тупик — их панели в кусок комнаты не попадают)
   const instances = sub.instances.map((i) => (i.id === id ? i : { ...i, connectors: i.connectors.map((k) => (k.cut ? { ...k, cut: false } : k)) }));
   return buildBlockoutModel({ ...sub, instances }, { ...(opts ?? {}), ownership: true, cutEnds: 'open' });
+}
+
+/**
+ * Шов бесконечного хода (links[].wrap): сосед комнаты id по шву сдвигается так, чтобы встать лицом к ней (как
+ * обычный сосед), у связи снимается wrap — ядро открывает проём. Соседи по шву и по обычной связи не совпадают
+ * (бесконечный участок — не меньше трёх комнат).
+ */
+function unwrapAround(sub: RunExport, id: string): RunExport {
+  const moves = new Map<string, [number, number]>();
+  const links = (sub.links ?? []).map((l) => {
+    if (!l.wrap || (l.a.inst !== id && l.b.inst !== id)) return l;
+    const { wrap, ...rest } = l;
+    if (l.a.inst === id) moves.set(l.b.inst, [wrap[0], wrap[1]]);
+    else moves.set(l.a.inst, [-wrap[0], -wrap[1]]);
+    return rest;
+  });
+  if (!moves.size) return sub;
+  const instances = sub.instances.map((i) => {
+    const m = moves.get(i.id);
+    return m && i.id !== id ? translateInstance(i, m[0], m[1]) : i;
+  });
+  return { ...sub, instances, links };
+}
+
+/** Экземпляр прогона, сдвинутый на (tx, ty) клеток плана. */
+export function translateInstance(i: RunInstance, tx: number, ty: number): RunInstance {
+  const rows = (i.cells ?? []).map((r) => {
+    const cut = r.indexOf(':');
+    const y = Number(r.slice(0, cut)) + ty;
+    const xs = r
+      .slice(cut + 1)
+      .split(',')
+      .map((part) => part.split('-').map((v) => String(Number(v) + tx)).join('-'));
+    return `${y}:${xs.join(',')}`;
+  });
+  const seg = <T extends { cx: number; cy: number }>(s: T): T => ({ ...s, cx: s.cx + tx, cy: s.cy + ty });
+  return {
+    ...i,
+    dx: i.dx + tx,
+    dy: i.dy + ty,
+    bbox: { x0: i.bbox.x0 + tx, y0: i.bbox.y0 + ty, x1: i.bbox.x1 + tx, y1: i.bbox.y1 + ty },
+    cells: rows,
+    doors: (i.doors ?? []).map(seg),
+    connectors: (i.connectors ?? []).map(seg),
+    decor: (i.decor ?? []).map((d) => ({ ...d, x: d.x + tx, y: d.y + ty })),
+    spots: (i.spots ?? []).map((s) => ({ ...s, x: s.x + tx, y: s.y + ty })),
+  };
 }
 
 /** Собственная геометрия комнаты id из модели с владением: её объёмы, пол и потолок (с половинами
@@ -108,6 +155,8 @@ export interface PiecePortal {
   h: number;
   /** проём целиком (на всю толщину стены) */
   rect: Rect;
+  /** шов бесконечного хода: комната to видна сдвинутой на shift (м плана [dx, dy]; её настоящее место — без сдвига) */
+  shift?: [number, number];
 }
 
 const SIDE_DIR: Record<Side, ['x' | 'y', 1 | -1]> = { E: ['x', 1], W: ['x', -1], S: ['y', 1], N: ['y', -1] };
@@ -116,6 +165,8 @@ const SIDE_DIR: Record<Side, ['x' | 'y', 1 | -1]> = { E: ['x', 1], W: ['x', -1],
 export function piecePortals(run: RunExport, piece: BlockoutModel, id: string): PiecePortal[] {
   const inst = (run.instances ?? []).find((i) => i.id === id);
   const out: PiecePortal[] = [];
+  const cell = run.cellM > 0 ? run.cellM : 0.1;
+  const wraps = (run.links ?? []).filter((l) => l.wrap && (l.a.inst === id || l.b.inst === id));
   for (const op of piece.openings) {
     const mineA = op.a.inst === id;
     if (!mineA && op.b.inst !== id) continue;
@@ -126,7 +177,10 @@ export function piecePortals(run: RunExport, piece: BlockoutModel, id: string): 
     const [axis, dir] = SIDE_DIR[k.side];
     const r = op.rect;
     const at = axis === 'x' ? (r.x0 + r.x1) / 2 : (r.y0 + r.y1) / 2;
+    const wl = wraps.find((l) => (l.a.inst === me.inst && l.a.connector === me.connector) || (l.b.inst === me.inst && l.b.connector === me.connector));
+    const sgn = wl ? (wl.a.inst === id && wl.a.connector === me.connector ? 1 : -1) : 0;
     out.push({
+      ...(wl ? { shift: [sgn * wl.wrap![0] * cell, sgn * wl.wrap![1] * cell] as [number, number] } : {}),
       from: id,
       to: other.inst,
       a: { ...op.a },

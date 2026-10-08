@@ -2,6 +2,7 @@
 // правки автора не трогаются. Нужно, когда пресеты пополнились, а проект уже сохранён.
 import type { FinishRule, Project } from './types';
 import { createDefaultProject } from '../data/presets';
+import { cloneBiome, newWorldSettings } from '../gen4d/biomes';
 
 export interface MergeReport {
   rooms: number;
@@ -10,6 +11,8 @@ export interface MergeReport {
   economy: number;
   /** отделки (по id) + правила отделки (по тегу) */
   finishes: number;
+  /** биомы бесконечного мира (по id) */
+  biomes: number;
 }
 
 const cloneRule = (r: FinishRule): FinishRule => ({
@@ -34,6 +37,7 @@ export function missingPresets(p: Project, fresh: Project = createDefaultProject
       count(fresh.economy.shops, p.economy.shops) +
       count(fresh.economy.passes, p.economy.passes),
     finishes: count(fresh.finishes, p.finishes ?? []) + missingRules(fresh.finishRules, p.finishRules ?? []).length,
+    biomes: count(fresh.world.biomes, p.world?.biomes ?? []),
   };
 }
 
@@ -65,7 +69,9 @@ export function mergePresets(p: Project, fresh: Project = createDefaultProject()
   p.finishRules.push(...extraRules);
   const finishes = add(fresh.finishes, p.finishes) + extraRules.length;
   const rooms = add(fresh.rooms, p.rooms);
-  return { rooms, props, items, economy, finishes };
+  p.world ??= newWorldSettings();
+  const biomes = add(fresh.world.biomes.map(cloneBiome), p.world.biomes);
+  return { rooms, props, items, economy, finishes, biomes };
 }
 
 /** Сколько пресетных сущностей в проекте отличаются от свежих пресетов (по id). */
@@ -101,6 +107,7 @@ export function outdatedPresets(p: Project, fresh: Project = createDefaultProjec
     const d = rulesBy.get(r.tag);
     if (d && sig(d) !== sig(r)) n++;
   }
+  cmp(fresh.world.biomes, p.world?.biomes ?? []);
   return n;
 }
 
@@ -134,6 +141,10 @@ export function updatePresets(p: Project, fresh: Project = createDefaultProject(
     finishes++;
   }
   const rooms = put(fresh.rooms, p.rooms);
+  // биомы пресетов — свежие, свои остаются; настройки ходов подвала — из пресетов
+  p.world ??= newWorldSettings();
+  const biomes = put(fresh.world.biomes.map(cloneBiome), p.world.biomes);
+  p.world.tunnels = { ...fresh.world.tunnels };
   // свои правила, комнаты и dado могли ссылаться на пресетную отделку, сменившую поверхность, — чистим
   const surf = new Map(p.finishes.map((f) => [f.id, f.surface]));
   for (const r of p.finishRules) {
@@ -155,5 +166,5 @@ export function updatePresets(p: Project, fresh: Project = createDefaultProject(
     gap: g.gap,
     passId: g.passId && p.economy.passes.some((x) => x.id === g.passId) ? g.passId : fresh.generator.passId,
   };
-  return { rooms, props, items, economy, finishes };
+  return { rooms, props, items, economy, finishes, biomes };
 }

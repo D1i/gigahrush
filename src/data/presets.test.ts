@@ -9,7 +9,7 @@ import { tagsCompatible } from '../model/segments';
 import { finishChances, finishRuleFor } from '../model/ops';
 import { createDefaultProject } from './presets';
 import { TAG_LEN } from './roomBuilder';
-import { variantFloorProps, walkCheck, walkMessage } from '../gen/walk';
+import { isFlatProp, variantFloorProps, walkCheck, walkMessage } from '../gen/walk';
 import { DEFAULT_STAIRWELL } from '../locations/stairwell';
 import { DEFAULT_LIFT, LIFT_SHAFT_X, LIFT_SHAFT_Z } from '../locations/lift';
 import { DEFAULT_LAIR } from '../locations/lair';
@@ -45,7 +45,8 @@ function coveredCells(rc: { x0: number; x1: number; y0: number; y1: number }, sh
 }
 
 const GROUPS = ['лестница', 'коридор', 'лифт', 'подвал', 'служебное', 'общежитие', 'прихожая', 'кухня', 'санузел', 'жилая', 'балкон', 'кладовка'];
-const isFloorProp = (propId: string) => propById.get(propId)!.tags.includes('пол');
+// на полу (ковёр, лужа, доска) и под потолком (лампа, труба): проёмы и проход не загораживают
+const isFloorProp = (propId: string) => propById.get(propId)!.tags.includes('пол') || isFlatProp(propById.get(propId)!);
 
 describe('стартовый проект', () => {
   it('базовые настройки', () => {
@@ -169,6 +170,8 @@ describe('стартовый проект', () => {
 
     it('нет анфилад: проёмы на противоположных стенах не стоят друг напротив друга (кроме марша)', () => {
       if (r.id === 'stair_flight') return; // марш по определению сквозной
+      // подвал: ходы и хабы — длинные сквозные пространства по замыслу (docs/GENERATOR-4D.md §17)
+      if (r.tags.includes('ход') || r.tags.includes('хаб')) return;
       for (const a of r.doors)
         for (const b of r.doors) {
           if (a.id >= b.id || SIDE_DELTA[a.side][0] !== -SIDE_DELTA[b.side][0] || SIDE_DELTA[a.side][1] !== -SIDE_DELTA[b.side][1]) continue;
@@ -430,6 +433,8 @@ describe('стартовый проект', () => {
     it('каждая отделка где-то используется; у каждой комнаты пресетов есть стены и пол', () => {
       const used = new Set<string>();
       for (const r of p.finishRules) for (const x of [...r.wall, ...r.floor]) used.add(x.finishId);
+      // отделка подвалов — в правилах биомов бесконечного мира
+      for (const b of p.world.biomes) for (const r of b.finishRules ?? []) for (const x of [...r.wall, ...r.floor]) used.add(x.finishId);
       for (const f of p.finishes) if (f.dado) used.add(f.dado.finishId);
       for (const f of p.finishes) expect(used.has(f.id), f.id).toBe(true);
       for (const r of p.rooms) {

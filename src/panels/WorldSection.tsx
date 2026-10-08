@@ -2,12 +2,13 @@
 // (Project.world; механика — src/gen4d/stream.ts, режим квартир; правила — docs/GENERATOR-4D.md §16).
 import { useMemo, useState } from 'react';
 import { mutate, useProject } from '../model/store';
-import type { Biome, WorldSettings } from '../model/types';
-import { biomeMul, CLUSTER_MAX, defaultBiomes, EXITS_LIM, worldRule } from '../gen4d/biomes';
+import type { Biome, Project, TunnelSettings, WorldSettings } from '../model/types';
+import { biomeMul, CLUSTER_MAX, defaultBiomes, EXITS_LIM, isTunnels, tunnelRule, worldRule } from '../gen4d/biomes';
 import { Btn, Check, ColorField, NumField, Section, Select, TextField } from '../ui/kit';
 import './panels.css';
 
 type RangeKey = 'clusterRooms' | 'clusterExits';
+type TunRangeKey = 'hubEvery' | 'ringLen' | 'loopLen';
 
 export function WorldSection() {
   const p = useProject();
@@ -24,6 +25,17 @@ export function WorldSection() {
   const tags = useMemo(() => [...new Set(p.rooms.flatMap((r) => r.tags))].sort(), [p.rooms]);
   const grows = (b: Biome) => p.rooms.filter((r) => !r.location && r.gen.weight > 0 && biomeMul(b, r) > 0).length;
   const plain = w.biomes.filter((b) => !b.rich);
+  const tun = w.biomes.some((b) => isTunnels(b));
+  const updT = (key: string, fn: (t: TunnelSettings) => void) => upd(`tun-${key}`, (x) => fn(x.tunnels));
+  const tunRange = (k: TunRangeKey, lim: readonly [number, number]) => (i: 0 | 1, v: number) =>
+    updT(`${k}${i}`, (t) => {
+      const r = Math.min(lim[1], Math.max(lim[0], Math.round(v)));
+      t[k][i] = r;
+      if (t[k][0] > t[k][1]) t[k][1 - i] = r;
+    });
+  const pctField = (label: string, key: 'turn' | 'branch' | 'storage' | 'ring' | 'loop', title: string) => (
+    <NumField label={label} value={w.tunnels[key] * 100} min={0} max={100} step={1} digits={0} suffix="%" title={title} onChange={(v) => updT(key, (t) => (t[key] = Math.min(1, Math.max(0, v / 100))))} />
+  );
 
   return (
     <Section title="Бесконечный мир («Прогулка»)">
@@ -51,6 +63,30 @@ export function WorldSection() {
       <div className="pn-loc-rule">
         <b>Правило.</b> {worldRule(w)}
       </div>
+      {tun && (
+        <>
+          <div className="row" style={{ marginTop: 6 }}>
+            <b>Подвал: сеть ходов</b>
+          </div>
+          <div className="hint">
+            Биомы с галочкой «подвал» растут не квартирами, а ходами на ходу: длинные ходы 1 м, редкие хабы (вход и выход —
+            марш хаба), кладовые, кольца через слои W и бесконечные прямые участки.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Range label="Хаб через, м хода" value={w.tunnels.hubEvery} lim={[4, 1000]} title="Хаб не ближе минимума от прошлого, к максимуму — наверняка (шанс растёт линейно)" onChange={tunRange('hubEvery', [4, 1000])} />
+            <Range label="Кольцо, м" value={w.tunnels.ringLen} lim={[8, 400]} title="Длина кольца из хаба в хаб" onChange={tunRange('ringLen', [8, 400])} />
+            <Range label="Бесконечный участок, м" value={w.tunnels.loopLen} lim={[6, 120]} title="Длина повторяющегося прямого участка: дошёл до конца — снова в начале" onChange={tunRange('loopLen', [6, 120])} />
+          </div>
+          <div className="grid2">
+            {pctField('Поворот', 'turn', 'Шанс поворота на кусок хода')}
+            {pctField('Развилка', 'branch', 'Шанс развилки на кусок хода')}
+            {pctField('Кладовая', 'storage', 'Шанс кладовой за боковой дверью хода (иначе стена)')}
+            {pctField('Кольцо из хаба', 'ring', 'Шанс, что ход из хаба замкнётся кольцом в другой проход того же хаба')}
+            {pctField('Бесконечный участок', 'loop', 'Шанс бесконечного прямого участка на кусок хода (не ближе 12 м к хабу)')}
+          </div>
+          <div className="pn-loc-rule">{tunnelRule(w.tunnels)}</div>
+        </>
+      )}
 
       <div className="row" style={{ justifyContent: 'space-between', marginTop: 6 }}>
         <b>Биомы</b>
@@ -93,6 +129,7 @@ export function WorldSection() {
           {open === b.id && (
             <BiomeFields
               b={b}
+              p={p}
               tags={tags}
               onChange={(fn) => mutate((pp) => fn(pp.world.biomes[bi]), { key: `biome-${b.id}` })}
               onRemove={() =>
@@ -109,8 +146,9 @@ export function WorldSection() {
   );
 }
 
-function BiomeFields(props: { b: Biome; tags: string[]; onChange: (fn: (b: Biome) => void) => void; onRemove: () => void }) {
-  const { b, tags, onChange } = props;
+function BiomeFields(props: { b: Biome; p: Project; tags: string[]; onChange: (fn: (b: Biome) => void) => void; onRemove: () => void }) {
+  const { b, p, tags, onChange } = props;
+  const fname = (id: string) => p.finishes?.find((f) => f.id === id)?.name ?? `${id} (нет в проекте)`;
   const free = tags.filter((t) => !b.tags.some((x) => x.tag === t));
   return (
     <div className="pn-biome-body">
@@ -126,6 +164,18 @@ function BiomeFields(props: { b: Biome; tags: string[]; onChange: (fn: (b: Biome
         onChange={(v) => onChange((x) => (v ? (x.rich = true) : delete x.rich))}
         title="Сюда ведёт часть переходов; элитность с усилением; стартом и «другим биомом» не бывает"
       />
+      <Check
+        label="подвал: сеть ходов"
+        value={isTunnels(b)}
+        onChange={(v) => onChange((x) => (v ? (x.layout = 'tunnels') : delete x.layout))}
+        title="Растёт не квартирами, а ходами на ходу (настройки — «Подвал: сеть ходов» выше): нужны куски ходов с тегами «ход», «поворот», «развилка», «хаб»"
+      />
+      {!!b.finishRules?.length && (
+        <div className="hint" title="Правила отделки биома — поверх правил проекта (по тегу комнаты); меняются пресетами биомов">
+          <b>Отделка биома:</b>{' '}
+          {b.finishRules.map((r) => `${r.tag} — стены: ${r.wall.map((x) => fname(x.finishId)).join(', ')}; пол: ${r.floor.map((x) => fname(x.finishId)).join(', ')}`).join(' · ')}
+        </div>
+      )}
       <div className="hint">Вес комнаты в биоме = вес роста × наибольший множитель среди её тегов; тега нет в списке — комната не растёт.</div>
       {b.tags.map((t, ti) => (
         <div key={t.tag} className="row" style={{ gap: 4 }}>

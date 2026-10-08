@@ -9,7 +9,9 @@
 //    треугольников и ничего не просвечивает на стыках (стена | перемычка) при сглаживании.
 //  • UV — мировые метры, планарно по грани: общая сетка-текстура 1 м идёт непрерывно по соседним боксам.
 //  • Полы и потолки — по мешу на экземпляр (metadata.inst), пол/потолок проёмов — отдельными мешами.
-//  • Мебель — меш на предмет: позиция в центре на полу, rotation.y = rot·π/180.
+//  • Мебель — меш на предмет: позиция в центре на полу, rotation.y = rot·π/180. Есть модель предмета (propModel —
+//    шаблон из ассета, перед = −Z) — бокс остаётся невидимым коллайдером, видна модель; подвесное (тег «потолок») —
+//    модель под потолком (верх модели в y = 0).
 //  • Отделка (обои, кафель, краска, полы): облицовка по model.faces — квады на 1.5 мм перед гранью
 //    стены, один меш на отделку; dado делит грань по высоте. UV — метры / размер повтора (tileW, tileH).
 //
@@ -44,6 +46,9 @@ export interface BabylonBlockoutOptions {
    *  со своим слегка светящимся материалом: например, в складчатом прогоне «дверь в другой слой» или
    *  «дверь за границей видимого множества» (docs/BLOCKOUT-BABYLON.md §12). */
   deadEndColor?: (d: DeadEnd) => string | null | undefined;
+  /** модель предмета по propId (шаблон: выключенный меш, перед = −Z, низ — пол, у подвесных верх — 0) или null —
+   *  бокс болванки. Шаблон клонируется (геометрия и материалы общие). */
+  propModel?: (propId: string) => Mesh | null;
   /** общие материалы и текстуры для многих болванок (createBlockoutShared): куски комнат портального
    *  рендера строятся десятками — без этого у каждого была бы своя сетка-текстура и свои материалы.
    *  dispose() болванки общее не трогает — его освобождает shared.dispose(). */
@@ -610,6 +615,20 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
     m.position.set(p.x, floorZ.get(p.inst) ?? 0, -p.y);
     m.rotation.y = (p.rot || 0) * deg;
     props.push(m);
+    const tpl = opts.propModel?.(p.propId) ?? null;
+    if (tpl) {
+      // модель вместо бокса: бокс — коллайдер (невидимый), модель — его ребёнок
+      m.isVisible = false;
+      const v = tpl.clone(`propModel:${p.inst}:${p.propId}`, m, true);
+      v.setEnabled(true);
+      v.isVisible = true;
+      v.isPickable = false;
+      v.checkCollisions = false;
+      if (p.tags.includes('потолок')) v.position.y = model.options.wallHeightM;
+      meta(v, { kind: 'prop', inst: p.inst, propId: p.propId, name: p.name });
+      allMeshes.push(v);
+      continue;
+    }
 
     // текстура вида сверху — отдельная плоскость чуть выше верха (+ zOffset), без z-fighting
     const uri = opts.propTextures?.[p.propId];

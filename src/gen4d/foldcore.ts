@@ -18,6 +18,11 @@ export const DEFAULT_FOLD: FoldSettings = {
   seamless: true,
 };
 
+/** Теги комнат с длинным обзором: ходы и хабы подвала (docs/GENERATOR-4D.md §17) — линии обзора через них пределом
+ *  не ограничены (рост, петли, проверка validateFoldRun). */
+export const LONG_SIGHT_TAGS: readonly string[] = ['ход', 'хаб'];
+export const longSight = (room: Room): boolean => room.tags.some((t) => LONG_SIGHT_TAGS.includes(t));
+
 // Константы роста — те же, что у евклидова генератора (§4.2 GENERATOR.md).
 export const ATTEMPTS = 6;
 export const RESERVE = 2;
@@ -193,6 +198,8 @@ export interface Ctx {
   lim: { ortho: number; diag: number } | null;
   /** бесшовная видимость: дальность PVS и допуск проёмов, клетки (null — выключена) */
   seam: { reach: number; tol: number } | null;
+  /** ходы и хабы подвала — длинный обзор (только бесконечный мир в режиме квартир; прогоны — строго по пределу) */
+  long?: boolean;
 }
 
 /** Счётчики неудачных кандидатов метки — для причины тупика. */
@@ -237,7 +244,7 @@ export function place(ctx: Ctx, lay: Lay, info: Info, rot: Rot, dx: number, dy: 
     g.add(node);
   }
   lay.counts.set(info, (lay.counts.get(info) ?? 0) + 1);
-  lay.sight.addRoom(sh, dx, dy);
+  lay.sight.addRoom(sh, dx, dy, !!ctx.long && longSight(info.room));
   lay.pvs.push(new Set([n]));
   const k = sh.xs.length;
   lay.sx += ((node.x0 + node.x1) / 2) * k;
@@ -373,7 +380,7 @@ export function growFrom(ctx: Ctx, lay: Lay, parent: Node, ai: number, groups: I
         // поэтому отказ — повод пробовать следующего кандидата, а не другой dw
         let pvs: number[] | null = null;
         if (ctx.lim || ctx.seam) {
-          const why = probe(ctx, lay, parent, A, body, { ...Bw, cx: Bw.cx + dx, cy: Bw.cy + dy });
+          const why = probe(ctx, lay, parent, A, body, { ...Bw, cx: Bw.cx + dx, cy: Bw.cy + dy }, !!ctx.long && longSight(info.room));
           if (why === 'sight') { fails.sight++; continue; }
           if (why === 'seam') { fails.seam++; continue; }
           pvs = why;
@@ -404,9 +411,9 @@ export function growFrom(ctx: Ctx, lay: Lay, parent: Node, ai: number, groups: I
  *    попарно не пересекается (пары, уже лежащие в PVS родителя, проверены раньше).
  * Возвращает PVS кандидата (null — бесшовность выключена) или причину отказа.
  */
-function probe(ctx: Ctx, lay: Lay, parent: Node, A: Connector, body: Body, B: Connector): number[] | null | 'sight' | 'seam' {
+function probe(ctx: Ctx, lay: Lay, parent: Node, A: Connector, body: Body, B: Connector, long = false): number[] | null | 'sight' | 'seam' {
   const S = lay.sight;
-  const ci = S.addRoom(body.sh, body.dx, body.dy);
+  const ci = S.addRoom(body.sh, body.dx, body.dy, long);
   const pi = S.addPortal(parent.inst.order, A, ci, B);
   let res: number[] | null | 'sight' | 'seam' = null;
   if (ctx.lim && !S.portalOk(pi, ctx.lim)) res = 'sight';

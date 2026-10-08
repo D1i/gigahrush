@@ -26,7 +26,7 @@ import { runMeters, SIGHT_DIRS, sightLimits } from '../gen/sight';
 import { walkWarning } from '../gen/walk';
 import { runWorld } from '../gen/world';
 import {
-  ATTEMPTS, buildPool, failWhy, growFrom, GROW_BONUS, growOthers, layerKey, LEAF_BONUS, LIMIT, newLay, normFold, place,
+  ATTEMPTS, buildPool, failWhy, LONG_SIGHT_TAGS, growFrom, GROW_BONUS, growOthers, layerKey, LEAF_BONUS, LIMIT, newLay, normFold, place,
   pickWeighted, PVS_TOL_M, RESERVE, RESERVE_MAX, RESERVE_STEP, SUPPLY_FACTOR, tryLink,
   type Ctx, type Fails, type FoldGenSettings, type Info, type Lay, type Node,
 } from './foldcore';
@@ -636,20 +636,22 @@ function portalWorld(bodies: (VBody | null)[], index: Map<string, number>, links
  * линию: k клеток, диагональ, менялся ли контекст, старт.
  */
 function scanPortalLines(W: PortalWorld, bodies: (VBody | null)[], gap: number,
-  cb: (k: number, diag: boolean, multi: boolean, start: number, x: number, y: number, dx: number, dy: number) => void): void {
+  cb: (k: number, diag: boolean, multi: boolean, start: number, x: number, y: number, dx: number, dy: number, long: boolean) => void,
+  longSight: (room: number) => boolean = () => false): void {
   const { ps, move } = W;
   for (const [dx, dy] of SIGHT_DIRS) {
     const diag = dx !== 0 && dy !== 0;
     const visit = (c: number, x: number, y: number) => {
       if (move(c, x, y, -dx, -dy) !== null) return; // не начало линии
-      let k = 1, cc = c, px = x, py = y, multi = false;
+      let k = 1, cc = c, px = x, py = y, multi = false, long = c >= 0 && longSight(c);
       for (;;) {
         const nc = move(cc, px, py, dx, dy);
         if (nc === null) break;
         if (nc !== cc) multi = true;
+        if (nc >= 0 && !long && longSight(nc)) long = true;
         cc = nc; px += dx; py += dy; k++;
       }
-      cb(k, diag, multi, c, x, y, dx, dy);
+      cb(k, diag, multi, c, x, y, dx, dy, long);
     };
     bodies.forEach((b, i) => {
       if (!b) return;
@@ -674,6 +676,8 @@ function scanPortalLines(W: PortalWorld, bodies: (VBody | null)[], gap: number,
     }
   }
 }
+
+export { LONG_SIGHT_TAGS } from './foldcore';
 
 /** Насколько густо проверять консервативность PVS лучами (по умолчанию — легко, для интерфейса). */
 export interface ValidateOpts {
@@ -718,6 +722,28 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
     const name = `связь ${l.a.inst}/${l.a.connector} – ${l.b.inst}/${l.b.connector}`;
     const wa = byId.get(l.a.inst), wb = byId.get(l.b.inst);
     if (!wa || !wb) { err(`${name}: нет экземпляра`); continue; }
+    if (l.wrap) {
+      // шов бесконечного прямого хода подвала: b, сдвинутый на wrap, стоит лицом к a; проёма в 3D нет (портал со
+      // сдвигом сцены), соседи по графу — да
+      const A = wa.connectors.find((c) => c.id === l.a.connector);
+      const B = wb.connectors.find((c) => c.id === l.b.connector);
+      if (!A || !B) { err(`${name}: нет метки`); continue; }
+      if (l.a.inst === l.b.inst) err(`${name}: шов экземпляра с самим собой`);
+      for (const k of [`${l.a.inst}/${l.a.connector}`, `${l.b.inst}/${l.b.connector}`]) {
+        if (used.has(k)) err(`${name}: метка ${k} связана дважды`);
+        used.add(k);
+      }
+      const Bs = { ...B, cx: B.cx + l.wrap[0], cy: B.cy + l.wrap[1] };
+      const la = lineOf(A), lb = lineOf(Bs);
+      const sign = A.side === 'S' || A.side === 'E' ? 1 : -1;
+      if (B.side !== OPPOSITE[A.side] || lb.n - la.n !== sign * gap || Math.abs(la.mid - lb.mid) > 0.5 + 1e-9) err(`${name}: шов — метки не стоят лицом к лицу через зазор ${gap} со сдвигом ${l.wrap.join(', ')}`);
+      if (floorOf(l.a.inst) !== floorOf(l.b.inst)) err(`${name}: шов между этажами`);
+      const exp = wOf(l.b.inst) - wOf(l.a.inst);
+      if ((l.dw ?? 0) !== exp) err(`${name}: dw = ${l.dw ?? 0}, а w(b) − w(a) = ${exp}`);
+      adj.get(l.a.inst)?.push(l.b.inst);
+      adj.get(l.b.inst)?.push(l.a.inst);
+      continue;
+    }
     if (l.kind === 'descent' || l.kind === 'lift') {
       // переход спец-локации: a — экземпляр локации, b — комната-выход ниже на floors этажей ('descent') или комната
       // за выходом лифта выше на floors этажей ('lift'), b.connector — метка прихода
@@ -839,14 +865,22 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
   let long = 0;
   const index = new Map(worlds.map((w, i) => [w.inst.id, i] as const));
   const pw = portalWorld(bodies, index, vlinks, gap);
-  scanPortalLines(pw, bodies, gap, (k, diag, multi, c, x, y, dx, dy) => {
+  // ходы и хабы подвала (теги «ход», «хаб») в бесконечном мире (Run.settings.longSight) — длинные пространства по
+  // замыслу: линии через них предел не ограничивает
+  const longOn = (run.settings as { longSight?: boolean }).longSight === true;
+  const longRoom = worlds.map((w) => {
+    if (!longOn) return false;
+    const tags = p.rooms.find((r) => r.id === w.inst.roomId)?.tags ?? [];
+    return LONG_SIGHT_TAGS.some((t) => tags.includes(t));
+  });
+  scanPortalLines(pw, bodies, gap, (k, diag, multi, c, x, y, dx, dy, longLine) => {
     const m = runMeters(k, diag, cellM);
     if (m > vmax) vmax = m;
     // линия целиком внутри стартовой комнаты, которая сама длиннее предела, — допустима (предупреждение генератора)
-    if (lim && k > (diag ? lim.diag : lim.ortho) && (multi || c !== startIdx)) {
+    if (lim && !longLine && k > (diag ? lim.diag : lim.ortho) && (multi || c !== startIdx)) {
       if (++long <= 5) err(`линия обзора ${m.toFixed(2)} м от клетки (${x}, ${y}) по (${dx}, ${dy}) длиннее предела ${sightM} м`);
     }
-  });
+  }, (i) => longRoom[i]);
   if (long > 5) err(`… всего линий длиннее предела: ${long}`);
   if (!run.sight) err('нет Run.sight');
   else if (Math.abs(Math.round(vmax * 1000) / 1000 - run.sight.maxM) > 1e-6) {

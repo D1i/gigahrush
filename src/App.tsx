@@ -34,8 +34,8 @@ export function App() {
   useEffect(() => {
     const m = missingPresets(getProject());
     const old = outdatedPresets(getProject());
-    if (m.rooms + m.props + m.finishes > 0 || old > 0)
-      notify(`Пресеты обновились (новых комнат ${m.rooms}, отделок ${m.finishes}, изменённых ${old}) — «Данные / JSON» → «Пресеты»`, 'info');
+    if (m.rooms + m.props + m.finishes + m.biomes > 0 || old > 0)
+      notify(`Пресеты обновились (новых комнат ${m.rooms}, отделок ${m.finishes}, биомов ${m.biomes}, изменённых ${old}) — «Данные / JSON» → «Пресеты»`, 'info');
   }, []);
 
   useEffect(() => {

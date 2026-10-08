@@ -6,6 +6,7 @@ import type { Room } from '../model/types';
 import { I, P, room } from './roomBuilder';
 import { buildFlatRooms } from './roomsFlats';
 import { buildPublicRooms } from './roomsPublic';
+import { buildBasementRooms } from './roomsBasement';
 import { buildSpecialRooms } from './roomsSpecial';
 
 // Цвета групп спотов
@@ -936,6 +937,7 @@ export function buildRooms(): Room[] {
     balcony1464(),
     balcony447(),
     ...buildPublicRooms(),
+    ...buildBasementRooms(),
     ...buildFlatRooms(),
     ...buildSpecialRooms(),
   ];

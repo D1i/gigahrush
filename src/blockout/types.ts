@@ -118,6 +118,10 @@ export interface RunExport {
     kind?: 'door' | 'descent' | 'lift'; floors?: number; side?: 'straight' | 'right';
     /** бесконечный мир: «исчезнувшая» дверь (пропущенный переход) — не проём; дверь в переход — метки любые */
     sealed?: true; loose?: true;
+    /** бесконечный прямой ход: шов со сдвигом — b, сдвинутый на wrap (клетки плана: [dx, dy]), стоит лицом к a. В модели
+     *  целиком — не проём (обе метки — тупики); куски портального рендера сдвигают соседа и открывают проём
+     *  (src/blockout/pieces.ts, src/view3d/portal.ts) */
+    wrap?: [number, number];
   }[];
   openConnectors: { inst: string; connector: string }[];
   /** складчатый прогон с бесшовной видимостью: id экземпляра → id экземпляров его PVS (включая его) */
