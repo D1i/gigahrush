@@ -442,7 +442,40 @@ export interface Biome {
   /** отделка биома: правила поверх правил проекта (по тегу комнаты, как Project.finishRules) — у разных подвалов
    *  разные стены и полы при тех же комнатах */
   finishRules?: FinishRule[];
+  /** свои параметры генератора биома поверх общих (WorldSettings): квартиры — у квартирных, ходы — у подвалов */
+  apartments?: Partial<ApartmentSettings>;
+  tunnels?: Partial<TunnelSettings>;
   note: string;
+}
+
+/** Параметры роста квартир (общие — в WorldSettings, свои — Biome.apartments). */
+export interface ApartmentSettings {
+  /** комнат в квартире [min, max], max ≤ 15 */
+  clusterRooms: [number, number];
+  /** дверей-выходов из квартиры [min, max] (1…10); K — бросок в диапазоне */
+  clusterExits: [number, number];
+  /** проходимость: при росте держать открытыми max(min, K · exitReserve) дверей — за ними встают только проходные
+   *  комнаты; 1 — K дверей (меньше тупиковых комнат), 0 — только минимум (обычные квартиры, больше кухонь и санузлов) */
+  exitReserve: number;
+  /** вход новой квартиры — комната, у которой кроме двери входа не меньше min + entrySpare дверей (первые попытки) */
+  entrySpare: number;
+  /** стыковка 4D-швом: по меткам за выходом ничего не встаёт — вход стыкуется любой своей дверью (связь loose) */
+  seamEntries: boolean;
+}
+
+/** 4D и обзор «Прогулки» (бесконечный мир): складки, предел обзора, сколько строить вперёд. */
+export interface WalkGenSettings {
+  /** шанс сдвига слоя W на пороге и наибольший сдвиг */
+  shiftChance: number;
+  maxShift: number;
+  /** соседи в пределах стольких дверей не пересекаются в 3D (1 — только соседи по порогу) */
+  localRadius: number;
+  /** наибольший |W| */
+  maxLayer: number;
+  /** предел обзора по порталам, м (0 — без предела); ходы и хабы подвала им не ограничены */
+  sightM: number;
+  /** на сколько дверей вперёд мир строится заранее */
+  aheadDoors: number;
 }
 
 /**
@@ -461,9 +494,12 @@ export interface TunnelSettings {
   ring: number;
   ringLen: [number, number];
   /** бесконечный прямой участок: развилка, прямой ход и шов — дошёл до конца и снова в начале. Шанс на кусок хода
-   *  (не ближе 12 м к хабу) и длина участка, м */
+   *  (не ближе loopMinDist м к хабу) и длина участка, м */
   loop: number;
   loopLen: [number, number];
+  loopMinDist: number;
+  /** частота кусков подвала: множитель веса роста по id комнаты (нет — 1, 0 — не ставится) */
+  pieceWeights: Record<string, number>;
 }
 
 /**
@@ -475,11 +511,13 @@ export interface TunnelSettings {
  * открытой дверью (не встал за ней — в новой квартире рядом со входом). Пропустил (ушёл из квартиры, не зайдя) — исчезает. Прошёл через
  * переход — счётчик с нуля; переход ведёт в другой биом (trToBiome) или в богатую квартиру.
  */
-export interface WorldSettings {
-  /** комнат в квартире [min, max], max ≤ 15 */
-  clusterRooms: [number, number];
-  /** дверей-выходов из квартиры [min, max] (2…10) */
-  clusterExits: [number, number];
+export interface WorldSettings extends ApartmentSettings {
+  /** метки «наружу»: только такие двери квартиры бывают выходами в первую очередь (входная, коридор, марш, ход) */
+  outerTags: string[];
+  /** переход встаёт за дверью шириной от стольких метров */
+  transitionMinLen: number;
+  /** 4D и обзор «Прогулки» */
+  walk: WalkGenSettings;
   /** переходы: после стольких пройденных (впервые) комнат — шанс trBase, затем +trStep за каждую следующую */
   trAfter: number;
   trBase: number;

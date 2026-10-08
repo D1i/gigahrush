@@ -25,7 +25,7 @@ import type {
   Biome, Connector, FoldSettings, FoldStats, InstanceContent, LairSpec, LiftSide, LiftSpec, Link, MatchMode, Pass, Project, Room, Rot, Run,
   Side, StairwellSpec, WorldSettings,
 } from '../model/types';
-import { apartmentBiomes, biomeMul, isTunnels, normWorld, plainBiomes, startBiomeOf, transitionChance, tunnelBiomes } from './biomes';
+import { apartmentBiomes, aptOf, biomeMul, DEFAULT_OUTER_TAGS, isTunnels, normWorld, plainBiomes, startBiomeOf, transitionChance, tunnelBiomes, tunOf } from './biomes';
 import { locationSeedKey, rollStairwell, type StairwellRoll } from '../locations/stairwell';
 import { isLair, rollLift, type LiftRoll } from '../locations/lift';
 import { rollContent } from '../gen/generate';
@@ -419,10 +419,7 @@ interface Cluster {
  *  двери коридоров и площадок, марши, подвальные ходы. Только они бывают выходами квартиры; остальные (прихожая →
  *  кухня, комната → балкон, коридор → комната общежития, подвал → клетушка…) — внутренние: квартира достраивает их
  *  первыми, лишние становятся стенами. */
-export const OUTER_TAGS: readonly string[] = ['landing>apt', 'apt>landing', 'corridor', 'stair', 'basement'];
-
-/** Переход встаёт за дверью шириной от стольких клеток (0.7 м — межкомнатная дверь и шире). */
-const TRANSITION_MIN_LEN = 7;
+export const OUTER_TAGS: readonly string[] = DEFAULT_OUTER_TAGS;
 
 /** Сколько у комнаты дверей, кроме двери bi (в режиме квартир каждая — будущий проём или выход). */
 const doorsBesides = (info: Info, bi: number): number => {
@@ -445,8 +442,6 @@ const TUNNEL_TAG = 'basement';
 const HUB_EXIT_TAG = 'stair';
 /** Метки кусков роста ходов (кроме хабов): проход, дверь в кладовую, дверь в служебку. */
 const TUNNEL_DOORS: ReadonlySet<string> = new Set([TUNNEL_TAG, 'basement>storage', 'corridor>service']);
-/** Бесконечный прямой участок — не ближе стольких метров хода к хабу. */
-const LOOP_MIN_DIST = 12;
 type TunKind = 'hub' | 'straight' | 'turn' | 'branch';
 /** Направления: N, E, S, W (по часовой) — индекс курса. */
 const HEADS: readonly Side[] = ['N', 'E', 'S', 'W'];
@@ -589,6 +584,8 @@ class Stream implements StreamWorld {
   private hubs = 0;
   private rings = 0;
   private wraps = 0;
+  /** метки «наружу» (WorldSettings.outerTags) */
+  private readonly outer: ReadonlySet<string>;
 
   constructor(p: Project, settings: StreamSettings, save?: StreamSave) {
     this.p = p;
@@ -620,6 +617,7 @@ class Stream implements StreamWorld {
       long: !!s.world,
     };
     this.tctx = { ...this.ctx, lim: null, seam: null };
+    this.outer = new Set(this.W?.outerTags ?? DEFAULT_OUTER_TAGS);
     this.lay = newLay(s.gap, true);
     if (save) {
       const bad = this.checkSave(save);
@@ -1416,7 +1414,7 @@ class Stream implements StreamWorld {
   /**
    * Вырастить квартиру от её входной комнаты (уже поставлена). Поток ГСЧ квартиры C = root.sub("cluster:" + адрес входа):
    * N = C.int(clusterRooms), K = C.int(clusterExits). Открытые двери комнат квартиры — две очереди по порядку постановки:
-   * внутренние (OUTER_TAGS нет) — первыми, чтобы квартиры достраивались; наружные — когда внутренних нет. Для двери:
+   * внутренние (не из WorldSettings.outerTags) — первыми, чтобы квартиры достраивались; наружные — когда внутренних нет. Для двери:
    * петля к двери своей квартиры напротив — связать; иначе складчатая стыковка из пула биома на потоке двери (как обычный
    * рост); у наружной двери, когда наружных впереди меньше K + 1, — сначала комнаты, дающие рост. Запас под выходы:
    * открытых дверей (с текущей) не больше K — за дверью встаёт только комната с ещё одной дверью (проходная), петля не
@@ -1428,18 +1426,21 @@ class Stream implements StreamWorld {
    * ensureVisible их не трогают).
    */
   private fillCluster(cl: Cluster): void {
-    const W = this.W!;
+    // параметры квартир биома: свои поверх общих
+    const W = aptOf(this.W!, cl.biome);
     const E = this.lay.nodes[cl.entry];
     const C = this.root.sub(`cluster:${this.addr[cl.entry]}`);
     const N = C.int(W.clusterRooms[0], W.clusterRooms[1]);
     const K = C.int(W.clusterExits[0], W.clusterExits[1]);
     const Kmin = W.clusterExits[0];
+    // запас дверей под выходы: проходимость exitReserve (1 — K, 0 — только минимум)
+    const keep = Math.max(Kmin, Math.round(K * W.exitReserve));
     const pool = this.biomePool(cl.biome);
     const win = this.windowCounts(E);
     const inner: DoorRef[] = [], outer: DoorRef[] = [];
     let ii = 0, oi = 0;
     const open = (n: Node, ci: number) => n.conns[ci].len >= 1 && !n.linked[ci] && !this.dead.has(dk(n.inst.order, ci)) && !this.exitDoors.has(dk(n.inst.order, ci));
-    const push = (n: Node) => n.conns.forEach((c, ci) => { if (open(n, ci)) (OUTER_TAGS.includes(c.tag) ? outer : inner).push({ n, ci }); });
+    const push = (n: Node) => n.conns.forEach((c, ci) => { if (open(n, ci)) (this.outer.has(c.tag) ? outer : inner).push({ n, ci }); });
     push(E);
     /** открытых дверей в очередях, начиная с текущих позиций */
     const openLeft = () => {
@@ -1460,7 +1461,7 @@ class Stream implements StreamWorld {
       const left = openLeft();
       if (isIn) ii++;
       else oi++;
-      const reserve = left <= K;
+      const reserve = left <= keep;
       if (left - 2 >= Kmin && this.tryLoop(P, ci, cl.id)) continue;
       const daddr = childAddr(this.addr[P.inst.order], P.info.room.connectors[ci].id);
       const scarce = reserve || (!isIn && outer.length - oi < K + 1);
@@ -1499,7 +1500,9 @@ class Stream implements StreamWorld {
           const key = dk(i, ci);
           const why = this.dead.get(key);
           if (c.len < 1 || n.linked[ci] || why === undefined || why === 'vanished' || why === 'chance') return;
-          lists[(OUTER_TAGS.includes(c.tag) ? 0 : 2) + (why === 'cluster' ? 0 : 1)].push(key);
+          // без швов — внутренние двери выходами не бывают (за ними по меткам — только комнаты квартиры)
+          if (!this.outer.has(c.tag) && !W.seamEntries) return;
+          lists[(this.outer.has(c.tag) ? 0 : 2) + (why === 'cluster' ? 0 : 1)].push(key);
         });
       }
       // неиспользованные (стены квартиры) — до предела; где комната уже не встала (место, обзор) — только до минимума:
@@ -1549,7 +1552,7 @@ class Stream implements StreamWorld {
       const target = bs[this.root.sub(`basement:${daddr}`).int(0, bs.length - 1)].id;
       const hubs = this.tunPool(target, 'hub');
       const D = () => this.root.sub(`door:${daddr}`);
-      const child = this.grow(n, ci, D(), true, win, hubs).child ?? this.growLoose(n, ci, D(), win, hubs, 1);
+      const child = this.grow(n, ci, D(), true, win, hubs).child ?? (aptOf(W, cl.biome).seamEntries ? this.growLoose(n, ci, D(), win, hubs, 1) : null);
       if (child) {
         const ncl = this.newCluster(target, cl.home, false, true);
         cl.opened.push(key);
@@ -1577,17 +1580,20 @@ class Stream implements StreamWorld {
     const up = cl.tunnels ? this.upBiome(cl, daddr) : cl.home;
     const ncl = this.newCluster(up, up, false);
     const home = this.biomePool(up);
-    const Kmin = this.W.clusterExits[0];
+    const A = aptOf(this.W, up);
+    const Kmin = A.clusterExits[0];
     const D = () => this.root.sub(`door:${daddr}`);
+    // швы (связь loose) — только если разрешены параметрами биома за дверью
+    const seam = (f: () => Node | null) => (A.seamEntries ? f : () => null);
     const tries: (() => Node | null)[] = [
-      () => this.grow(n, ci, D(), true, win, home, Kmin + 2).child,
-      () => this.growLoose(n, ci, D(), win, home, Kmin + 2),
+      () => this.grow(n, ci, D(), true, win, home, Kmin + A.entrySpare).child,
+      seam(() => this.growLoose(n, ci, D(), win, home, Kmin + A.entrySpare)),
       () => this.grow(n, ci, D(), true, win, home, Kmin).child,
-      () => this.growLoose(n, ci, D(), win, home, Kmin),
+      seam(() => this.growLoose(n, ci, D(), win, home, Kmin)),
       () => this.grow(n, ci, D(), true, win, null, Kmin).child,
-      () => this.growLoose(n, ci, D(), win, null, Kmin),
+      seam(() => this.growLoose(n, ci, D(), win, null, Kmin)),
       () => this.grow(n, ci, D(), true, win, home, 1).child,
-      () => this.growLoose(n, ci, D(), win, home, 1),
+      seam(() => this.growLoose(n, ci, D(), win, home, 1)),
       () => this.grow(n, ci, D(), true, win, null, 1).child,
       () => this.grow(n, ci, D(), true, win, home).child,
       () => this.grow(n, ci, D(), true, win, null).child,
@@ -1698,7 +1704,7 @@ class Stream implements StreamWorld {
 
   /**
    * Переход (выпал по счётчику): спец-комната (лестница, лифт — по весу роста, поток root.sub("transition:" + адрес
-   * двери)) пристыковывается к первой из дверей doors, где встанет. Метка любая шириной от TRANSITION_MIN_LEN (переход
+   * двери)) пристыковывается к первой из дверей doors, где встанет. Метка любая шириной от WorldSettings.transitionMinLen (переход
    * встаёт за дверью любого биома — проёмы разной ширины совмещаются по центру). Выход, за которым встал переход,
    * ведёт в него; стена становится проёмом. Не встал — переход ждёт следующей открытой двери.
    */
@@ -1707,7 +1713,7 @@ class Stream implements StreamWorld {
     if (!specials.length) return null;
     for (const { n: P, ci } of doors) {
       const A = P.conns[ci];
-      if (A.len < TRANSITION_MIN_LEN) continue;
+      if (A.len < Math.round(this.W!.transitionMinLen / this.cellM)) continue;
       const key = dk(P.inst.order, ci);
       const daddr = childAddr(this.addr[P.inst.order], P.info.room.connectors[ci].id);
       const R = this.root.sub(`transition:${daddr}`);
@@ -1837,8 +1843,11 @@ class Stream implements StreamWorld {
     let p = this.pools.get(key);
     if (!p) {
       const base = this.biomePool(biome);
-      const list = base.list.filter((x) => (kind === 'storage' ? x.room.connectors.some((c) => c.len >= 1 && c.tag === 'storage>basement') : tunKind(x) === kind));
-      p = { list, weightOf: base.weightOf };
+      // частота кусков подвала: множитель по id комнаты (0 — не ставится)
+      const pw = this.W ? tunOf(this.W, biome).pieceWeights : {};
+      const mul = (x: Info) => pw[x.room.id] ?? 1;
+      const list = base.list.filter((x) => (kind === 'storage' ? x.room.connectors.some((c) => c.len >= 1 && c.tag === 'storage>basement') : tunKind(x) === kind) && mul(x) > 0);
+      p = { list, weightOf: (x) => base.weightOf(x) * mul(x) };
       this.pools.set(key, p);
     }
     return p;
@@ -1868,7 +1877,7 @@ class Stream implements StreamWorld {
     const i = P.inst.order;
     this.expandedF[i] = true;
     const t0 = now();
-    const T = this.W!.tunnels;
+    const T = tunOf(this.W!, cl.biome);
     const out: string[] = [];
     const win = this.windowCounts(P);
     const take = (n: Node | null) => {
@@ -1919,12 +1928,12 @@ class Stream implements StreamWorld {
    * Продолжение хода за проходом ci куска P. По порядку: выпавший переход — прямо здесь (как за открытой дверью);
    * петля к проходу напротив; броски u = D.next(), v = D.next():
    *  • хаб — u < pHub, pHub = 0 ближе hubEvery[0] м хода от прошлого хаба, 1 дальше hubEvery[1], между — линейно;
-   *  • иначе по v: [0, loop) — бесконечный прямой участок (не ближе LOOP_MIN_DIST м к хабу; не встал — дальше как
+   *  • иначе по v: [0, loop) — бесконечный прямой участок (не ближе tunnels.loopMinDist м к хабу; не встал — дальше как
    *    развилка), затем развилка (branch), поворот (turn), остальное — прямой кусок.
    * Вид не встал — следующий из списка (прямой, поворот, развилка); ничего — стена.
    */
   private tunnelStep(P: Node, ci: number, cl: Cluster, D: Rng, win: Map<Info, number>, daddr: string): Node[] {
-    const T = this.W!.tunnels;
+    const T = tunOf(this.W!, cl.biome);
     if (this.tr.pending) {
       const t = this.placeTransition(cl, [{ n: P, ci }]);
       if (t) return [t];
@@ -1937,7 +1946,7 @@ class Stream implements StreamWorld {
     let kinds: TunKind[];
     if (u < pHub) kinds = ['hub', 'straight', 'turn', 'branch'];
     else {
-      if (v < T.loop && dist >= LOOP_MIN_DIST && tunKind(P.info) !== 'hub') {
+      if (v < T.loop && dist >= T.loopMinDist && tunKind(P.info) !== 'hub') {
         const loop = this.buildWrapLoop(P, ci, cl, this.root.sub(`loop:${daddr}`));
         if (loop.length) return loop;
       }
@@ -2078,7 +2087,7 @@ class Stream implements StreamWorld {
    */
   private buildRing(H: Node, a: number, b: number, cl: Cluster, R: Rng): Node[] {
     const kit = this.ringKit(cl.biome);
-    const T = this.W!.tunnels;
+    const T = tunOf(this.W!, cl.biome);
     if (!kit || (!kit.right && !kit.left)) return [];
     const g = this.settings.gap;
     const S = H.conns[a], E = H.conns[b];
@@ -2161,7 +2170,7 @@ class Stream implements StreamWorld {
    */
   private buildWrapLoop(P: Node, ci: number, cl: Cluster, R: Rng): Node[] {
     const kit = this.ringKit(cl.biome);
-    const T = this.W!.tunnels;
+    const T = tunOf(this.W!, cl.biome);
     if (!kit?.tee) return [];
     const tee = kit.tee;
     const tNode = this.placeFixed(P, ci, tee.info, tee.side, P.w);

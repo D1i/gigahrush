@@ -14,8 +14,8 @@
 //    закрытый выход квартиры — дверь-панель (метка с флагом exit), её открывает игрок (openDoor); исчезнувшие двери и
 //    лишние проёмы квартиры — стены; вход в комнату — счётчик переходов (world.enter).
 import {
-  DEFAULT_STREAM, createStreamWorld, streamSettings, viewHorizonM, worldKey,
-  type EnterResult, type StreamSave, type StreamStats, type StreamWorld,
+  DEFAULT_STREAM, DEFAULT_STREAM_FOLD, createStreamWorld, streamSettings, viewHorizonM, worldKey,
+  type EnterResult, type StreamSave, type StreamSettings, type StreamStats, type StreamWorld,
 } from '../gen4d/stream';
 import { exportRunJSON } from '../gen/world';
 import type { Project } from '../model/types';
@@ -31,6 +31,27 @@ export interface WalkOptions {
   aheadDoors: number;
   /** режим квартир: биомы, квартиры с дверями-выходами, переходы (настройки — Project.world); false — прежний рост */
   clusters: boolean;
+}
+
+/**
+ * Настройки бесконечного мира «Прогулки»: зазор, стыковка, стартовая комната — из «Генератора»; складки 4D, предел
+ * обзора и «вперёд дверей» — из «Бесконечного мира» (Project.world.walk); в прежнем росте (без квартир) «вперёд дверей»,
+ * тупики и ветвистость — из панели прогулки.
+ */
+export function walkStreamSettings(p: Project, opts: Pick<WalkOptions, 'seed' | 'deadEndChance' | 'branching' | 'aheadDoors' | 'clusters'>): StreamSettings {
+  const g = p.generator;
+  const wk = p.world?.walk;
+  return streamSettings(opts.seed, {
+    gap: g.gap,
+    match: g.match,
+    sightM: wk ? wk.sightM : g.sightM > 0 ? g.sightM : DEFAULT_STREAM.sightM,
+    startRoomId: g.startRoomId,
+    deadEndChance: opts.deadEndChance,
+    branching: opts.branching,
+    aheadDoors: opts.clusters && wk ? wk.aheadDoors : opts.aheadDoors,
+    ...(wk ? { fold: { ...DEFAULT_STREAM_FOLD, shiftChance: wk.shiftChance, maxShift: wk.maxShift, localRadius: wk.localRadius, maxLayer: wk.maxLayer } } : {}),
+    world: opts.clusters ? p.world : null,
+  });
 }
 
 export const DEFAULT_WALK: WalkOptions = {
@@ -115,17 +136,7 @@ export class WalkSession {
     } catch {
       save = undefined;
     }
-    const g = p.generator;
-    const settings = streamSettings(opts.seed, {
-      gap: g.gap,
-      match: g.match,
-      sightM: g.sightM > 0 ? g.sightM : DEFAULT_STREAM.sightM,
-      startRoomId: g.startRoomId,
-      deadEndChance: opts.deadEndChance,
-      branching: opts.branching,
-      aheadDoors: opts.aheadDoors,
-      world: opts.clusters ? p.world : null,
-    });
+    const settings = walkStreamSettings(p, opts);
     this.world = createStreamWorld(p, settings, save);
     if (save && !this.world.stale) this.saved = { at: save.savedAt, bytes: 0 };
     this.tables = projectTables(p);
