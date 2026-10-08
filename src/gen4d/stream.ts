@@ -33,8 +33,8 @@ import { walkWarning } from '../gen/walk';
 import { compatible, dockTarget, facing, OUT_SIGN, rotFor, segLine, turnSide, type SegGeom } from '../gen/geom';
 import { sightLimits } from '../gen/sight';
 import {
-  addPvs, around, buildPool, growFrom, growOthers, layerFree, LIMIT, link, newLay, normFold, pickWeighted, place, PVS_TOL_M, RESERVE_MAX, tryLink,
-  Buckets, type Ctx, type Fails, type FoldGenSettings, type Info, type Lay, type Node, type Why,
+  addPvs, around, buildPool, growFrom, growOthers, layerFree, LIMIT, link, localCells, loopLocalOk, nearOf, newLay, normFold, pickWeighted, place,
+  PVS_TOL_M, RESERVE_MAX, tryLink, Buckets, type Ctx, type Fails, type FoldGenSettings, type Info, type Lay, type Node, type Why,
 } from './foldcore';
 import type { Body } from './space';
 import { computePvs, viewHorizonM } from './pvs';
@@ -177,6 +177,8 @@ export interface StreamStats {
   hubs: number;
   rings: number;
   wraps: number;
+  /** складки по метрам: входов квартир, вставших ближе localM пути (за выходом иначе ничего не вставало, Link.close) */
+  closeDoors: number;
 }
 
 /** Спец-локация экземпляра и её розыгрыш (по виду; kind — как spec.kind, для сужения типа): lair — без розыгрыша. */
@@ -584,6 +586,8 @@ class Stream implements StreamWorld {
   private hubs = 0;
   private rings = 0;
   private wraps = 0;
+  /** входов квартир, вставших ближе localM пути (Link.close) */
+  private closeDoors = 0;
   /** метки «наружу» (WorldSettings.outerTags) */
   private readonly outer: ReadonlySet<string>;
 
@@ -615,6 +619,7 @@ class Stream implements StreamWorld {
       s: this.gen, f: s.fold, gap: s.gap, shapes: new Shapes(s.gap), pool, lim,
       seam: s.fold.seamless && lim ? { reach, tol } : null,
       long: !!s.world,
+      localC: localCells(s.fold, this.cellM),
     };
     this.tctx = { ...this.ctx, lim: null, seam: null };
     this.outer = new Set(this.W?.outerTags ?? DEFAULT_OUTER_TAGS);
@@ -1478,7 +1483,22 @@ class Stream implements StreamWorld {
     for (const { n, ci } of inner.slice(ii)) if (open(n, ci)) this.markDead(n, ci, 'cluster');
     // выходы — все оставшиеся двери квартиры (не больше clusterExits[1]): сначала наружные (C.shuffle), потом внутренние
     // глухие (ниже); стены — только сверх предела. Иначе квартира — сплошные тупики: кухни, санузлы и стены
-    const rest = outer.slice(oi).filter(({ n, ci }) => open(n, ci));
+    // выход — дверь, за которой встанет и вход новой квартиры (складки по метрам: в 3D там нет комнат ближе localM
+    // пути), и переход (гарантия: выпал — он за следующей открытой дверью). Остальные — запас до минимума выходов по
+    // ярусам: 1 — квартира встанет, переход нет; 2 — квартира встанет, только если ослабить складки (openDoor); 3 — не
+    // встанет ничего (в 3D за дверью сама комната с ней) — стена
+    const tier = (n: Node, ci: number): number => {
+      if (this.exitFits(n, ci, W.seamEntries, this.ctx.localC ?? 0)) return this.trFits(n, ci) ? 0 : 1;
+      return this.ctx.localC && this.exitFits(n, ci, W.seamEntries, 0) ? 2 : 3;
+    };
+    const unfit: [number, number][] = [];
+    const rest = outer.slice(oi).filter(({ n, ci }) => {
+      if (!open(n, ci)) return false;
+      const t = tier(n, ci);
+      if (t === 0) return true;
+      unfit.push([dk(n.inst.order, ci), t]);
+      return false;
+    });
     const order = C.shuffle(rest.map((_, i) => i));
     const take = new Set(order.slice(0, W.clusterExits[1]));
     rest.forEach(({ n, ci }, i) => {
@@ -1502,6 +1522,11 @@ class Stream implements StreamWorld {
           if (c.len < 1 || n.linked[ci] || why === undefined || why === 'vanished' || why === 'chance') return;
           // без швов — внутренние двери выходами не бывают (за ними по меткам — только комнаты квартиры)
           if (!this.outer.has(c.tag) && !W.seamEntries) return;
+          const t = tier(n, ci);
+          if (t > 0) {
+            unfit.push([key, t]);
+            return;
+          }
           lists[(this.outer.has(c.tag) ? 0 : 2) + (why === 'cluster' ? 0 : 1)].push(key);
         });
       }
@@ -1515,6 +1540,20 @@ class Stream implements StreamWorld {
         cl.exits.push(key);
         this.exitDoors.set(key, cl.id);
       }
+    }
+    // минимум выходов держится и дверями ярусов 1–2 (за ними переход не встанет / вход встанет только ближе localM —
+    // openDoor ослабит правило): квартира без выходов — тупик всего мира
+    unfit.sort((a, b) => a[1] - b[1]);
+    for (const [key, t] of unfit) {
+      const fresh = !this.dead.has(key);
+      if (t < 3 && cl.exits.length < Kmin) {
+        if (!fresh) {
+          this.dead.delete(key);
+          this.deadFail--;
+        }
+        cl.exits.push(key);
+        this.exitDoors.set(key, cl.id);
+      } else if (fresh) this.markDead(this.lay.nodes[Math.floor(key / 1024)], key % 1024, 'space');
     }
     for (const i of cl.rooms) this.expandedF[i] = true;
   }
@@ -1533,7 +1572,8 @@ class Stream implements StreamWorld {
     // выпал переход — он прямо за этой дверью (100%); игрок из квартиры не ушёл: остальные выходы на месте, а если он
     // пойдёт через другой выход, не зайдя в переход, — переход исчезнет
     if (this.tr.pending) {
-      const t = this.placeTransition(cl, [{ n, ci }]);
+      // гарантия: переход — за этой дверью, даже если она уже transitionMinLen (её выбрал игрок)
+      const t = this.placeTransition(cl, [{ n, ci }], true);
       if (t) {
         this.version++;
         this.ms += now() - t0;
@@ -1600,6 +1640,24 @@ class Stream implements StreamWorld {
     ];
     let child: Node | null = null;
     for (const t of tries) if ((child = t())) break;
+    if (!child && this.ctx.localC) {
+      // складки по метрам: за выходом ничего не встаёт — вход ставится ближе localM (сначала не ближе половины, потом
+      // только по localRadius), чтобы мир не упёрся в стену; связь помечена close
+      const lc = this.ctx.localC;
+      try {
+        for (const c of [lc / 2, 0]) {
+          this.ctx.localC = c;
+          for (const t of tries) if ((child = t())) break;
+          if (child) break;
+        }
+      } finally {
+        this.ctx.localC = lc;
+      }
+      if (child) {
+        this.lay.links[this.lay.links.length - 1].close = true;
+        this.closeDoors++;
+      }
+    }
     if (!child) {
       this.clusters.pop();
       this.markDead(n, ci, 'space');
@@ -1665,6 +1723,32 @@ class Stream implements StreamWorld {
     return any;
   }
 
+  /** Встанет ли за дверью ci экземпляра P вход новой квартиры: хоть одна комната (по метке, а при швах — любой своей
+   *  дверью) не пересекает в 3D комнаты ближе localRadius дверей и localC клеток пути (nearOf; 0 — только по дверям) и
+   *  находит свободный слой в пределах maxShift. */
+  private exitFits(P: Node, ci: number, seam: boolean, localC: number): boolean {
+    const A = P.conns[ci];
+    const g = this.settings.gap;
+    const f = this.ctx.f;
+    const near = nearOf({ ...this.ctx, localC }, P, ci).filter((x) => x.floor === P.floor);
+    for (const info of this.cands) {
+      for (let bi = 0; bi < info.room.connectors.length; bi++) {
+        const b = info.room.connectors[bi];
+        if (b.len < 1 || !(seam || compatible(A, b, this.settings.match))) continue;
+        const rot = rotFor(b.side, OPPOSITE[A.side]);
+        const sh = this.ctx.shapes.get(info.room, rot);
+        const Bw = sh.conns[bi];
+        const t = dockTarget(A, Bw.len, g);
+        const body: Body = { sh, dx: t.cx - Bw.cx, dy: t.cy - Bw.cy };
+        if (near.some((x) => this.ctx.shapes.conflict(body, x.body))) continue;
+        for (let dw = -f.maxShift; dw <= f.maxShift; dw++) {
+          if (Math.abs(P.w + dw) <= f.maxLayer && layerFree(this.ctx, this.lay, P.w + dw, body, P.floor)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   /** Остальные закрытые выходы квартиры (подвала) исчезают, пропущенный в ней переход — тоже. */
   private vanishExits(cl: Cluster): void {
     for (const e of cl.exits) {
@@ -1702,27 +1786,57 @@ class Stream implements StreamWorld {
     return [...walls, ...exits];
   }
 
+  /** Спец-комнаты переходов (лестница, лифт) с весом роста. */
+  private specials(): Info[] {
+    return this.infos.filter((x): x is Info => !!x && (x.room.location?.kind === 'stairwell' || x.room.location?.kind === 'lift') && x.room.gen.weight > 0);
+  }
+
+  /** Встанет ли за дверью ci экземпляра P переход: дверь не уже transitionMinLen, и хоть одна спец-комната не
+   *  пересекает в 3D саму P (дверь во внутреннем углу Г-образной прихожей смотрит в её габарит: туда встанет кладовка,
+   *  но не лестница). Спец-комнат нет — true. */
+  private trFits(P: Node, ci: number): boolean {
+    const sp = this.specials();
+    if (!sp.length) return true;
+    const A = P.conns[ci];
+    if (A.len < Math.round(this.W!.transitionMinLen / this.cellM)) return false;
+    const g = this.settings.gap;
+    for (const info of sp) {
+      for (let bi = 0; bi < info.room.connectors.length; bi++) {
+        const b = info.room.connectors[bi];
+        if (b.len < 1) continue;
+        const sh = this.ctx.shapes.get(info.room, rotFor(b.side, OPPOSITE[A.side]));
+        const Bw = sh.conns[bi];
+        const t = dockTarget(A, Bw.len, g);
+        if (!this.ctx.shapes.conflict({ sh, dx: t.cx - Bw.cx, dy: t.cy - Bw.cy }, P.body)) return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * Переход (выпал по счётчику): спец-комната (лестница, лифт — по весу роста, поток root.sub("transition:" + адрес
-   * двери)) пристыковывается к первой из дверей doors, где встанет. Метка любая шириной от WorldSettings.transitionMinLen (переход
-   * встаёт за дверью любого биома — проёмы разной ширины совмещаются по центру). Выход, за которым встал переход,
+   * двери)) пристыковывается к первой из дверей doors, где встанет; выпавшая не встала — остальные спец-комнаты. Метка
+   * любая шириной от WorldSettings.transitionMinLen (anyWidth — любой: дверь, которую открыл игрок, — гарантия), переход
+   * встаёт за дверью любого биома — проёмы разной ширины совмещаются по центру. Выход, за которым встал переход,
    * ведёт в него; стена становится проёмом. Не встал — переход ждёт следующей открытой двери.
    */
-  private placeTransition(cl: Cluster, doors: DoorRef[]): Node | null {
-    const specials = this.infos.filter((x): x is Info => !!x && (x.room.location?.kind === 'stairwell' || x.room.location?.kind === 'lift') && x.room.gen.weight > 0);
+  private placeTransition(cl: Cluster, doors: DoorRef[], anyWidth = false): Node | null {
+    const specials = this.specials();
     if (!specials.length) return null;
     for (const { n: P, ci } of doors) {
       const A = P.conns[ci];
-      if (A.len < Math.round(this.W!.transitionMinLen / this.cellM)) continue;
+      if (!anyWidth && A.len < Math.round(this.W!.transitionMinLen / this.cellM)) continue;
       const key = dk(P.inst.order, ci);
       const daddr = childAddr(this.addr[P.inst.order], P.info.room.connectors[ci].id);
       const R = this.root.sub(`transition:${daddr}`);
+      // выпавшая спец-комната, не встала — остальные (лифт поместится там, где не встаёт лестница)
       const info = specials[pickWeighted(R, specials.map((x) => x.room.gen.weight))];
+      const others = specials.filter((x) => x !== info);
       const okB = (_: Info, b: Connector) => b.len >= 1;
       const fails: Fails = { space: 0, rule: 0, sight: 0, seam: 0 };
-      // предел обзора и бесшовность — не для перехода: внутри спец-комнаты своя сцена, длинная лестница или шахта не
-      // должны мешать ей встать за дверью
-      const child = growFrom({ ...this.ctx, lim: null, seam: null }, this.lay, P, ci, [[info]], okB, R.sub(daddr), fails, { weightOf: () => 1, stick: true });
+      // предел обзора, бесшовность и складки по метрам — не для перехода: внутри спец-комнаты своя сцена, длинная
+      // лестница или шахта не должны мешать ей встать за дверью
+      const child = growFrom({ ...this.ctx, lim: null, seam: null, localC: 0 }, this.lay, P, ci, [[info], others], okB, R.sub(daddr), fails, { weightOf: () => 1, stick: true });
       if (!child) continue;
       if (this.exitDoors.has(key)) {
         this.exitDoors.delete(key);
@@ -2043,7 +2157,7 @@ class Stream implements StreamWorld {
     const dx = t.cx - Bw.cx, dy = t.cy - Bw.cy;
     if (sh.x0 + dx - g < -LIMIT || sh.y0 + dy - g < -LIMIT || sh.x1 + dx + g > LIMIT || sh.y1 + dy + g > LIMIT) return null;
     const body: Body = { sh, dx, dy };
-    const near = [...around(P, this.ctx.f.localRadius - 1).keys()];
+    const near = nearOf(this.ctx, P, ci);
     if (near.some((x) => x.floor === P.floor && this.ctx.shapes.conflict(body, x.body))) return null;
     const f = this.ctx.f;
     const ws: number[] = [];
@@ -2190,11 +2304,15 @@ class Stream implements StreamWorld {
     if (!end || placed.length < 2) return all;
     const A = end.n.conns[end.ci], B = tNode.conns[tee.a2];
     if (B.side !== OPPOSITE[A.side]) return all;
+    // шов укорачивает пути, как петля: складки (localRadius, localM) через него не ближе предела
+    if (!loopLocalOk(this.ctx, end.n, end.ci, tNode, tee.a2)) return all;
     const t = dockTarget(A, B.len, this.settings.gap);
     const wrap: [number, number] = [t.cx - B.cx, t.cy - B.cy];
     end.n.linked[end.ci] = tNode.linked[tee.a2] = true;
     end.n.nb.push(tNode);
     tNode.nb.push(end.n);
+    end.n.nbc.push([end.ci, tee.a2]);
+    tNode.nbc.push([tee.a2, end.ci]);
     this.trans.push({
       a: { inst: end.n.inst.id, connector: A.id }, b: { inst: tNode.inst.id, connector: B.id }, dw: tNode.w - end.n.w, wrap,
     });
@@ -2233,6 +2351,7 @@ class Stream implements StreamWorld {
       hubs: this.hubs,
       rings: this.rings,
       wraps: this.wraps,
+      closeDoors: this.closeDoors,
     };
   }
 
@@ -2404,10 +2523,13 @@ class Stream implements StreamWorld {
       const a = this.byId.get(l.a.inst)!, b = this.byId.get(l.b.inst)!;
       if (l.wrap) {
         // шов бесконечного прямого хода: обе метки заняты, соседи по графу, проёма в пространстве лучей нет
-        a.linked[a.info.room.connectors.findIndex((c) => c.id === l.a.connector)] = true;
-        b.linked[b.info.room.connectors.findIndex((c) => c.id === l.b.connector)] = true;
+        const ai = a.info.room.connectors.findIndex((c) => c.id === l.a.connector);
+        const bi = b.info.room.connectors.findIndex((c) => c.id === l.b.connector);
+        a.linked[ai] = b.linked[bi] = true;
         a.nb.push(b);
         b.nb.push(a);
+        a.nbc.push([ai, bi]);
+        b.nbc.push([bi, ai]);
         this.trans.push({ a: { ...l.a }, b: { ...l.b }, dw: b.w - a.w, wrap: [l.wrap[0], l.wrap[1]] });
         this.wraps++;
         continue;
@@ -2434,8 +2556,11 @@ class Stream implements StreamWorld {
       a.linked[ai] = b.linked[bi] = true;
       a.nb.push(b);
       b.nb.push(a);
+      a.nbc.push([ai, bi]);
+      b.nbc.push([bi, ai]);
       lay.sight.addPortal(a.inst.order, a.conns[ai], b.inst.order, b.conns[bi]);
-      lay.links.push({ a: { ...l.a }, b: { ...l.b }, dw: b.w - a.w, ...(l.loose ? { loose: true as const } : {}) });
+      lay.links.push({ a: { ...l.a }, b: { ...l.b }, dw: b.w - a.w, ...(l.loose ? { loose: true as const } : {}), ...(l.close ? { close: true as const } : {}) });
+      if (l.close) this.closeDoors++;
       // связь дерева роста — первая связь родитель → ребёнок (петли всегда позже)
       if (b.inst.parent === a.inst.id && !parentConn.has(b.inst.id)) parentConn.set(b.inst.id, l.a.connector);
       if (a.w !== b.w) this.shifted++;

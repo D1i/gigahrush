@@ -49,7 +49,7 @@ export function walkStreamSettings(p: Project, opts: Pick<WalkOptions, 'seed' | 
     deadEndChance: opts.deadEndChance,
     branching: opts.branching,
     aheadDoors: opts.clusters && wk ? wk.aheadDoors : opts.aheadDoors,
-    ...(wk ? { fold: { ...DEFAULT_STREAM_FOLD, shiftChance: wk.shiftChance, maxShift: wk.maxShift, localRadius: wk.localRadius, maxLayer: wk.maxLayer } } : {}),
+    ...(wk ? { fold: { ...DEFAULT_STREAM_FOLD, shiftChance: wk.shiftChance, maxShift: wk.maxShift, localRadius: wk.localRadius, localM: wk.localM, maxLayer: wk.maxLayer } } : {}),
     world: opts.clusters ? p.world : null,
   });
 }

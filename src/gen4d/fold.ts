@@ -26,7 +26,7 @@ import { runMeters, SIGHT_DIRS, sightLimits } from '../gen/sight';
 import { walkWarning } from '../gen/walk';
 import { runWorld } from '../gen/world';
 import {
-  ATTEMPTS, buildPool, failWhy, LONG_SIGHT_TAGS, growFrom, GROW_BONUS, growOthers, layerKey, LEAF_BONUS, LIMIT, newLay, normFold, place,
+  ATTEMPTS, buildPool, doorPoint, failWhy, longSight, growFrom, GROW_BONUS, growOthers, layerKey, LEAF_BONUS, LIMIT, localCells, newLay, normFold, place,
   pickWeighted, PVS_TOL_M, RESERVE, RESERVE_MAX, RESERVE_STEP, SUPPLY_FACTOR, tryLink,
   type Ctx, type Fails, type FoldGenSettings, type Info, type Lay, type Node,
 } from './foldcore';
@@ -314,7 +314,7 @@ export function generateFoldRun(p: Project, overrides?: Partial<GeneratorSetting
   const seam = f.seamless && lim ? { reach: settings.sightM / cellM, tol: PVS_TOL_M / cellM } : null;
   if (!f.seamless) warnings.push('Бесшовная видимость выключена: рендер «комната + соседи» может показывать появление и исчезновение дверей.');
   else if (!lim) warnings.push('Бесшовная видимость работает только с пределом обзора (sightM > 0) — PVS не считается.');
-  const ctx: Ctx = { s: settings, f, gap: settings.gap, shapes: new Shapes(settings.gap), pool, lim, seam };
+  const ctx: Ctx = { s: settings, f, gap: settings.gap, shapes: new Shapes(settings.gap), pool, lim, seam, localC: localCells(f, cellM) };
   let best: Lay | null = null;
   let bestK = 0;
   for (let k = 0; k < ATTEMPTS; k++) {
@@ -714,6 +714,13 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
   // 1. связи
   const used = new Set<string>();
   const adj = new Map<string, string[]>(run.instances.map((i) => [i.id, []]));
+  // двери связей по экземплярам (для складок по метрам пути): своя метка и середина, сосед и его метка с серединой
+  interface VDoor { k: string; pt: [number, number]; to: string; tk: string; tp: [number, number] }
+  const doors = new Map<string, VDoor[]>(run.instances.map((i) => [i.id, []]));
+  const addDoor = (a: string, A: Connector, b: string, B: Connector) => {
+    doors.get(a)?.push({ k: A.id, pt: doorPoint(A), to: b, tk: B.id, tp: doorPoint(B) });
+    doors.get(b)?.push({ k: B.id, pt: doorPoint(B), to: a, tk: A.id, tp: doorPoint(A) });
+  };
   const pairs = new Set<string>();
   let shifted = 0;
   const vlinks: VLink[] = [];
@@ -742,6 +749,7 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
       if ((l.dw ?? 0) !== exp) err(`${name}: dw = ${l.dw ?? 0}, а w(b) − w(a) = ${exp}`);
       adj.get(l.a.inst)?.push(l.b.inst);
       adj.get(l.b.inst)?.push(l.a.inst);
+      addDoor(l.a.inst, A, l.b.inst, B);
       continue;
     }
     if (l.kind === 'descent' || l.kind === 'lift') {
@@ -791,6 +799,7 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
     if (exp !== 0) shifted++;
     adj.get(l.a.inst)?.push(l.b.inst);
     adj.get(l.b.inst)?.push(l.a.inst);
+    addDoor(l.a.inst, A, l.b.inst, B);
     pairs.add(`${l.a.inst}>${l.b.inst}`);
     if (l.a.inst !== l.b.inst) vlinks.push({ a: l.a.inst, b: l.b.inst, A, B });
   }
@@ -820,6 +829,41 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
     }
     dist.set(id, d);
     return d;
+  };
+  // складки по метрам (FoldSettings.localM): путь от комнаты — через двери, внутри комнаты — по прямой между серединами
+  // проёмов, проём и шов — 0 (как aroundM генератора)
+  const LC = localCells(f, p.settings.cellM > 0 ? p.settings.cellM : 0.1);
+  // не меряются: вход квартиры, вставший ближе предела (Link.close: за выходом иначе ничего не вставало), и переходы —
+  // лестница и лифт (внутри своя сцена)
+  const closeIds = new Set(run.links.filter((l) => l.close).map((l) => l.b.inst));
+  for (const i of run.instances) {
+    const k = p.rooms.find((r) => r.id === i.roomId)?.location?.kind;
+    if (k === 'stairwell' || k === 'lift') closeIds.add(i.id);
+  }
+  const distM = new Map<string, Map<string, number>>();
+  const nearM = (id: string): Map<string, number> => {
+    let got = distM.get(id);
+    if (got) return got;
+    got = new Map([[id, 0]]);
+    const done = new Set<string>();
+    const q: { c: number; n: string; k: string; pt: [number, number] }[] = (doors.get(id) ?? []).map((d) => ({ c: 0, n: d.to, k: d.tk, pt: d.tp }));
+    while (q.length > 0) {
+      let bi = 0;
+      for (let i = 1; i < q.length; i++) if (q[i].c < q[bi].c) bi = i;
+      const { c, n, k, pt } = q[bi];
+      q[bi] = q[q.length - 1];
+      q.pop();
+      if (done.has(`${n}/${k}`)) continue;
+      done.add(`${n}/${k}`);
+      if (c < (got.get(n) ?? Infinity)) got.set(n, c);
+      for (const d of doors.get(n) ?? []) {
+        if (d.k === k) continue;
+        const c2 = c + Math.hypot(d.pt[0] - pt[0], d.pt[1] - pt[1]);
+        if (c2 < LC && !done.has(`${d.to}/${d.tk}`)) q.push({ c: c2, n: d.to, k: d.tk, pt: d.tp });
+      }
+    }
+    distM.set(id, got);
+    return got;
   };
   const bodies = worlds.map((w) => vbody(w.cells));
   interface V { id: string; order: number; w: number; floor: number; b: VBody; x0: number; y0: number; x1: number; y1: number }
@@ -853,6 +897,8 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
       if (a.w === b.w) err(`${a.id} и ${b.id} в одном слое W = ${a.w} пересекаются (ближе gap = ${gap})`);
       const d = near(a.id).get(b.id);
       if (d !== undefined) err(`${a.id} и ${b.id} на расстоянии ${d} ≤ localRadius = ${f.localRadius} по графу пересекаются в 3D`);
+      const m = LC && !closeIds.has(a.id) && !closeIds.has(b.id) ? nearM(a.id).get(b.id) : undefined;
+      if (m !== undefined && m < LC - 1e-6) err(`${a.id} и ${b.id} в ${((m * f.localM!) / LC).toFixed(1)} м пути < localM = ${f.localM} м пересекаются в 3D`);
     }
   }
 
@@ -865,13 +911,12 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
   let long = 0;
   const index = new Map(worlds.map((w, i) => [w.inst.id, i] as const));
   const pw = portalWorld(bodies, index, vlinks, gap);
-  // ходы и хабы подвала (теги «ход», «хаб») в бесконечном мире (Run.settings.longSight) — длинные пространства по
-  // замыслу: линии через них предел не ограничивает
+  // ходы и хабы подвала (теги «ход», «хаб») и переходы в бесконечном мире (Run.settings.longSight) — длинные
+  // пространства по замыслу: линии через них предел не ограничивает
   const longOn = (run.settings as { longSight?: boolean }).longSight === true;
   const longRoom = worlds.map((w) => {
-    if (!longOn) return false;
-    const tags = p.rooms.find((r) => r.id === w.inst.roomId)?.tags ?? [];
-    return LONG_SIGHT_TAGS.some((t) => tags.includes(t));
+    const room = longOn ? p.rooms.find((r) => r.id === w.inst.roomId) : undefined;
+    return !!room && longSight(room);
   });
   scanPortalLines(pw, bodies, gap, (k, diag, multi, c, x, y, dx, dy, longLine) => {
     const m = runMeters(k, diag, cellM);

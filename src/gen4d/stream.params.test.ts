@@ -1,11 +1,11 @@
 // Параметры генераторов «Прогулки» (docs/GENERATOR-4D.md §18): свои у биома, правила роста, частота кусков подвала,
-// 4D и обзор прогулки.
+// 4D и обзор прогулки, 4D-складки не ближе N м пути.
 import { describe, expect, it } from 'vitest';
 import { createDefaultProject } from '../data/presets';
 import type { Project, WorldSettings } from '../model/types';
 import { aptOf, DEFAULT_TUNNELS, newWorldSettings, normWorld, tunOf } from './biomes';
-import { validateFoldRun } from './fold';
-import { createStreamWorld, streamSettings, type StreamWorld } from './stream';
+import { generateFoldRun, validateFoldRun } from './fold';
+import { createStreamWorld, DEFAULT_STREAM_FOLD, streamSettings, type StreamWorld } from './stream';
 import { walkStreamSettings } from '../view3d/walk';
 
 const p: Project = createDefaultProject();
@@ -59,6 +59,7 @@ describe('параметры генераторов «Прогулки»', { tim
       x.biomes.find((b) => b.id === 'dorm')!.apartments = { clusterRooms: [10, 15] };
       x.biomes.find((b) => b.id === 'basement_wet')!.tunnels = { hubEvery: [300, 400], pieceWeights: { bsm_tun_8: 0 } };
       x.walk.shiftChance = 0.3;
+      x.walk.localM = 4.5;
       x.exitReserve = 0.5;
       x.outerTags = ['corridor', 'stair'];
     });
@@ -67,8 +68,10 @@ describe('параметры генераторов «Прогулки»', { tim
     expect(aptOf(back, 'dorm')).toMatchObject({ clusterRooms: [10, 15], clusterExits: back.clusterExits, exitReserve: 0.5 });
     expect(tunOf(back, 'basement_wet')).toMatchObject({ hubEvery: [300, 400], ring: back.tunnels.ring, pieceWeights: { bsm_tun_8: 0 } });
     // мусор — в рамки
-    const bad = normWorld({ ...w, exitReserve: 7, entrySpare: -3, transitionMinLen: 0, walk: { localRadius: 0, sightM: -1 } });
-    expect(bad).toMatchObject({ exitReserve: 1, entrySpare: 0, transitionMinLen: 0.1, walk: { localRadius: 1, sightM: 0 } });
+    const bad = normWorld({ ...w, exitReserve: 7, entrySpare: -3, transitionMinLen: 0, walk: { localRadius: 0, sightM: -1, localM: -2 } });
+    expect(bad).toMatchObject({ exitReserve: 1, entrySpare: 0, transitionMinLen: 0.1, walk: { localRadius: 1, sightM: 0, localM: 0 } });
+    // старый проект без поля — складки по умолчанию
+    expect(normWorld({ ...w, walk: { sightM: 9 } }).walk.localM).toBe(6);
   });
 
   it('свои параметры квартир у биома: стартовая квартира в одну комнату', () => {
@@ -99,14 +102,26 @@ describe('параметры генераторов «Прогулки»', { tim
     expect([...outer]).toEqual(['corridor']);
   });
 
-  it('дверь под переход от 1.2 м: за дверью 1.0 м перехода нет', () => {
-    for (const [min, expectT] of [[0.7, true], [1.2, false]] as const) {
-      const w = createStreamWorld(p, streamSettings('tr', { world: W((x) => Object.assign(x, { trAfter: 0, trBase: 1, trStep: 0, transitionMinLen: min })) }));
-      w.enter(w.startId!);
-      expect(w.transitionState()!.pending).toBe(true);
-      const ex = exitsOf(w).find(([i, c]) => roomOf(w, i).connectors.find((x) => x.id === c)!.len === 10)!;
-      const id = w.openDoor(...ex)!;
-      expect(!!roomOf(w, id).location, `${min} м`).toBe(expectT);
+  it('дверь под переход от 1.2 м: выходы — двери не уже (кроме добора до минимума), за открытой — переход всегда', () => {
+    const lenOf = (w: StreamWorld, [i, c]: [string, string]) => roomOf(w, i).connectors.find((x) => x.id === c)!.len;
+    for (const seed of ['tr', 'tr2', 'tr3']) {
+      const narrow: number[] = [];
+      for (const min of [0.7, 1.2]) {
+        const world = W((x) => Object.assign(x, { trAfter: 0, trBase: 1, trStep: 0, transitionMinLen: min }));
+        const w = createStreamWorld(p, streamSettings(seed, { world }));
+        const ex = exitsOf(w);
+        const n = ex.filter((e) => lenOf(w, e) < min * 10).length;
+        // уже предела — только добор до минимума выходов
+        expect(n, `${seed} ${min} м`).toBeLessThanOrEqual(Math.max(0, world.clusterExits[0] - (ex.length - n)));
+        narrow.push(ex.length);
+        w.enter(w.startId!);
+        expect(w.transitionState()!.pending).toBe(true);
+        // гарантия — и за самой узкой из выходов
+        const d = ex.reduce((a, b) => (lenOf(w, b) < lenOf(w, a) ? b : a));
+        expect(roomOf(w, w.openDoor(...d)!).location, `${seed} ${min} м`).toBeTruthy();
+      }
+      // при 1.2 м выходов не больше, чем при 0.7 м
+      expect(narrow[1]).toBeLessThanOrEqual(narrow[0]);
     }
   });
 
@@ -138,9 +153,9 @@ describe('параметры генераторов «Прогулки»', { tim
   });
 
   it('4D и обзор прогулки — в настройки мира «Прогулки»', () => {
-    const q: Project = { ...p, world: W((x) => Object.assign(x.walk, { shiftChance: 0.25, maxShift: 2, localRadius: 2, maxLayer: 30, sightM: 6, aheadDoors: 3 })) };
+    const q: Project = { ...p, world: W((x) => Object.assign(x.walk, { shiftChance: 0.25, maxShift: 2, localRadius: 2, localM: 7, maxLayer: 30, sightM: 6, aheadDoors: 3 })) };
     const s = walkStreamSettings(q, { seed: 'x', deadEndChance: 0.1, branching: 1, aheadDoors: 5, clusters: true });
-    expect(s.fold).toMatchObject({ shiftChance: 0.25, maxShift: 2, localRadius: 2, maxLayer: 30, seamless: false });
+    expect(s.fold).toMatchObject({ shiftChance: 0.25, maxShift: 2, localRadius: 2, localM: 7, maxLayer: 30, seamless: false });
     expect(s.sightM).toBe(6);
     expect(s.aheadDoors).toBe(3);
     // прежний рост: «вперёд дверей» — из панели прогулки
@@ -148,5 +163,84 @@ describe('параметры генераторов «Прогулки»', { tim
     // складки действуют на рост
     const w = createStreamWorld(p, s);
     expect(w.settings.fold.maxShift).toBe(2);
+  });
+
+  it('4D-складки не ближе N м пути: квартиры и подвал — пересекающихся комнат ближе нет (проверка validateFoldRun), без предела — есть', () => {
+    const grow = (localM: number, seed: string, biome?: string) => {
+      const w = createStreamWorld(p, streamSettings(seed, { world: W((x) => { if (biome) x.startBiome = biome; }), fold: { ...DEFAULT_STREAM_FOLD, localM } }));
+      if (biome) {
+        // подвал: обход в ширину, пока не встанет 150 комнат
+        const seen = new Set<string>();
+        const q = [w.startId!];
+        while (q.length && w.run().instances.length < 150) {
+          const id = q.shift()!;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          w.expand(id);
+          for (const l of w.run().links) {
+            if (l.kind) continue;
+            if (l.a.inst === id) q.push(l.b.inst);
+            if (l.b.inst === id) q.push(l.a.inst);
+          }
+        }
+      } else {
+        let id = w.startId!;
+        for (let k = 0; k < 6; k++) {
+          const ex = exitsOf(w, w.clusterAt(id)!.id);
+          let next: string | null = null;
+          for (let j = 0; j < ex.length && !next; j++) next = w.openDoor(...ex[(k + j) % ex.length]);
+          if (!next) break;
+          id = next;
+        }
+      }
+      return w.run();
+    };
+    const close = (errs: string[]) => errs.filter((e) => e.includes('localM')).length;
+    for (const [seed, biome] of [['m1', undefined], ['m2', undefined], ['m3', 'basement']] as const) {
+      const run = grow(6, seed, biome);
+      expect(run.settings.fold).toMatchObject({ localM: 6 });
+      expect(validateFoldRun(p, run), seed).toEqual([]);
+    }
+    // без предела складки встают и за соседней дверью — та же проверка их видит
+    const free = grow(0, 'm1');
+    expect(validateFoldRun(p, free)).toEqual([]);
+    expect(close(validateFoldRun(p, { ...free, settings: { ...free.settings, fold: { ...free.settings.fold!, localM: 6 } } }))).toBeGreaterThan(10);
+  });
+
+  it('4D-складки по метрам — и в прогоне фиксированного размера', () => {
+    const fold = { shiftChance: 0.5, maxShift: 3, localRadius: 1, maxLayer: 12, seamless: false };
+    const run = generateFoldRun(p, { seed: 'fm', count: 80, gap: 1, sightM: 9, fold: { ...fold, localM: 5 } });
+    expect(run.instances.length).toBeGreaterThan(40);
+    expect(validateFoldRun(p, run)).toEqual([]);
+    const free = generateFoldRun(p, { seed: 'fm', count: 80, gap: 1, sightM: 9, fold });
+    expect(validateFoldRun(p, { ...free, settings: { ...free.settings, fold: { ...fold, localM: 5 } } }).some((e) => e.includes('localM'))).toBe(true);
+  });
+
+  it('гарантия перехода: выпал — он за той дверью, которую открыл игрок (любой выход, с складками по метрам и без)', () => {
+    let tried = 0;
+    for (const localM of [0, 6]) {
+      for (const seed of ['g1', 'g2', 'g3', 'g4', 'g5', 'g6']) {
+        for (let k = 0; k < 4; k++) {
+          const world = W((x) => Object.assign(x, { trAfter: 0, trBase: 1, trStep: 0 }));
+          const w = createStreamWorld(p, streamSettings(seed, { world, fold: { ...DEFAULT_STREAM_FOLD, localM } }));
+          let id = w.startId!;
+          // k % 2 квартир пройти (переход ещё не выпал — счётчик не тронут), в следующей войти в комнату — выпал (100%)
+          for (let s = 0; s < k % 2; s++) {
+            const ex = exitsOf(w, w.clusterAt(id)!.id);
+            id = (ex.length && w.openDoor(...ex[0])) || id;
+          }
+          const cid = w.clusterAt(id)!.id;
+          w.enter(id);
+          expect(w.transitionState()!.pending).toBe(true);
+          const ex = exitsOf(w, cid);
+          const t = w.openDoor(...ex[k % ex.length]);
+          tried++;
+          expect(t && roomOf(w, t).location?.kind, `${localM} ${seed} ${k}`).toMatch(/^(lift|stairwell)$/);
+          expect(w.transitionState()!.pending).toBe(false);
+          expect(validateFoldRun(p, w.run())).toEqual([]);
+        }
+      }
+    }
+    expect(tried).toBe(48);
   });
 });

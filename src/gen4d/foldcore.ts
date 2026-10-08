@@ -5,7 +5,7 @@ import { OPPOSITE } from '../model/cells';
 import type { Rng } from '../model/rng';
 import type { Connector, FoldSettings, GeneratorSettings, Instance, Link, Project, Room, Rot, ShiftMode } from '../model/types';
 import { analyzeGrowth } from '../gen/generate';
-import { compatible, dockTarget, facing, rotFor } from '../gen/geom';
+import { compatible, dockTarget, facing, rotFor, segLine, type SegGeom } from '../gen/geom';
 import { computePvs } from './pvs';
 import { SightSpace } from './sight4d';
 import { roomSightM, type Body, type FShape, type Shapes } from './space';
@@ -21,7 +21,10 @@ export const DEFAULT_FOLD: FoldSettings = {
 /** Теги комнат с длинным обзором: ходы и хабы подвала (docs/GENERATOR-4D.md §17) — линии обзора через них пределом
  *  не ограничены (рост, петли, проверка validateFoldRun). */
 export const LONG_SIGHT_TAGS: readonly string[] = ['ход', 'хаб'];
-export const longSight = (room: Room): boolean => room.tags.some((t) => LONG_SIGHT_TAGS.includes(t));
+/** Длинный обзор: ходы и хабы подвала, а также переходы — лестница и лифт (встают без предела обзора: внутри своя
+ *  сцена, длинный марш или шахта не должны мешать им встать за дверью). */
+export const longSight = (room: Room): boolean =>
+  room.tags.some((t) => LONG_SIGHT_TAGS.includes(t)) || room.location?.kind === 'stairwell' || room.location?.kind === 'lift';
 
 // Константы роста — те же, что у евклидова генератора (§4.2 GENERATOR.md).
 export const ATTEMPTS = 6;
@@ -45,6 +48,8 @@ export function normFold(f?: Partial<FoldSettings> | null): FoldSettings {
     maxShift: Math.min(64, Math.max(0, Math.floor(num(s.maxShift, DEFAULT_FOLD.maxShift)))),
     localRadius: Math.min(16, Math.max(1, Math.floor(num(s.localRadius, DEFAULT_FOLD.localRadius)))),
     maxLayer: Math.min(1000, Math.max(0, Math.floor(num(s.maxLayer, DEFAULT_FOLD.maxLayer)))),
+    // складки по метрам — только если заданы (прогоны и сохранения без поля не меняются)
+    ...(num(s.localM, 0) > 0 ? { localM: Math.min(100, num(s.localM, 0)) } : {}),
     seamless: s.seamless !== false,
   };
 }
@@ -155,6 +160,8 @@ export interface Node {
   why: (Why | undefined)[];
   /** соседи по связям (с повторами, если связей несколько) */
   nb: Node[];
+  /** метки этих связей (порядок nb): [своя, соседа] */
+  nbc: [number, number][];
   /** служебная метка обхода индекса занятости (Buckets) */
   mark?: number;
 }
@@ -200,7 +207,12 @@ export interface Ctx {
   seam: { reach: number; tol: number } | null;
   /** ходы и хабы подвала — длинный обзор (только бесконечный мир в режиме квартир; прогоны — строго по пределу) */
   long?: boolean;
+  /** 4D-складки не ближе стольких клеток пути (FoldSettings.localM / cellM; нет — без проверки) */
+  localC?: number;
 }
+
+/** Предел складок в клетках пути: FoldSettings.localM / cellM (0 — без проверки). */
+export const localCells = (f: FoldSettings, cellM: number): number => (f.localM ? f.localM / cellM : 0);
 
 /** Счётчики неудачных кандидатов метки — для причины тупика. */
 export interface Fails { space: number; rule: number; sight: number; seam: number }
@@ -231,6 +243,7 @@ export function place(ctx: Ctx, lay: Lay, info: Info, rot: Rot, dx: number, dy: 
     linked: info.room.connectors.map(() => false),
     why: info.room.connectors.map(() => undefined),
     nb: [],
+    nbc: [],
   };
   lay.nodes.push(node);
   lay.instances.push(inst);
@@ -258,6 +271,8 @@ export function link(lay: Lay, a: Node, ai: number, b: Node, bi: number): void {
   b.linked[bi] = true;
   a.nb.push(b);
   b.nb.push(a);
+  a.nbc.push([ai, bi]);
+  b.nbc.push([bi, ai]);
   lay.sight.addPortal(a.inst.order, a.conns[ai], b.inst.order, b.conns[bi]);
   lay.links.push({ a: { inst: a.inst.id, connector: a.conns[ai].id }, b: { inst: b.inst.id, connector: b.conns[bi].id }, dw: b.w - a.w });
 }
@@ -272,6 +287,51 @@ export function around(from: Node, depth: number): Map<Node, number> {
     frontier = next;
   }
   return d;
+}
+
+/** Якорь двери: середина проёма на линии стены (клетки плана). */
+export function doorPoint(c: SegGeom): [number, number] {
+  const line = segLine(c);
+  return c.side === 'N' || c.side === 'S' ? [c.cx + c.len / 2, line] : [line, c.cy + c.len / 2];
+}
+
+/**
+ * Экземпляры ближе lim клеток пути от двери ci экземпляра from, с расстояниями (from — 0). Путь — через двери: внутри
+ * комнаты — по прямой между серединами её проёмов, сам проём (и шов wrap) — 0. Дейкстра по дверям: цена выхода из
+ * комнаты зависит от двери, которой в неё вошли.
+ */
+export function aroundM(from: Node, ci: number, lim: number): Map<Node, number> {
+  const got = new Map<Node, number>([[from, 0]]);
+  const done = new Set<string>();
+  const q: { c: number; n: Node; k: number }[] = [{ c: 0, n: from, k: ci }];
+  while (q.length > 0) {
+    let bi = 0;
+    for (let i = 1; i < q.length; i++) if (q[i].c < q[bi].c) bi = i;
+    const { c, n, k } = q[bi];
+    q[bi] = q[q.length - 1];
+    q.pop();
+    const key = `${n.inst.order}:${k}`;
+    if (done.has(key)) continue;
+    done.add(key);
+    if (c < (got.get(n) ?? Infinity)) got.set(n, c);
+    const [px, py] = doorPoint(n.conns[k]);
+    n.nb.forEach((m, j) => {
+      const [mine, theirs] = n.nbc[j];
+      if (mine === k) return;
+      const [qx, qy] = doorPoint(n.conns[mine]);
+      const c2 = c + Math.hypot(qx - px, qy - py);
+      if (c2 < lim && !done.has(`${m.inst.order}:${theirs}`)) q.push({ c: c2, n: m, k: theirs });
+    });
+  }
+  return got;
+}
+
+/** Комнаты, с которыми не должна пересекаться в 3D (в любом слое) новая комната за дверью ai экземпляра parent:
+ *  ближе localRadius − 1 дверей от parent (гарантия 2) и ближе ctx.localC клеток пути от этой двери (складки). */
+export function nearOf(ctx: Ctx, parent: Node, ai: number): Node[] {
+  const near = around(parent, ctx.f.localRadius - 1);
+  if (ctx.localC) for (const x of aroundM(parent, ai, ctx.localC).keys()) near.set(x, 0);
+  return [...near.keys()];
 }
 
 /** Свободно ли тело в слое w этажа floor (гарантия 1: в одном слое нет пересечений). */
@@ -373,8 +433,9 @@ export function growFrom(ctx: Ctx, lay: Lay, parent: Node, ai: number, groups: I
         const dx = t.cx - Bw.cx, dy = t.cy - Bw.cy;
         if (sh.x0 + dx - g < -LIMIT || sh.y0 + dy - g < -LIMIT || sh.x1 + dx + g > LIMIT || sh.y1 + dy + g > LIMIT) { fails.space++; continue; }
         const body: Body = { sh, dx, dy };
-        // гарантия 2: родитель и его соседи окажутся на расстоянии ≤ localRadius от новой комнаты
-        near ??= [...around(parent, ctx.f.localRadius - 1).keys()];
+        // гарантия 2: родитель и его соседи окажутся на расстоянии ≤ localRadius от новой комнаты; складки — не ближе
+        // localC клеток пути
+        near ??= nearOf(ctx, parent, ai);
         if (near.some((x) => x.floor === parent.floor && ctx.shapes.conflict(body, x.body))) { fails.space++; continue; }
         // предел обзора и бесшовность — по пробной геометрии (комната + проём); слой на них не влияет,
         // поэтому отказ — повод пробовать следующего кандидата, а не другой dw
@@ -496,9 +557,9 @@ export function failWhy(lay: Lay, pool: Info[], A: Connector, match: GeneratorSe
   return blocked.length ? 'max' : 'nomatch';
 }
 
-/** Новая связь A–B укорачивает пути: d'(X, Y) = d(X, A) + 1 + d(B, Y). Все пары, попавшие так
- *  в радиус localRadius, не должны пересекаться (гарантия 2). */
-export function loopLocalOk(ctx: Ctx, A: Node, B: Node): boolean {
+/** Новая связь A–B (метки ai, bi) укорачивает пути: d'(X, Y) = d(X, A) + 1 + d(B, Y). Все пары, попавшие так
+ *  в радиус localRadius, не должны пересекаться (гарантия 2); складки — так же по метрам пути через новую дверь. */
+export function loopLocalOk(ctx: Ctx, A: Node, ai: number, B: Node, bi: number): boolean {
   const R = ctx.f.localRadius;
   const da = around(A, R - 1);
   const db = around(B, R - 1);
@@ -506,6 +567,17 @@ export function loopLocalOk(ctx: Ctx, A: Node, B: Node): boolean {
     for (const [y, iy] of db) {
       if (x === y || ix + 1 + iy > R || x.floor !== y.floor) continue;
       if (ctx.shapes.conflict(x.body, y.body)) return false;
+    }
+  }
+  const L = ctx.localC;
+  if (L) {
+    const ma = aroundM(A, ai, L);
+    const mb = aroundM(B, bi, L);
+    for (const [x, cx] of ma) {
+      for (const [y, cy] of mb) {
+        if (x === y || cx + cy >= L || x.floor !== y.floor) continue;
+        if (ctx.shapes.conflict(x.body, y.body)) return false;
+      }
     }
   }
   return true;
@@ -522,7 +594,7 @@ export function tryLink(ctx: Ctx, lay: Lay, a: Node, ai: number, b: Node, bi: nu
   const A = a.conns[ai], B = b.conns[bi];
   if (!compatible(A, B, ctx.s.match) || !facing(A, B, ctx.gap)) return false;
   if (!shiftOk(ctx.f, shiftModeOf(A.shift, B.shift), b.w - a.w)) return false;
-  if (!loopLocalOk(ctx, a, b)) return false;
+  if (!loopLocalOk(ctx, a, ai, b, bi)) return false;
   let upd: Map<number, Set<number>> | null = null;
   if (ctx.lim || ctx.seam) {
     // петля не должна открыть линию длиннее предела и нарушить бесшовность
