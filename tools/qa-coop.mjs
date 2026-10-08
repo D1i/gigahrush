@@ -1,4 +1,6 @@
-// QA коопа «Прогулки» (docs/COOP.md): playwright + системный Chrome, свой vite (порт 5219, relay на /coop).
+// QA коопа «Прогулки» (docs/COOP.md): playwright + системный Chrome, свой vite (порт 5241, relay на /coop) — без HMR и
+// слежения за файлами: в дереве параллельно работают другие сессии, их правки не должны перемонтировать страницу посреди
+// прогона.
 // Два игрока — два контекста браузера (разные вкладки-игроки):
 //  1. A: «3D» → «Подключить онлайн» → «Создать лобби» → код (UUID); B: «Подключить онлайн» → код → «Подключиться».
 //  2. Миры одинаковы (seq, отпечаток); B появляется рядом с A.
@@ -6,31 +8,39 @@
 //  4. Рядом — на 75% медленнее (сдвиг за кадр ×0.25), у обоих; далеко — как обычно.
 //  5. Дверь: A открывает выход (E) — у B та же дверь открыта (анимация, связь, флаг opened), миры совпали; и наоборот.
 //  6. Сквозь проём: A в комнате за дверью — B видит его через проём.
+//  6б. Снег: B ползком — аватар лежит (не под полом); B засыпан — A откапывает (E, digMate нажатий).
 //  7. B перезагрузил вкладку — вернулся в лобби на своё место, мир тот же. B вышел — у A аватар пропал.
 // Скриншоты — tools/qa/coop-*.png. node tools/qa-coop.mjs [--keep-server]
 import { chromium } from 'playwright-core';
-import { spawn } from 'node:child_process';
+import { createServer as createVite } from 'vite';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 
-const PORT = 5219;
+const PORT = 5241;
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const out = fileURLToPath(new URL('./qa/', import.meta.url));
 mkdirSync(out, { recursive: true });
 const keep = process.argv.includes('--keep-server');
-const server = spawn(`npx vite --port ${PORT} --strictPort`, { cwd: ROOT, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+// vite в этом же процессе (relay лобби — его плагин из vite.config.ts); порт занят — strictPort падает сразу
 let serverLog = '';
-server.stdout.on('data', (d) => (serverLog += d));
-server.stderr.on('data', (d) => (serverLog += d));
-const stopServer = () => {
-  if (keep) return;
-  try {
-    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(server.pid), '/T', '/F'], { shell: true });
-    else server.kill('SIGTERM');
-  } catch {}
+const vite = await createVite({
+  root: ROOT,
+  server: { port: PORT, strictPort: true, hmr: false, watch: null },
+  customLogger: {
+    info: (m) => (serverLog += m + '\n'),
+    warn: (m) => (serverLog += m + '\n'),
+    warnOnce: (m) => (serverLog += m + '\n'),
+    error: (m) => (serverLog += m + '\n'),
+    clearScreen() {},
+    hasErrorLogged: () => false,
+    hasWarned: false,
+  },
+});
+await vite.listen();
+const stopServer = async () => {
+  if (!keep) await vite.close();
 };
-for (let k = 0; k < 120 && !/ready in|Local:/.test(serverLog); k++) await new Promise((r) => setTimeout(r, 500));
 const BASE = `http://localhost:${PORT}/`;
 const browser = await chromium.launch({
   executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -55,12 +65,15 @@ const go = async (page, url) => {
 };
 
 const COLORS = { A: '#e0563f', B: '#4fb3e8' };
+const loads = {};
 
 /** Игрок: свой контекст (свои localStorage/sessionStorage), «3D» → «Прогулка» сида qa-coop. */
 async function player(name) {
   const ctx = await browser.newContext({ viewport: { width: 1100, height: 720 } });
   const page = await ctx.newPage();
   page.on('pageerror', (e) => errors.push(`${name} PAGEERROR ${e.message}`));
+  // перезагрузки страницы (Vite пересобрал зависимости и перезагрузил её сам) — для разбора нестабильных прогонов
+  page.on('load', () => (loads[name] = (loads[name] ?? 0) + 1));
   page.on('console', (m) => m.type() === 'error' && !/pointer ?lock|WebSocket/i.test(m.text()) && errors.push(`${name} ${m.text().slice(0, 300)}`));
   await go(page, BASE);
   await page.evaluate(
@@ -71,7 +84,7 @@ async function player(name) {
     { name, color: COLORS[name] },
   );
   await page.reload({ timeout: 180000 });
-  await page.getByRole('button', { name: '3D', exact: true }).click();
+  await page.getByRole('button', { name: '3D', exact: true }).click({ timeout: 180000 });
   await page.waitForFunction(() => window.__rfWalk && window.__rf3dFold?.portal?.isActive, null, { timeout: 180000 });
   return page;
 }
@@ -162,6 +175,14 @@ const reddish = ([r, g, b]) => r > b + 25 && r > g + 10 && r > 60;
 const until = async (page, fn, arg, ms = 20000) => {
   await page.waitForFunction(fn, arg, { timeout: ms });
 };
+/** Дождаться, пока у A и B применено одинаковое число операций мира (до 20 с). */
+async function sameSeq(A, B) {
+  for (let k = 0; k < 80; k++) {
+    const [a, b] = await Promise.all([A.evaluate(() => window.__rfCoop?.co?.lastSeq), B.evaluate(() => window.__rfCoop?.co?.lastSeq)]);
+    if (a === b) return;
+    await A.waitForTimeout(250);
+  }
+}
 
 try {
   const A = await player('A');
@@ -212,12 +233,29 @@ try {
 
   // ═════════ 3. рядом — на 75% медленнее ═════════
   const dir = alongX ? [1, 0] : [0, -1];
-  // далеко друг от друга (у разных краёв): обычный шаг
+  /** B уходит в соседнюю комнату (обычный шаг A меряем без него рядом) / возвращается к A */
+  const bAway = () =>
+    B.evaluate(() => {
+      const d = window.__rf3dFold;
+      const cur = d.portal?.current ?? d.current.center;
+      // соседняя обычная комната (не спец-локация — там своя сцена)
+      const plain = (id) => !d.run.instances.find((i) => i.id === id)?.location;
+      const nb = d.run.links.map((x) => (x.a.inst === cur ? x.b.inst : x.b.inst === cur ? x.a.inst : null)).find((id) => id && plain(id));
+      d.goTo(nb);
+    });
+  const bBack = async (x, z) => {
+    await B.evaluate((id) => window.__rf3dFold.goTo(id), fa.room);
+    await B.waitForTimeout(400);
+    await place(B, x, z, pb[0], pb[1]);
+  };
+  // B далеко: обычный шаг
+  await bAway();
+  await A.waitForTimeout(800);
   await place(A, pa[0], pa[1], pb[0], pb[1]);
   const free = await walkFrames(A, dir[0], dir[1], 20);
   // B встал вплотную к A
   await place(A, pa[0], pa[1], pb[0], pb[1]);
-  await place(B, pa[0] + dir[0] * 0.05, pa[1] + dir[1] * 0.05, pb[0], pb[1]);
+  await bBack(pa[0] + dir[0] * 0.05, pa[1] + dir[1] * 0.05);
   await A.waitForTimeout(600);
   const slowA = await walkFrames(A, dir[0], dir[1], 20);
   sb = await state(B);
@@ -227,8 +265,8 @@ try {
   const hud = await A.locator('.coop-hud').textContent();
   ok('HUD: «рядом игрок — шаг медленнее»', /медленнее/.test(hud ?? ''), hud ?? '');
   // разошлись — скорость обычная
-  await place(B, pb[0], pb[1], pa[0], pa[1]);
-  await A.waitForTimeout(600);
+  await bAway();
+  await A.waitForTimeout(800);
   await place(A, pa[0], pa[1], pb[0], pb[1]);
   const free2 = await walkFrames(A, dir[0], dir[1], 20);
   ok('разошлись — снова обычный шаг', Math.abs(free2 / free - 1) < 0.1, `${free2.toFixed(3)} м`);
@@ -289,7 +327,9 @@ try {
     return { state: s.world.doorState(inst, connector), opened: !!k?.opened, linked: k?.linkedTo?.inst ?? null, phases: [...window.__phases] };
   }, door);
   ok('A открыл дверь — у B она открыта (связь, полотно распахнуто)', dB.state === 'linked' && dB.opened && !!dB.linked, JSON.stringify(dB));
-  ok('у B дверь распахнулась анимацией (отпирание → распах)', dB.phases.includes('unlatch') && dB.phases.includes('swing'), dB.phases.join(' → '));
+  // отпирание короткое — при ~10 кадрах/с его можно не поймать; главное — у B полотно шло анимацией
+  ok('у B дверь распахнулась анимацией (распах)', dB.phases.includes('swing'), dB.phases.join(' → '));
+  await sameSeq(A, B);
   sa = await state(A);
   sb = await state(B);
   ok('после двери миры одинаковы', sa.seq === sb.seq && sa.fp === sb.fp, `${sa.seq}/${sb.seq}`);
@@ -338,17 +378,95 @@ try {
   if (exB) {
     const rb = await B.evaluate(({ inst, connector }) => window.__rfWalk.request({ k: 'door', inst, conn: connector }), exB);
     await until(A, ({ inst, connector }) => window.__rfWalk.world.doorState(inst, connector) === 'linked', exB);
+    await sameSeq(A, B);
     sa = await state(A);
     sb = await state(B);
     ok('B открыл дверь — у A открыта, миры одинаковы', !!rb && sa.seq === sb.seq && sa.fp === sb.fp, `${rb} · seq ${sa.seq}/${sb.seq}`);
   }
 
+  // ═════════ 6б. снег: B ползком (аватар лежит, не под полом); B засыпан — A откапывает ═════════
+  {
+    // оба — в комнате A, вдоль длинного прямоугольника пола, в 1.1 м друг от друга
+    const fr = await floorRect(A);
+    await B.evaluate((id) => window.__rf3dFold.goTo(id), fr.room);
+    await B.waitForTimeout(600);
+    const r = fr.rect;
+    const ax = r.x1 - r.x0 >= r.y1 - r.y0;
+    const mx = (r.x0 + r.x1) / 2, my = (r.y0 + r.y1) / 2;
+    const qa = ax ? [mx - 0.55, -my] : [mx, -(my - 0.55)];
+    const qb = ax ? [mx + 0.55, -my] : [mx, -(my + 0.55)];
+    await place(A, qa[0], qa[1], qb[0], qb[1]);
+    // B ползком: эллипсоид как у SnowWalk в лазе (глаза 0.5 м) — камера опускается к полу
+    await B.evaluate(({ x, z, lx, lz }) => {
+      const c = window.__rf3d.fps;
+      // как SnowWalk: глаза опускаются вместе с эллипсоидом (1.6 → 0.5 м над полом)
+      c.ellipsoid.set(0.25, 0.28, 0.25);
+      c.ellipsoidOffset.set(0, 2 * 0.28 - 0.5, 0);
+      c.position.set(x, c.position.y - 1.1, z);
+      c.rotation.set(0.04, Math.atan2(lx - x, lz - z), 0);
+      c.cameraDirection.setAll(0);
+    }, { x: qb[0], z: qb[1], lx: qa[0], lz: qa[1] });
+    await A.waitForFunction(() => Math.abs(([...window.__rfCoop.co.players.values()][0]?.state?.eye ?? 9) - 0.5) < 0.05, null, { timeout: 30000 }).catch(() => {});
+    await A.waitForTimeout(1200);
+    const lying = await A.evaluate(() => {
+      const p = window.__rfCoop.presence;
+      const s = [...window.__rfCoop.co.players.values()][0]?.state;
+      return { eye: s?.eye ?? null, shown: p.shown.length, py: s?.p[1] ?? null, room: s?.room ?? null };
+    });
+    const camB = await B.evaluate(() => {
+      const d = window.__rf3dFold;
+      const room = d.portal?.current ?? d.current.center;
+      const z = d.portal.cache.peek(room)?.model.floors.find((f) => f.inst === room)?.z ?? null;
+      return { y: window.__rf3d.fps.position.y, room, floorZ: z };
+    });
+    const camA = await A.evaluate(() => {
+      const d = window.__rf3dFold;
+      const room = d.portal?.current ?? d.current.center;
+      const z = d.portal.cache.peek(room)?.model.floors.find((f) => f.inst === room)?.z ?? null;
+      return { y: window.__rf3d.fps.position.y, room, floorZ: z };
+    });
+    console.log('  диагностика ползком:', JSON.stringify({ lying, camA, camB }));
+    // пол комнаты B — по модели её куска (камера A может стоять не на полу)
+    const floorY = camB.floorZ ?? 0;
+    const bodyY = await A.evaluate(() => window.__rf3d.scene.meshes.find((m) => m.name.startsWith('coop:body:'))?.position.y ?? null);
+    ok('B ползком: A получает высоту глаз ~0.5 м, аватар лежит над полом (не под ним)', lying.eye !== null && Math.abs(lying.eye - 0.5) < 0.05 && bodyY !== null && bodyY > floorY + 0.1 && bodyY < floorY + 0.5, `eye ${lying.eye}, тело на ${(bodyY - floorY).toFixed(2)} м над полом`);
+    await A.locator('canvas').first().screenshot({ path: out + 'coop-5-A-sees-B-crawling.png' });
+    // B засыпан (как после обвала у его места)
+    await B.evaluate(({ x, z }) => {
+      const st = window.__rfSnow.collapse;
+      st.phase = 'buried';
+      st.site = { inst: 'qa', connector: 'qa', x, y: -z };
+      st.dig = 0;
+      st.t = 0;
+    }, { x: qb[0], z: qb[1] });
+    await A.waitForFunction(() => /откапывать/.test(document.querySelector('.v3-lift-prompt')?.textContent ?? ''), null, { timeout: 30000 });
+    const prompt = await A.locator('.v3-lift-prompt').first().textContent();
+    ok('A рядом с засыпанным B — «E — откапывать: B»', /откапывать: B/.test(prompt ?? ''), prompt ?? '');
+    await A.locator('canvas').first().focus();
+    const digs = [];
+    for (let k = 0; k < 4; k++) {
+      await A.keyboard.press('KeyE');
+      await B.waitForTimeout(250);
+      digs.push(await B.evaluate(() => `${window.__rfSnow.collapse.phase}:${window.__rfSnow.collapse.dig.toFixed(2)}`));
+    }
+    ok('A откопал B за 4 нажатия (digMate), у B — «откапывает»', digs[3].startsWith('calm') && digs[0] === 'buried:0.25', digs.join(' → '));
+    // B снова на ногах
+    await B.evaluate(() => {
+      const c = window.__rf3d.fps;
+      c.ellipsoid.set(0.3, 0.85, 0.3);
+      c.ellipsoidOffset.set(0, 0.1, 0);
+      c.position.y += 1.1;
+    });
+    await B.waitForTimeout(800);
+  }
+
   // ═════════ 7. перезагрузка B — возврат в лобби; выход ═════════
   const posB = (await state(B)).pos;
   await B.reload({ timeout: 180000 });
-  await B.getByRole('button', { name: '3D', exact: true }).click();
+  await B.getByRole('button', { name: '3D', exact: true }).click({ timeout: 180000 });
   await coopOnline(B);
   await B.waitForTimeout(1500);
+  await sameSeq(A, B);
   sa = await state(A);
   sb = await state(B);
   ok('B после перезагрузки вернулся в лобби, мир тот же', sa.seq === sb.seq && sa.fp === sb.fp && sb.players.includes('A'), `${sa.seq}/${sb.seq}`);
@@ -364,9 +482,10 @@ try {
   ok('сценарий без исключений', false, String(e?.message ?? e).slice(0, 400));
 } finally {
   ok('без ошибок на страницах', errors.length === 0, errors.slice(0, 5).join(' | '));
+  console.log('загрузок страниц:', JSON.stringify(loads), '(A — 2, B — 3: первая, с настройками, перезагрузка в п. 7)');
   if (results.some((r) => !r.ok)) console.log(`\n── лог vite ──\n${serverLog.slice(-3000)}`);
   await browser.close();
-  stopServer();
+  await stopServer();
   const bad = results.filter((r) => !r.ok);
   console.log(`\n${results.length - bad.length}/${results.length} OK`);
   process.exit(bad.length ? 1 : 0);

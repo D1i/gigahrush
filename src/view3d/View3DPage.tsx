@@ -154,6 +154,8 @@ export default function View3DPage() {
   const [coopModal, setCoopModal] = useState(false);
   /** рядом другой игрок — идём медленнее (HUD) */
   const [coopSlow, setCoopSlow] = useState(false);
+  /** рядом засыпанный обвалом напарник — «E — откапывать» (его имя) */
+  const [coopDig, setCoopDig] = useState<string | null>(null);
   const locRef = useRef<LocReq | null>(null);
   locRef.current = loc;
 
@@ -311,6 +313,8 @@ export default function View3DPage() {
   const [detector, setDetectorS] = useState(memo.detector);
   const [foldRender, setFoldRenderS] = useState<FoldRender>(memo.render);
   const [flash, setFlash] = useState<{ seq: number; text: string; color: string } | null>(null);
+  /** поза от первого лица (C) */
+  const [pose, setPose] = useState<'stand' | 'crouch' | 'crawl'>('stand');
   /** клик по комнате в облёте; в виде «видимое множество» — пересобрать вокруг неё */
   const onPickRef = useRef<(inst: string | null) => void>(() => {});
   onPickRef.current = (inst) => {
@@ -324,6 +328,14 @@ export default function View3DPage() {
         onPick: (inst) => onPickRef.current(inst),
         onRoom: setHere,
         onPointerLock: setLocked,
+        // C — на четвереньки / встать (src/view3d/posture.ts): поза — в подсказке, «здесь не встать» — вспышкой
+        onPosture: (pose, note) => {
+          setPose(pose);
+          const text = note ?? (pose === 'crawl' ? 'на четвереньках' : pose === 'crouch' ? 'скрючившись' : 'стоя');
+          const seq = Date.now();
+          setFlash({ seq, text, color: note ? '#e0563f' : '#cfd8e6' });
+          setTimeout(() => setFlash((f) => (f?.seq === seq ? null : f)), 1200);
+        },
         onPropsReady: () => setPropsVer((x) => x + 1),
         onStats: (fps, dc) => {
           // портальный рендер: сколько комнат и проёмов в кадре
@@ -484,7 +496,7 @@ export default function View3DPage() {
       onBreak: (id) => enterHangar(id),
       onHud: setSnowHud,
       live: () => !v.hasOverlay && v.mode === 'fps',
-    }, walkRun.seed);
+    }, walkRun.seed, v.posture);
     if (import.meta.env.DEV) (window as any).__rfSnow = snow; // для QA-скриптов
     /** Подтаявший снег пробит — сцена ангара (падение); ворота цеха — world.descend (этажи ниже: завод или другой биом). */
     const enterHangar = (id: string) => {
@@ -635,7 +647,7 @@ export default function View3DPage() {
       for (const k of s.rx.instances.find((i) => i.id === room)?.connectors ?? []) {
         if (!k.exit) continue;
         const de = dd.deadEndAt(room, k.id);
-        if (!de || Math.abs(c.y - 1.65 - de.center.y) > 1.5) continue;
+        if (!de || Math.abs(c.y - v.posture.eye - 0.05 - de.center.y) > 1.5) continue;
         const dist = Math.hypot(c.x - de.center.x, c.z - de.center.z);
         if (dist < bd) {
           bd = dist;
@@ -649,7 +661,7 @@ export default function View3DPage() {
     };
     const onDoorKey = (e: KeyboardEvent) => {
       const s = session;
-      if (e.code !== 'KeyE' || !s || !door || v.hasOverlay || v.mode !== 'fps') return;
+      if (e.code !== 'KeyE' || !s || !door || v.hasOverlay || v.mode !== 'fps' || presence?.nearBuried) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
       const { inst, connector } = door;
@@ -700,7 +712,7 @@ export default function View3DPage() {
       for (const l of s.world.run().links) {
         if (l.kind !== 'lift' || l.b.inst !== room) continue;
         const de = dd.deadEndAt(room, l.b.connector);
-        if (!de || Math.abs(c.y - 1.65 - de.center.y) > 1.5) continue;
+        if (!de || Math.abs(c.y - v.posture.eye - 0.05 - de.center.y) > 1.5) continue;
         if (Math.hypot(c.x - de.center.x, c.z - de.center.z) < 0.7) {
           enterLift(l.a.inst, l.floors ?? 1, l.side ?? 'straight');
           return;
@@ -796,7 +808,8 @@ export default function View3DPage() {
       }
       if (co) {
         // другие игроки: аватары, своё положение для них, «рядом — медленнее»
-        presence = new CoopPresence(v, co, () => d, () => locRef.current?.kind ?? null);
+        presence = new CoopPresence(v, co, () => d, () => locRef.current?.kind ?? null, () => snow.collapse.phase === 'buried');
+        co.onAct.add(onAct);
         co.beforeOp.add(beforeOp);
         co.afterOp.add(afterOp);
         if (import.meta.env.DEV) (window as any).__rfCoop = { co, presence }; // для QA-скриптов
@@ -829,7 +842,29 @@ export default function View3DPage() {
       if (res) r.to(res);
       else r.anim.fail();
     }
-    const coopTimer = co ? window.setInterval(() => setCoopSlow(!!presence?.slowed), 150) : 0;
+    // кооп: засыпанного обвалом напарника рядом откапывают (E) — ему уходит действие dig, у него — SnowWalk.mateDig
+    const onDigKey = (e: KeyboardEvent) => {
+      const mate = presence?.nearBuried;
+      if (e.code !== 'KeyE' || e.repeat || !co || !mate || v.hasOverlay || v.mode !== 'fps') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+      co.act(mate.id, 'dig');
+    };
+    function onAct(from: string, a: string) {
+      if (a !== 'dig' || snow.collapse.phase !== 'buried') return;
+      snow.mateDig();
+      const who = co?.players.get(from)?.name ?? 'напарник';
+      const text = `${who} откапывает`;
+      setFlash({ seq: Date.now(), text, color: '#9fd3ff' });
+      setTimeout(() => setFlash((f) => (f?.text === text ? null : f)), 900);
+    }
+    if (co) window.addEventListener('keydown', onDigKey);
+    const coopTimer = co
+      ? window.setInterval(() => {
+          setCoopSlow(!!presence?.slowed);
+          setCoopDig(presence?.nearBuried?.name ?? null);
+        }, 150)
+      : 0;
     const onUnload = () => {
       savePlayer();
       session?.saveNow();
@@ -853,10 +888,13 @@ export default function View3DPage() {
       savePlayer();
       clearInterval(coopTimer);
       setCoopSlow(false);
+      setCoopDig(null);
+      window.removeEventListener('keydown', onDigKey);
       presence?.dispose();
       if (co) {
         co.beforeOp.delete(beforeOp);
         co.afterOp.delete(afterOp);
+        co.onAct.delete(onAct);
         if (import.meta.env.DEV) delete (window as any).__rfCoop;
       }
       d?.dispose();
@@ -1652,7 +1690,8 @@ export default function View3DPage() {
             )}
           </div>
         )}
-        {source === 'walk' && mode === 'fps' && doorAt && !loc && <div className="float hud v3-lift-prompt">E — открыть дверь</div>}
+        {source === 'walk' && mode === 'fps' && doorAt && !coopDig && !loc && <div className="float hud v3-lift-prompt">E — открыть дверь</div>}
+        {source === 'walk' && mode === 'fps' && coopDig && !loc && <div className="float hud v3-lift-prompt">E — откапывать: {coopDig}</div>}
         {source === 'walk' && mode === 'fps' && coopOn && coopWalk && !loc && <CoopHud co={coop} slow={coopSlow} />}
         {source === 'walk' && mode === 'fps' && !loc && snowHud?.buried != null && <div className="v3-snow-buried" style={{ opacity: 0.94 - 0.55 * snowHud.buried }} />}
         {source === 'walk' && mode === 'fps' && !loc && snowHud?.crack != null && <div className="v3-snow-crack" style={{ opacity: 0.25 + 0.5 * snowHud.crack }} />}
@@ -1679,11 +1718,11 @@ export default function View3DPage() {
             <span>ЛКМ — вращать · ПКМ — сдвиг · колесо — масштаб · клик по полу — комната</span>
           ) : locked ? (
             <span>
-              <b>WASD</b> — ходьба · мышь — обзор · <b>Esc</b> — отпустить мышь
+              <b>WASD</b> — ходьба · мышь — обзор · <b>C</b> — {pose === 'crawl' ? 'встать' : 'на четвереньки'} · <b>Esc</b> — отпустить мышь
             </span>
           ) : (
             <span>
-              <b>Клик</b> по сцене — захватить мышь · WASD — ходьба
+              <b>Клик</b> по сцене — захватить мышь · WASD — ходьба · C — на четвереньки
             </span>
           )}
         </div>

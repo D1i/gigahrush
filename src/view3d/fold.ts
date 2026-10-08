@@ -329,7 +329,7 @@ export class FoldDriver {
     const z = piece.model.floors.find((f) => f.inst === inst)?.z ?? 0;
     const p = q.center.subtract(q.u.scale(0.8));
     const c = this.v.fps;
-    c.position.set(p.x, z + 1.65, p.z);
+    c.position.set(p.x, z + this.v.posture.eye + 0.05, p.z);
     c.rotation.set(0.05, Math.atan2(-q.u.x, -q.u.z), 0);
     c.cameraDirection.setAll(0);
     c.cameraRotation.set(0, 0);
@@ -386,7 +386,7 @@ export class FoldDriver {
     if (inst !== this.center) this.onPortalCross(this.center ?? inst, inst);
     const p = d.center.add(d.u.scale(0.8));
     const c = this.v.fps;
-    c.position.set(p.x, d.center.y + 1.65, p.z);
+    c.position.set(p.x, d.center.y + this.v.posture.eye + 0.05, p.z);
     c.rotation.set(0.05, Math.atan2(d.u.x, d.u.z), 0);
     c.cameraDirection.setAll(0);
     c.cameraRotation.set(0, 0);

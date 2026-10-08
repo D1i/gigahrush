@@ -10,7 +10,11 @@
 //    комната аватара в наборе; облёт — не видны.
 //  • Сквозь друг друга проходят (коллизий нет), но рядом (ближе SLOW_RADIUS_M, в той же комнате или у общего проёма)
 //    оба идут на 75% медленнее: сдвиг камеры за кадр урезается до SLOW_FACTOR (после ввода и коллизий).
-//  • Своё положение — серверу ~15 раз в секунду (только когда изменилось; иначе раз в секунду).
+//  • Своё положение — серверу ~15 раз в секунду (только когда изменилось; иначе раз в секунду) — по таймеру, не по кадрам
+//    сцены: в спец-локации (лифт, лестница) рисуется её сцена, а другим надо узнать «он в локации». С ним — высота глаз:
+//    в снежных лазах игрок ползёт (аватар лежит), в берлоге — скрючен (аватар ниже); и «засыпан обвалом».
+//  • Засыпанный напарник рядом (ближе DIG_RADIUS_M) — nearBuried: страница показывает «E — откапывать» и шлёт ему
+//    действие dig (CoopSession.act); у него — SnowWalk.mateDig.
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
@@ -34,8 +38,12 @@ import type { CoopSession } from './session';
 export const SLOW_FACTOR = 0.25;
 /** «Рядом»: по горизонтали ближе, м (капсулы игроков — 0.3 м радиусом, перекрылись — уже рядом). */
 export const SLOW_RADIUS_M = 0.75;
-/** …и по высоте ближе, м (лестница, другой этаж в том же месте 3D — не рядом). */
+/** …и по высоте (ног) ближе, м (лестница, другой этаж в том же месте 3D — не рядом). */
 const SLOW_DY_M = 1.2;
+/** Засыпанного напарника можно откапывать ближе этого, м (по горизонтали). */
+export const DIG_RADIUS_M = 1.6;
+/** Ниже этого (глаза над полом, м) — ползком: аватар лежит. */
+const CRAWL_EYE = 0.8;
 /** Аватар ближе этого к проёму своей комнаты рисуется и с соседом за проёмом, м. */
 const NEAR_PORTAL_M = 0.8;
 /** Скачок дальше этого — без сглаживания, м. */
@@ -61,10 +69,11 @@ interface Avatar {
   mats: StandardMaterial[];
   tex: DynamicTexture;
   room: string | null;
-  /** показанное положение глаз и поворот */
+  /** показанное положение глаз, их высота над полом и поворот */
   x: number;
   y: number;
   z: number;
+  eye: number;
   yaw: number;
   has: boolean;
   visible: boolean;
@@ -88,9 +97,12 @@ export class CoopPresence {
   private byRoom = new Map<string, Mesh[]>();
   private obs: Observer<Scene> | null;
   private camObs: Observer<Camera> | null;
+  private sendTimer: ReturnType<typeof setInterval> | null;
   private prev: Vector3 | null = null;
   /** свой игрок сейчас рядом с другим — идёт медленнее */
   slowed = false;
+  /** засыпанный обвалом напарник рядом — его можно откапывать (E) */
+  nearBuried: { id: string; name: string } | null = null;
   private last = performance.now();
   private sentAt = 0;
   private sent: PlayerState | null = null;
@@ -105,10 +117,13 @@ export class CoopPresence {
     private readonly driver: () => FoldDriver | null,
     /** вид спец-локации, в сцене которой игрок (null — в мире) */
     private readonly inLoc: () => string | null,
+    /** свой игрок засыпан обвалом (снежные ходы) */
+    private readonly buried: () => boolean = () => false,
   ) {
     this.scene = v.scene;
     this.obs = this.scene.onBeforeRenderObservable.add(() => this.update());
     this.camObs = v.fps.onAfterCheckInputsObservable.add(() => this.slowStep());
+    this.sendTimer = setInterval(() => this.sendState(performance.now()), SEND_MS);
   }
 
   /** Комната своего игрока (её ведёт портальный рендер; в наборе PVS — центр набора). */
@@ -139,6 +154,8 @@ export class CoopPresence {
     const k = 1 - Math.exp(-dt * 12);
     this.byRoom = new Map();
     let slow = false;
+    let dig: { id: string; name: string; d: number } | null = null;
+    const myFeet = cam.y - eyeOf(v.fps);
     for (const a of this.avatars.values()) {
       const s = this.co.players.get(a.id)?.state ?? null;
       a.visible = false;
@@ -150,22 +167,28 @@ export class CoopPresence {
       }
       // плавно к последнему положению; скачок — сразу
       const [tx, ty, tz] = s.p;
+      const te = s.eye ?? EYE;
       if (!a.has || Math.hypot(tx - a.x, ty - a.y, tz - a.z) > SNAP_M) {
         a.x = tx;
         a.y = ty;
         a.z = tz;
+        a.eye = te;
         a.yaw = s.yaw;
         a.has = true;
       } else {
         a.x += (tx - a.x) * k;
         a.y += (ty - a.y) * k;
         a.z += (tz - a.z) * k;
+        a.eye += (te - a.eye) * k;
         a.yaw = angleLerp(a.yaw, s.yaw, k);
       }
       a.room = room;
       this.pose(a, cam);
-      // рядом ли (та же комната или сосед через общий проём, не шов хода)
-      if (fps && me && (room === me || near?.has(room)) && Math.hypot(a.x - cam.x, a.z - cam.z) < SLOW_RADIUS_M && Math.abs(a.y - cam.y) < SLOW_DY_M) slow = true;
+      // рядом ли (та же комната или сосед через общий проём, не шов хода; по высоте — ноги)
+      const here = fps && !!me && (room === me || !!near?.has(room)) && Math.abs(a.y - a.eye - myFeet) < SLOW_DY_M;
+      const dist = Math.hypot(a.x - cam.x, a.z - cam.z);
+      if (here && dist < SLOW_RADIUS_M) slow = true;
+      if (here && s.buried && dist < DIG_RADIUS_M && (!dig || dist < dig.d)) dig = { id: a.id, name: a.name, d: dist };
       if (!fps) {
         for (const m of a.meshes) m.setEnabled(false);
         continue;
@@ -193,7 +216,7 @@ export class CoopPresence {
       }
     }
     this.slowed = slow;
-    this.sendState(t);
+    this.nearBuried = dig && !this.buried() ? { id: dig.id, name: dig.name } : null;
   }
 
   private hasRoom(rx: RunExport, id: string): boolean {
@@ -210,16 +233,31 @@ export class CoopPresence {
     if (!l.includes(a.body)) l.push(...a.meshes);
   }
 
-  /** Аватар в позу: ноги на полу (глаза — EYE над ним), визор — по взгляду, табличка — лицом к камере. */
+  /** Аватар в позу: ноги на полу (глаза — eye над ним), визор — по взгляду, табличка — лицом к камере. Ползком —
+   *  лежит вдоль взгляда, голова впереди; скрючившись — ниже (капсула сжата по высоте). */
   private pose(a: Avatar, cam: Vector3) {
-    const feet = a.y - EYE;
+    const feet = a.y - a.eye;
     const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
-    a.body.position.set(a.x, feet + 0.72, a.z);
-    a.body.rotation.y = a.yaw;
-    a.head.position.set(a.x, feet + 1.5, a.z);
-    a.visor.position.set(a.x + fx * 0.13, feet + 1.53, a.z + fz * 0.13);
+    let headY: number;
+    if (a.eye < CRAWL_EYE) {
+      // лёжа: капсула 1.44 м вдоль взгляда, голова — у переднего конца
+      a.body.scaling.y = 1;
+      a.body.rotation.set(Math.PI / 2, a.yaw, 0);
+      a.body.position.set(a.x - fx * 0.35, feet + 0.25, a.z - fz * 0.35);
+      headY = feet + 0.3;
+      a.head.position.set(a.x + fx * 0.45, headY, a.z + fz * 0.45);
+      a.visor.position.set(a.x + fx * 0.58, headY + 0.03, a.z + fz * 0.58);
+    } else {
+      const k = Math.min(1.2, a.eye / EYE);
+      a.body.scaling.y = k;
+      a.body.rotation.set(0, a.yaw, 0);
+      a.body.position.set(a.x, feet + 0.72 * k, a.z);
+      headY = feet + Math.max(0.3, a.eye - 0.1);
+      a.head.position.set(a.x, headY, a.z);
+      a.visor.position.set(a.x + fx * 0.13, headY + 0.03, a.z + fz * 0.13);
+    }
     a.visor.rotation.y = a.yaw;
-    a.label.position.set(a.x, feet + 1.95, a.z);
+    a.label.position.set(a.x, headY + 0.45, a.z);
     // лицевая сторона плоскости — −Z: развернуть её к камере
     a.label.rotation.y = Math.atan2(-(cam.x - a.x), -(cam.z - a.z));
     for (const m of a.meshes) m.computeWorldMatrix(true);
@@ -266,7 +304,7 @@ export class CoopPresence {
   // ───────────────────────── своё положение ─────────────────────────
 
   private sendState(t: number) {
-    if (t - this.sentAt < SEND_MS) return;
+    if (this.disposed) return;
     const c = this.v.fps;
     const s: PlayerState = {
       room: this.myRoom(),
@@ -276,9 +314,13 @@ export class CoopPresence {
       loc: this.inLoc(),
       fps: this.v.mode === 'fps',
     };
+    // глаза не на 1.6 (снежные лазы) и «засыпан» — только когда есть (сообщение короче)
+    const eye = round(eyeOf(c));
+    if (Math.abs(eye - EYE) > 0.01) s.eye = eye;
+    if (this.buried()) s.buried = true;
     const o = this.sent;
     const same =
-      o && o.room === s.room && o.loc === s.loc && o.fps === s.fps &&
+      o && o.room === s.room && o.loc === s.loc && o.fps === s.fps && o.eye === s.eye && o.buried === s.buried &&
       Math.abs(o.p[0] - s.p[0]) < 0.01 && Math.abs(o.p[1] - s.p[1]) < 0.01 && Math.abs(o.p[2] - s.p[2]) < 0.01 && Math.abs(o.yaw - s.yaw) < 0.01;
     if (same && t - this.sentAt < HEARTBEAT_MS) return;
     this.co.sendState(s);
@@ -349,7 +391,7 @@ export class CoopPresence {
       m.setEnabled(false);
       m.metadata = { coop: p.id };
     }
-    return { id: p.id, name: p.name, color: p.color, body, head, visor, label, meshes, mats: [mBody, mHead, mVisor, mLabel], tex, room: null, x: 0, y: 0, z: 0, yaw: 0, has: false, visible: false };
+    return { id: p.id, name: p.name, color: p.color, body, head, visor, label, meshes, mats: [mBody, mHead, mVisor, mLabel], tex, room: null, x: 0, y: 0, z: 0, eye: EYE, yaw: 0, has: false, visible: false };
   }
 
   private drop(a: Avatar) {
@@ -366,6 +408,10 @@ export class CoopPresence {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    // ушёл со вкладки «3D» (или сцена пересобирается) — для других «не в мире», пока не вернулся
+    if (this.sent) this.co.sendState({ ...this.sent, loc: 'away' });
+    if (this.sendTimer) clearInterval(this.sendTimer);
+    this.sendTimer = null;
     if (this.obs) this.scene.onBeforeRenderObservable.remove(this.obs);
     if (this.camObs) this.v.fps.onAfterCheckInputsObservable.remove(this.camObs);
     this.obs = this.camObs = null;
@@ -378,3 +424,9 @@ export class CoopPresence {
 }
 
 const round = (x: number): number => Math.round(x * 1000) / 1000;
+
+/** Глаза камеры над её низом (полом), м: эллипсоид коллизий — 2·ellipsoid.y − ellipsoidOffset.y (стоя — 1.6, в снежных
+ *  лазах SnowWalk делает его ниже). */
+function eyeOf(c: { ellipsoid: Vector3; ellipsoidOffset: Vector3 }): number {
+  return 2 * c.ellipsoid.y - c.ellipsoidOffset.y;
+}

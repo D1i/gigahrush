@@ -1,16 +1,21 @@
 // «Прогулка» в снежных ходах (биом «Снежные тоннели», docs/GENERATOR-4D.md §20): то, чего нет у обычных комнат.
 //
-//  • Поза: в лазе — ползком (глаз ~0.5 м, медленно), в берлоге — скрючившись (глаз ~1.15 м); высота глаза — по своду
-//    над головой (луч вверх в коллайдер снега), меняется плавно; эллипсоид камеры — низкий (0.56 м), коллизии —
-//    полость снега (src/view3d/snowView.ts). Ушёл из снега — поза и скорость как были.
+//  • Поза — общая поза от первого лица (./posture.ts, клавиша C): вошёл в снег — игрок опускается на четвереньки
+//    (глаз 0.5 м, эллипсоид 0.56 м — пролезает в лаз 0.9 м; ход и руки в варежках); в берлоге можно встать скрючившись
+//    (C); скрючившись упёрся в низкий свод лаза — снова на четвереньки сам. Ушёл из снега — встаёт.
+//    Коллизии — полость снега (src/view3d/snowView.ts); камеру поставили выше пола лаза — сразу на пол.
 //  • Туман и холодный свет: вдаль почти ничего не видно (линейный туман 1.2…7 м), свет у игрока — холодный.
 //  • Обвал (src/locations/snowCollapse.ts): метры ползком в лазах → место (host.pickSite) → треск и сыплется снег →
 //    обвал: проём завален навсегда (host.collapse), глыбы набора (snow_chunks.glb) падают; игрок у места — засыпан:
 //    белая пелена, E — откапываться (digSelf нажатий; напарник — digMate), откопался — на своей стороне завала.
+//  • Звук (./snowAudio.ts): ветер над снегом, хруст ползком, треск свода со стороны обвала, удар, засыпан — глухо и
+//    сердце, капли у подтаявшего пятна, удары по нему. Включается первым нажатием клавиши / кликом (автоплей);
+//    выключить — localStorage 'room-forge/snow-sound' = '0'.
 //  • Подтаявший снег (src/locations/hangar.ts): в подтаявшей берлоге пятно в полу (меш куска — snowView), тёплый свет
 //    снизу, капли; ближе 1.1 м — «E — бить»; трещины растут; последний удар — host.onBreak (сцена ангара, падение).
 import type { Scene } from '@babylonjs/core/scene';
 import type { UniversalCamera } from '@babylonjs/core/Cameras/universalCamera';
+import type { Camera } from '@babylonjs/core/Cameras/camera';
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import type { Observer } from '@babylonjs/core/Misc/observable';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
@@ -32,13 +37,11 @@ import {
 import { createThaw, strikeThaw, type HangarRoll, type ThawState } from '../locations/hangar';
 import { puffTexture } from '../locations/liftTextures';
 import { isSnowRoom, snowMaterials, thawPatchOf } from './snowView';
+import { SnowAudio } from './snowAudio';
+import { ROOM_CROUCH, type Posture } from './posture';
 
-/** Эллипсоид в снегу: низкий — пролезает в лаз 0.9 м. */
-const ELL = new Vector3(0.25, 0.28, 0.25);
-const EYE_CRAWL = 0.5;
-const EYE_CROUCH = 1.15;
-const SPEED_CRAWL = 0.075;
-const SPEED_CROUCH = 0.11;
+const SOUND_KEY = 'room-forge/snow-sound';
+
 const THAW_NEAR = 1.1;
 const COLD = new Color3(0.88, 0.93, 1);
 /** свет у игрока в снегу: ярче и дальше, чем в тёмных биомах (снег отражает) */
@@ -75,9 +78,9 @@ export interface SnowWalkHost {
 }
 
 export class SnowWalk {
-  private on = false;
-  private saved: { ell: Vector3; off: Vector3; speed: number; fog: number; fogStart: number; fogEnd: number; fogColor: Color3 } | null = null;
-  private eye = EYE_CRAWL;
+  on = false;
+  private saved: { fog: number; fogStart: number; fogEnd: number; fogColor: Color3 } | null = null;
+  private lampObs: Observer<Camera> | null = null;
   private last: Vector3 | null = null;
   private obs: Observer<Scene> | null = null;
   private col: CollapseState;
@@ -93,6 +96,13 @@ export class SnowWalk {
   private hudKey = '';
   private shake = 0;
   private onKey = (e: KeyboardEvent) => this.key(e);
+  /** звук снега; запускается по жесту (клавиша, клик) */
+  readonly audio = new SnowAudio(typeof localStorage === 'undefined' || localStorage.getItem(SOUND_KEY) !== '0');
+  private onGesture = () => {
+    if (this.on) void this.audio.start();
+  };
+  /** обвал, пока глыбы набора ещё грузятся, — глыбы упадут, как загрузятся */
+  private pendingChunks: { site: CollapseSite; y: number }[] = [];
   private colliders: AbstractMesh[] = [];
   private collidersAt = 0;
 
@@ -101,10 +111,14 @@ export class SnowWalk {
     private readonly cam: UniversalCamera,
     private readonly host: SnowWalkHost,
     seed: string,
+    /** поза от первого лица (BlockoutViewer.posture) */
+    readonly posture: Posture,
   ) {
     this.col = createCollapse(this.spec, seed);
     this.obs = scene.onBeforeRenderObservable.add(() => this.frame());
     window.addEventListener('keydown', this.onKey);
+    window.addEventListener('keydown', this.onGesture);
+    window.addEventListener('pointerdown', this.onGesture);
     void LoadAssetContainerAsync(chunksUrl, scene, { pluginExtension: '.glb' }).then((c) => {
       for (const m of c.meshes) {
         if (!(m instanceof Mesh) || !m.getTotalVertices()) continue;
@@ -117,6 +131,7 @@ export class SnowWalk {
         scene.addMesh(m);
         this.chunks.push(m);
       }
+      for (const p of this.pendingChunks.splice(0)) this.dropChunks(p.site, p.y);
     }, () => {});
   }
 
@@ -130,6 +145,7 @@ export class SnowWalk {
     const r = this.host.live() ? this.host.room() : null;
     const snow = !!r && isSnowRoom(r.inst);
     if (snow !== this.on) (snow ? this.enter() : this.leave());
+    this.audio.setInSnow(snow);
     this.chunksStep(dt);
     if (!snow || !r) {
       this.emit({ buried: null, crack: null, prompt: null, pose: null });
@@ -144,27 +160,30 @@ export class SnowWalk {
       lamp.intensity = LAMP.intensity;
       lamp.range = LAMP.range;
     }
-    // ── поза: глаз — по своду над головой
+    // ── поза — общая (C); здесь: камеру поставили выше пола лаза (переход, загрузка — стоя, над сводом лаза) — сразу на
+    // пол; скрючившись упёрся в низкий свод впереди — на четвереньки
+    const P = this.posture;
     const c = this.cam.position;
-    const feet = c.y - this.eye;
-    const room = this.ceiling(c.x, feet, c.z);
-    const want = Math.max(EYE_CRAWL - 0.08, Math.min(EYE_CROUCH, room - 0.2));
-    const eye = this.eye + (want - this.eye) * Math.min(1, dt * 6);
-    c.y += eye - this.eye;
-    this.eye = eye;
-    this.cam.ellipsoidOffset.y = 2 * ELL.y - eye;
-    const crouch = eye > 0.85;
-    this.cam.speed = this.col.phase === 'buried' ? 0 : crouch ? SPEED_CROUCH : SPEED_CRAWL;
-    // ── обвал: метры ползком в лазах
+    const floor = this.floorBelow(c.x, c.z);
+    if (floor !== null && c.y - P.eye > floor + 0.3) {
+      c.y = floor + P.eye + 0.02;
+      this.last = null;
+    }
+    if (P.pose !== 'crawl') {
+      const fwd = this.cam.getDirection(Vector3.Forward());
+      const ahead = this.ceiling(c.x + fwd.x * 0.45, P.feet, c.z + fwd.z * 0.45);
+      if (ahead < ROOM_CROUCH || this.ceiling(c.x, P.feet, c.z) < ROOM_CROUCH) P.set('crawl');
+    }
+    const crouch = P.pose !== 'crawl';
+    P.frozen = this.col.phase === 'buried';
     const p = new Vector3(c.x, 0, c.z);
     const moved = this.last ? Vector3.Distance(p, this.last) : 0;
     this.last = p;
     const px = c.x, py = -c.z;
-    for (const e of stepCollapse(this.spec, this.col, dt, den || moved > 1 ? 0 : moved, { x: px, y: py })) this.onEvent(e, r.id);
-    if (this.shake > 0) {
-      this.shake = Math.max(0, this.shake - dt * 1.5);
-      this.cam.rotation.z = (Math.random() - 0.5) * 0.03 * this.shake;
-    } else if (this.cam.rotation.z !== 0) this.cam.rotation.z = 0;
+    for (const e of stepCollapse(this.spec, this.col, dt, den || crouch || moved > 1 ? 0 : moved, { x: px, y: py })) this.onEvent(e, r.id);
+    // тряска (треск, обвал) — крен поверх хода
+    this.shake = Math.max(0, this.shake - dt * 1.5);
+    P.roll = this.shake > 0 ? (Math.random() - 0.5) * 0.03 * this.shake : 0;
     // ── подтаявший снег
     const roll = this.host.thawOf(r.id);
     let prompt: string | null = null;
@@ -182,6 +201,32 @@ export class SnowWalk {
     const crack = this.col.phase === 'warn' ? Math.min(1, this.col.t / this.spec.warnS) : null;
     if (buried !== null) prompt = `Засыпало! E — откапываться (${Math.round(buried * this.spec.digSelf)}/${this.spec.digSelf})`;
     this.emit({ buried, crack, prompt, pose: crouch ? 'crouch' : 'crawl' });
+    // звук: хруст по пути, треск — со стороны обвала, капли — по близости к пятну
+    let crackPan = 0;
+    const site = this.col.site;
+    if (site) {
+      const dx = site.x - c.x, dz = -site.y - c.z, l = Math.hypot(dx, dz) || 1;
+      const yaw = this.cam.rotation.y;
+      crackPan = (dx / l) * Math.cos(yaw) - (dz / l) * Math.sin(yaw);
+    }
+    let thaw = 0;
+    if (roll) {
+      const pc = this.patchCenter(r.inst)!;
+      thaw = Math.max(0, 1 - Math.hypot(px - pc.x, py - pc.y) / 4);
+    }
+    this.audio.update(dt, { moved: moved > 1 ? 0 : moved, crouch, buried: buried !== null, crack, crackPan, thaw });
+  }
+
+  /** Пол полости под (x, z): первое пересечение луча снизу вверх с коллайдерами снега (полость замкнута — снизу первым
+   *  встречается её пол); null — коллайдера под точкой нет. */
+  private floorBelow(x: number, z: number): number | null {
+    const ray = new Ray(new Vector3(x, -1.6, z), Vector3.Up(), 3.2);
+    let best: number | null = null;
+    for (const m of this.colliders) {
+      const hit = ray.intersectsMesh(m as Mesh, false);
+      if (hit.hit && (best === null || hit.distance < best)) best = hit.distance;
+    }
+    return best === null ? null : -1.6 + best;
   }
 
   /** Свод над (x, feet, z): ближайшее пересечение луча вверх с коллайдерами снега. */
@@ -203,24 +248,22 @@ export class SnowWalk {
   private enter() {
     this.on = true;
     const c = this.cam, s = this.scene;
-    this.saved = {
-      ell: c.ellipsoid.clone(),
-      off: c.ellipsoidOffset.clone(),
-      speed: c.speed,
-      fog: s.fogMode,
-      fogStart: s.fogStart,
-      fogEnd: s.fogEnd,
-      fogColor: s.fogColor.clone(),
-    };
-    // глаз — с прежней высоты (стоя 1.6) на уровень лаза: камера опускается, эллипсоид — низкий, ноги на месте
-    const was = c.ellipsoid.y * 2 - c.ellipsoidOffset.y;
-    const feet = c.position.y - was;
-    this.eye = EYE_CRAWL;
-    c.ellipsoid.copyFrom(ELL);
-    c.ellipsoidOffset.set(0, 2 * ELL.y - this.eye, 0);
-    c.position.y = feet + this.eye;
+    this.saved = { fog: s.fogMode, fogStart: s.fogStart, fogEnd: s.fogEnd, fogColor: s.fogColor.clone() };
+    // вошёл в снег — на четвереньки (эллипсоид сразу низкий, глаз опускается плавно)
+    this.posture.set('crawl');
     this.fog();
     this.last = null;
+    // свет у игрока — у глаз (настроение биома вешает его на 0.35 м выше: в лазе 0.9 м это над сводом — стены светились
+    // бы снаружи и в кадре была бы темнота); после всех onBeforeRender — перед кадром камеры
+    if (!this.lampObs) {
+      this.lampObs = s.onBeforeCameraRenderObservable.add(() => {
+        if (!this.on) return;
+        const lamp = s.getLightByName('mood:lamp') as PointLight | null;
+        if (!lamp) return;
+        const p = c.position, fwd = c.getDirection(Vector3.Forward());
+        lamp.position.set(p.x + fwd.x * 0.15, p.y - 0.04, p.z + fwd.z * 0.15);
+      });
+    }
   }
 
   /** Туман снега; поменял его кто-то другой (страница: «туман» в панели) — это его новое «как было», снег — поверх. */
@@ -241,14 +284,14 @@ export class SnowWalk {
 
   private leave() {
     this.on = false;
-    const c = this.cam, s = this.scene, sv = this.saved;
+    const s = this.scene, sv = this.saved;
     if (!sv) return;
-    const feet = c.position.y - this.eye;
-    c.ellipsoid.copyFrom(sv.ell);
-    c.ellipsoidOffset.copyFrom(sv.off);
-    c.speed = sv.speed;
-    c.position.y = feet + (sv.ell.y * 2 - sv.off.y);
-    c.rotation.z = 0;
+    // ушёл из снега (ангар, другой биом, облёт) — встаёт
+    this.posture.frozen = false;
+    this.posture.roll = 0;
+    if (this.posture.pose !== 'stand') this.posture.set('stand');
+    if (this.lampObs) s.onBeforeCameraRenderObservable.remove(this.lampObs);
+    this.lampObs = null;
     s.fogMode = sv.fog;
     s.fogStart = sv.fogStart;
     s.fogEnd = sv.fogEnd;
@@ -276,6 +319,11 @@ export class SnowWalk {
     if (e.type === 'fall') {
       this.crackFx(e.site, false);
       this.fallFx(e.site);
+      {
+        const c = this.cam.position;
+        const dx = e.site.x - c.x, dz = -e.site.y - c.z, l = Math.hypot(dx, dz) || 1, yaw = this.cam.rotation.y;
+        this.audio.fall((dx / l) * Math.cos(yaw) - (dz / l) * Math.sin(yaw), e.buried);
+      }
       this.host.collapse(e.site);
       this.shake = 1.5;
       return;
@@ -289,6 +337,7 @@ export class SnowWalk {
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
     if (this.col.phase === 'buried') {
       for (const ev of digCollapse(this.spec, this.col, 'self')) if (ev.type === 'freed') this.freed(ev.site);
+      this.audio.dig();
       this.shake = Math.max(this.shake, 0.35);
       return;
     }
@@ -300,10 +349,12 @@ export class SnowWalk {
       for (const ev of strikeThaw(s)) {
         if (ev.type === 'strike') {
           thawPatchOf(this.scene, id)?.crack(ev.stage);
+          this.audio.strike(ev.stage);
           this.shake = Math.max(this.shake, 0.6);
         }
         if (ev.type === 'break') {
           this.thawFx(null, false);
+          this.audio.breakIn();
           this.host.onBreak(id);
         }
       }
@@ -333,7 +384,7 @@ export class SnowWalk {
       this.crumbs?.stop();
       return;
     }
-    const y = this.cam.position.y - this.eye;
+    const y = this.cam.position.y - this.posture.eye;
     if (!this.crumbs) {
       const p = (this.crumbs = new ParticleSystem('snow:crumbs', 500, this.scene));
       p.particleTexture = puffTexture(this.scene);
@@ -357,7 +408,7 @@ export class SnowWalk {
   }
 
   private fallFx(site: CollapseSite) {
-    const y = this.cam.position.y - this.eye;
+    const y = this.cam.position.y - this.posture.eye;
     // облако снежной пыли
     if (!this.puff) {
       const p = (this.puff = new ParticleSystem('snow:puff', 300, this.scene));
@@ -380,8 +431,13 @@ export class SnowWalk {
     this.puff.emitter = new Vector3(site.x, y + 0.4, -site.y);
     this.puff.manualEmitCount = 220;
     this.puff.start();
-    // глыбы набора падают с наста и ложатся у пробки
-    for (let k = 0; k < this.chunks.length * 2 && this.chunks.length; k++) {
+    // глыбы набора падают с наста и ложатся у пробки (ещё грузятся — упадут, как загрузятся)
+    if (!this.chunks.length) this.pendingChunks.push({ site, y });
+    else this.dropChunks(site, y);
+  }
+
+  private dropChunks(site: CollapseSite, y: number) {
+    for (let k = 0; k < this.chunks.length * 2; k++) {
       const src = this.chunks[k % this.chunks.length];
       const m = src.clone(`snow:chunk${Date.now()}_${k}`, null)!;
       m.setEnabled(true);
@@ -470,6 +526,9 @@ export class SnowWalk {
     if (this.on) this.leave();
     if (this.obs) this.scene.onBeforeRenderObservable.remove(this.obs);
     window.removeEventListener('keydown', this.onKey);
+    window.removeEventListener('keydown', this.onGesture);
+    window.removeEventListener('pointerdown', this.onGesture);
+    this.audio.dispose();
     this.crumbs?.dispose();
     this.puff?.dispose();
     this.drips?.dispose();

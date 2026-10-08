@@ -11,7 +11,7 @@
 import { parseProject, serializeProject } from '../model/serialize';
 import type { Project } from '../model/types';
 import { WalkSession, type WalkOptions, type WorldOp } from '../view3d/walk';
-import { COOP_PROTO, hashText, type ClientMsg, type LobbyMeta, type PlayerInfo, type PlayerState, type SeqOp, type ServerMsg, type Welcome } from './protocol';
+import { COOP_PROTO, hashText, type ClientMsg, type LobbyMeta, type PlayerAct, type PlayerInfo, type PlayerState, type SeqOp, type ServerMsg, type Welcome } from './protocol';
 
 export type CoopStatus = 'connecting' | 'syncing' | 'online' | 'reconnecting' | 'closed' | 'error';
 
@@ -74,6 +74,8 @@ export class CoopSession {
   diverged = 0;
   readonly beforeOp = new Set<(e: CoopOpEvent) => void>();
   readonly afterOp = new Set<(e: CoopOpEvent, res: string | null) => void>();
+  /** другой игрок сделал что-то со мной (act: dig — откапывает засыпанного) */
+  readonly onAct = new Set<(from: string, a: PlayerAct) => void>();
 
   private ws: WebSocket | null = null;
   private readonly WS: typeof WebSocket;
@@ -216,6 +218,9 @@ export class CoopSession {
         if (p) p.state = m.s;
         return;
       }
+      case 'act':
+        for (const f of this.onAct) f(m.from, m.a);
+        return;
       case 'join':
         this.players.set(m.player.id, m.player);
         this.changed();
@@ -354,6 +359,11 @@ export class CoopSession {
       this.pending.set(req, res);
       if (this.status !== 'online' || !this.raw(msg)) this.outbox.push(msg);
     });
+  }
+
+  /** Действие над другим игроком (dig — откапывать засыпанного); без связи — не уходит. */
+  act(to: string, a: PlayerAct) {
+    if (this.status === 'online') this.raw({ t: 'act', to, a });
   }
 
   /** Положение своего игрока (ретранслируется остальным). */

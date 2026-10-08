@@ -20,11 +20,14 @@ export interface HangarRequest {
   onExit(): void;
 }
 
+const SOUND_KEY = 'room-forge/hangar-sound';
+
 export function HangarLayer(props: { viewer: BlockoutViewer | null; req: HangarRequest; onClose?(): void }) {
   const { viewer, req } = props;
   const [hud, setHud] = useState<HangarHud | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [debug, setDebug] = useState(false);
+  const [sound, setSoundS] = useState(() => localStorage.getItem(SOUND_KEY) !== '0');
   const sceneRef = useRef<HangarScene | null>(null);
   const exitRef = useRef(req.onExit);
   exitRef.current = req.onExit;
@@ -45,6 +48,7 @@ export function HangarLayer(props: { viewer: BlockoutViewer | null; req: HangarR
           seedKey: req.seedKey,
           roll: req.roll,
           fall: req.mode === 'walk',
+          sound,
           onHud: (h) => alive && setHud(h),
           onExit: () => {
             if (alive) exitRef.current();
@@ -72,11 +76,22 @@ export function HangarLayer(props: { viewer: BlockoutViewer | null; req: HangarR
     };
   }, [viewer, req.key]);
 
+  const setSound = (on: boolean) => {
+    setSoundS(on);
+    try {
+      localStorage.setItem(SOUND_KEY, on ? '1' : '0');
+    } catch {}
+    sceneRef.current?.setSound(on);
+  };
+
   const h = hud;
   const error = err ?? h?.error ?? null;
   return (
     <div className="v3-loc">
       <div className="float v3-loc-tools">
+        <button className={'btn sm' + (sound ? ' on' : '')} onClick={() => setSound(!sound)} title="Звук локации (WebAudio)">
+          звук: {sound ? 'вкл' : 'выкл'}
+        </button>
         <label className="check" title="Фаза сцены и зона мини-босса">
           <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
           отладка

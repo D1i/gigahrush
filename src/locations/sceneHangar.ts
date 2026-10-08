@@ -12,6 +12,8 @@
 //  • Игрок: своя ходьба (WASD, мышь, Shift — бегом), коллизии в плане (коробки), высота пола — куча (конус) или 0.
 //    Начало — падение (fallPose): пелена, полёт с крыши, удар, лежит, встаёт; управление — после.
 //  • Свет: натриевые лампы под фермами, печь, слабый холодный свет из дыры, красный отсвет у тали.
+//  • Звук — ./hangarAudio.ts: свист падения, удар о кучу и звон в ушах, гул машин, печь, вентиляторы, конвейер,
+//    лязги, у тали — гул и скрип цепи, шаги (по куче — железо).
 import { Scene } from '@babylonjs/core/scene';
 import { UniversalCamera } from '@babylonjs/core/Cameras/universalCamera';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
@@ -41,7 +43,8 @@ import '@babylonjs/loaders/glTF/2.0/Extensions/KHR_materials_emissive_strength';
 import hangarUrl from './assets/hangar.glb?url';
 import { collide2, type Box2 } from './stairLoop';
 import { puffTexture } from './liftTextures';
-import { fallPose, hangarBossSign, rollHangar, FALL_ROOF_M, FALL_LIE_EYE, FALL_TOTAL_S, type HangarRoll, type HangarSpec } from './hangar';
+import { fallPose, hangarBossSign, rollHangar, FALL_BREAK_S, FALL_LAND_S, FALL_ROOF_M, FALL_LIE_EYE, FALL_TOTAL_S, type HangarRoll, type HangarSpec } from './hangar';
+import { HangarAudio } from './hangarAudio';
 
 export interface HangarHud {
   loading: boolean;
@@ -61,6 +64,8 @@ export interface HangarSceneOptions {
   roll?: HangarRoll;
   /** начать сразу с падения (из «Прогулки» — пятно пробито); false — стоя у кучи (просмотр комнаты) */
   fall?: boolean;
+  /** звук (по умолчанию — да) */
+  sound?: boolean;
   onHud?(h: HangarHud): void;
   onExit?(): void;
 }
@@ -154,6 +159,7 @@ export class HangarScene {
   ) {
     this.spec = opts.spec;
     this.roll = opts.roll ?? rollHangar(opts.spec, opts.seedKey);
+    this.audio = new HangarAudio(opts.sound !== false);
     const scene = (this.scene = new Scene(engine));
     scene.clearColor = new Color4(0.01, 0.01, 0.012, 1);
     scene.ambientColor = new Color3(0, 0, 0);
@@ -240,10 +246,19 @@ export class HangarScene {
     this.keys.clear();
   }
 
+  /** звук сцены; запускается по жесту (begin) */
+  audio!: HangarAudio;
+
+  setSound(on: boolean) {
+    this.audio.setEnabled(on);
+    if (on) void this.audio.start();
+  }
+
   async begin() {
     if (this.disposed) return;
     if (!this.engine.isPointerLock) this.engine.enterPointerlock();
     this.started = true;
+    void this.audio.start();
     this.emitHud(true);
   }
 
@@ -609,8 +624,11 @@ export class HangarScene {
       const f = Math.sin(this.time * (3 + l.seed) + l.seed * 7) * Math.sin(this.time * 0.37 * l.seed + l.seed);
       l.light.intensity = l.base * (f > 0.93 ? 0.25 : 1);
     }
+    const was = { x: this.pos.x, z: this.pos.z };
     if (this.fallT !== null) {
+      const t0 = this.fallT;
       this.fallT += dt;
+      if (t0 < FALL_LAND_S && this.fallT >= FALL_LAND_S) this.audio.land();
       if (this.fallT >= FALL_TOTAL_S) {
         this.fallT = null;
         this.eyeY = HEAP_TOP + EYE;
@@ -618,6 +636,16 @@ export class HangarScene {
       }
     } else if (this.started || this.manual) this.move(dt, input ?? this.readKeys());
     const inBoss = this.pos.z > BOSS_Z;
+    const ft = this.fallT;
+    this.audio.update(dt, {
+      pos: { x: this.pos.x, z: this.pos.z },
+      yaw: this.camera.rotation.y,
+      falling: ft !== null,
+      fallK: ft !== null && ft > FALL_BREAK_S && ft < FALL_LAND_S ? (ft - FALL_BREAK_S) / (FALL_LAND_S - FALL_BREAK_S) : 0,
+      speed: dt > 0 ? Math.hypot(this.pos.x - was.x, this.pos.z - was.z) / dt : 0,
+      metal: hangarGround(this.pos.x, this.pos.z) > 0.2,
+      boss: inBoss,
+    });
     this.bossLight.intensity = (inBoss ? 1.4 : 0.5) * (0.75 + 0.25 * Math.sin(this.time * 2.1));
     if (inBoss && !this.bossSeen) {
       this.bossSeen = true;
@@ -729,6 +757,7 @@ export class HangarScene {
     window.removeEventListener('blur', this.onBlur);
     document.removeEventListener('pointerlockchange', this.onLock);
     this.snow?.dispose();
+    this.audio.dispose();
     this.scene.dispose();
     this.container = null;
   }

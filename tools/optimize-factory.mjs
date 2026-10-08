@@ -176,6 +176,10 @@ function* subtree(node, stop) {
   for (const c of node.listChildren()) if (!stop.has(c)) yield* subtree(c, stop);
 }
 
+/** Капли течи: в наборе — материал болотной воды с текстурой, а UV у капель нулевые (один тёмный тексель) — свой
+ *  светлый материал со свечением (PropModels рисует его без света сцены), чтобы капли в тёмном цеху блестели. */
+const isDrop = (n) => /^droplet_/.test(n.getName());
+
 /** Треугольники узлов nodes в системе R · world (покой): material → { p, n, uv }. */
 function bake(nodes, R, bucket = new Map()) {
   for (const n of nodes) {
@@ -187,7 +191,7 @@ function bake(nodes, R, bucket = new Map()) {
       const P = prim.getAttribute('POSITION'), Nn = prim.getAttribute('NORMAL'), U = prim.getAttribute('TEXCOORD_0');
       const idx = prim.getIndices();
       const count = idx ? idx.getCount() : P.getCount();
-      const mat = material(prim.getMaterial());
+      const mat = isDrop(n) ? plainMaterial('drop', [0.55, 0.66, 0.72], [0.42, 0.52, 0.6]) : material(prim.getMaterial());
       if (!bucket.has(mat)) bucket.set(mat, { p: [], n: [], uv: [] });
       const out = bucket.get(mat);
       const vert = (k) => {

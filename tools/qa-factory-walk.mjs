@@ -188,7 +188,8 @@ try {
       s.place(z.x - 0.6, z.z - 2.2, -0.3, -0.1);
     });
     await page.waitForTimeout(700);
-    const prompt = await page.evaluate(() => document.querySelector('.v3-lift-prompt')?.textContent ?? window.__rfSwamp.qaState().hud.prompt);
+    // подсказка — из состояния сцены (HUD слоя обновляется раз в 150 мс, на программном рендере кадры редкие)
+    const prompt = await page.evaluate(() => window.__rfSwamp.qaState().hud.prompt);
     ok('C у шестерни подсказка «встань на зуб»', /зуб/.test(prompt ?? ''), prompt);
     await page.screenshot({ path: out + 'factory-4-gear.png' });
     // встать на зуб — сценарий (живьём, 20 с)
@@ -199,10 +200,10 @@ try {
     await page.waitForFunction(() => window.__rfSwamp.qaState().endT !== null, null, { timeout: 10000 });
     await page.waitForTimeout(2200);
     await page.screenshot({ path: out + 'factory-5-press.png' });
-    await page.waitForFunction(() => window.__rfSwamp.qaState().place === 'base', null, { timeout: 15000 });
+    await page.waitForFunction(() => window.__rfSwamp.qaState().place === 'base', null, { timeout: 90000 });
     await page.waitForTimeout(3200);
     await page.screenshot({ path: out + 'factory-6-emerge.png' });
-    await page.waitForFunction(() => (window.__rfSwamp.qaState().endT ?? 0) > 20.2, null, { timeout: 30000 });
+    await page.waitForFunction(() => (window.__rfSwamp.qaState().endT ?? 0) > 20.2, null, { timeout: 150000 });
     await page.waitForTimeout(500);
     const end = await page.evaluate(() => ({ h1: document.querySelector('.v3-end h1')?.textContent, text: document.querySelector('.v3-end')?.textContent, btns: [...document.querySelectorAll('.v3-end-btns button')].map((b) => b.textContent) }));
     const unit = await page.evaluate(() => window.__rfSwamp.qaState().hud.titles.lines[1]);
@@ -216,11 +217,14 @@ try {
     // ещё раз — и «Новая игра»
     await page.evaluate((id) => window.__rf3dFold.goTo(id), swamp);
     await page.waitForFunction(() => !!window.__rfSwamp?.ready, null, { timeout: 300000 });
+    // второй раз сценарий — прокруткой (первый прошёл в реальном времени): на программном рендере 20 с сцены — минуты
     await page.evaluate(() => {
       const s = window.__rfSwamp, z = s.qaState().stepZone;
       s.place(z.x, z.z);
+      s.advance(0.1);
+      s.advance(21.5);
     });
-    await page.waitForFunction(() => (window.__rfSwamp?.qaState().endT ?? 0) > 20.2, null, { timeout: 40000 });
+    await page.waitForFunction(() => (window.__rfSwamp?.qaState().endT ?? 0) > 20.2 && !!document.querySelector('.v3-end-btns'), null, { timeout: 60000 });
     const keyBefore = await page.evaluate(() => window.__rfWalk.key);
     await page.getByRole('button', { name: 'Новая игра' }).click();
     await page.waitForFunction((k) => window.__rfWalk && window.__rfWalk.key !== k && window.__rf3dFold?.portal?.isActive, keyBefore, { timeout: 180000 });

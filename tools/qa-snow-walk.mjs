@@ -32,7 +32,7 @@ for (let k = 0; k < 120 && !/ready in|Local:/.test(serverLog); k++) await new Pr
 const BASE = `http://localhost:${PORT}/`;
 const browser = await chromium.launch({
   executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'],
 });
 const results = [];
 const ok = (name, cond, info = '') => {
@@ -137,6 +137,8 @@ try {
   ok('A оболочка снега и коллайдер куска построены', shell.shell > 500 && shell.col > 100, JSON.stringify(shell));
   ok('A поза в снегу: низкий эллипсоид, туман, медленно', a0.ell < 0.35 && a0.fog === 3 && a0.speed < 0.15, `ell ${a0.ell} fog ${a0.fog} speed ${a0.speed}`);
   await page.screenshot({ path: out + 'snow-1-den.png' });
+  // звук снега (в игре — первым нажатием клавиши / кликом)
+  await page.evaluate(() => window.__rfSnow.audio.start());
 
   // ═════════════════ B: лаз ═════════════════
   const g0 = await roomGeo(page, a0.room);
@@ -170,6 +172,26 @@ try {
     const d = g.doors.find((x) => x.to) ?? g.doors[0];
     if (d) await lookAt(page, d.x, d.z);
     await frames(page, 20);
+  }
+  const au1 = await page.evaluate(() => ({ running: window.__rfSnow.audio.running, ...window.__rfSnow.audio.counters }));
+  ok('B звук: снег слышно, хруст ползком', au1.running && au1.crunch > 3, JSON.stringify(au1));
+  // как игрок: зажатая W в лазе — на четвереньках (глаз ~0.5 м), руки в кадре, покачивание хода
+  {
+    await page.locator('canvas').first().click({ position: { x: 640, y: 400 } }).catch(() => {});
+    await page.keyboard.down('KeyW');
+    const rolls = [];
+    for (let k = 0; k < 6; k++) {
+      await page.waitForTimeout(300);
+      rolls.push(await page.evaluate(() => window.__rf3d.fps.rotation.z));
+    }
+    const pose = await page.evaluate(() => ({
+      base: window.__rfSnow.base, eye: window.__rfSnow.eye, tags: (() => { const d = window.__rf3dFold; const r = d.portal?.current ?? d.current.center; return window.__rfWalk.rx.instances.find((i) => i.id === r)?.roomTags; })(),
+      hands: window.__rf3d.scene.getTransformNodeByName('snow:hands')?.isEnabled() ?? false,
+    }));
+    await page.screenshot({ path: out + 'snow-3b-crawl-hands.png' });
+    await page.keyboard.up('KeyW');
+    const den = pose.tags?.includes('берлога');
+    ok('B зажатая W: на четвереньках (глаз ~0.5 м), руки в кадре, покачивание', den || (pose.base < 0.6 && pose.hands && Math.max(...rolls.map(Math.abs)) > 0.005), JSON.stringify({ ...pose, rolls: rolls.map((x) => +x.toFixed(3)) }));
   }
   ok('B мир растёт по лазам — только снег', b1.n > a0.n && (await page.evaluate(() => window.__rfWalk.world.run().instances.every((i) => i.roomId.startsWith('snow_')))), `комнат ${a0.n} → ${b1.n}, сейчас ${b1.roomId}`);
   await page.screenshot({ path: out + 'snow-3-tunnel.png' });
@@ -222,6 +244,8 @@ try {
     }, c0.site);
     ok('C обвал: проём завален навсегда (collapsed), глыбы набора упали', c1.state === 'collapsed' && c1.flag && c1.chunks > 0, JSON.stringify(c1));
     ok('C успел уползти — не засыпан', c1.phase === 'calm', c1.phase);
+    const au2 = await page.evaluate(() => window.__rfSnow.audio.counters);
+    ok('C звук: треск свода и удар обвала', au2.crack > 2 && au2.fall > 0, JSON.stringify(au2));
     await frames(page, 30);
     await page.screenshot({ path: out + 'snow-5-collapsed.png' });
 
@@ -264,6 +288,7 @@ try {
       await frames(page, 10);
       const d1 = await page.evaluate(() => ({ phase: window.__rfSnow.collapse.phase, white: !!document.querySelector('.v3-snow-buried') }));
       ok('C E ×12 — откопался', d1.phase === 'calm' && !d1.white, JSON.stringify(d1));
+      ok('C звук откопки', (await page.evaluate(() => window.__rfSnow.audio.counters.dig)) >= 12);
     }
   }
 
@@ -321,6 +346,7 @@ try {
     await page.waitForFunction(() => window.__rfHangar?.qaState().hud.phase === 'walk', null, { timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(300);
     const h1 = await page.evaluate(() => window.__rfHangar?.qaState());
+    ok('D звук ангара: удар о кучу', (await page.evaluate(() => window.__rfHangar?.audio.counters.land ?? 0)) > 0);
     ok('D упал на кучу и встал', h1?.hud.phase === 'walk' && h1.eyeY > h1.heapTop + 1.2, JSON.stringify({ phase: h1?.hud.phase, eye: h1?.eyeY }));
     await page.screenshot({ path: out + 'snow-10-hangar.png' });
     // к воротам: зона мини-босса, выход

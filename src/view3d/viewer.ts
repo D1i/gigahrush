@@ -20,6 +20,7 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import '@babylonjs/core/Collisions/collisionCoordinator';
 import { buildBabylonBlockout, type BabylonBlockout, type BlockoutMeta } from '../blockout/babylon';
 import { PropModels } from './propModels';
+import { Posture, type Pose } from './posture';
 import type { BlockoutModel, DeadEnd, Rect } from '../blockout/types';
 
 export type CamMode = 'orbit' | 'fps';
@@ -34,6 +35,8 @@ export interface ViewerCallbacks {
   onPointerLock?(locked: boolean): void;
   /** догрузились модели предметов (props): болванки, построенные до этого, — с боксами; стоит пересобрать */
   onPropsReady?(): void;
+  /** от первого лица: поза сменилась (C — на четвереньки / встать) или встать нельзя (note) */
+  onPosture?(pose: Pose, note: string | null): void;
 }
 
 /** Глаза на 1.6 м: эллипсоид 0.3/0.85/0.3 с центром на 0.75 м ниже камеры → низ ровно у пола. */
@@ -79,6 +82,8 @@ export class BlockoutViewer {
   readonly props: PropModels;
   readonly orbit: ArcRotateCamera;
   readonly fps: UniversalCamera;
+  /** поза от первого лица: стоя / скрючившись / на четвереньках (C) — src/view3d/posture.ts */
+  readonly posture: Posture;
   mode: CamMode = 'orbit';
   /** части сцены; bo и model — первая часть (для одной модели — она сама) */
   parts: ViewPartBuilt[] = [];
@@ -99,6 +104,13 @@ export class BlockoutViewer {
   /** спец-локация поверх: пока задана, движок рисует её, а камеры болванки не слушают ввод */
   private overlay: ViewerOverlay | null = null;
   private onLock = () => this.cb.onPointerLock?.(document.pointerLockElement === this.canvas);
+  /** C — на четвереньки / встать (от первого лица, без спец-сцены поверх) */
+  private onPoseKey = (e: KeyboardEvent) => {
+    if (e.code !== 'KeyC' || e.repeat || e.ctrlKey || e.metaKey || e.altKey || this.mode !== 'fps' || this.overlay) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    this.posture.toggle();
+  };
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -154,6 +166,9 @@ export class BlockoutViewer {
     fps.ellipsoidOffset = ELLIPSOID_OFFSET.clone();
     fps.checkCollisions = true;
     fps.applyGravity = true;
+    this.posture = new Posture(scene, fps, () => this.mode === 'fps' && !this.overlay);
+    this.posture.onChange = (p, note) => this.cb.onPosture?.(p, note);
+    window.addEventListener('keydown', this.onPoseKey);
 
     scene.activeCamera = orbit;
     orbit.attachControl(true);
@@ -427,7 +442,7 @@ export class BlockoutViewer {
           }
       if (best) [sx, sy] = best;
     }
-    this.fps.position.set(sx, z + EYE + 0.05, -sy);
+    this.fps.position.set(sx, z + this.posture.eye + 0.05, -sy);
     // смотреть на ближайший проём комнаты, иначе через всю комнату — на самую дальнюю точку пола
     const op = m.openings
       .filter((o) => o.a.inst === room.inst || o.b.inst === room.inst)
@@ -437,7 +452,7 @@ export class BlockoutViewer {
       .flatMap((r): [number, number][] => [center(r), [r.x0 + 0.3, r.y0 + 0.3], [r.x1 - 0.3, r.y0 + 0.3], [r.x0 + 0.3, r.y1 - 0.3], [r.x1 - 0.3, r.y1 - 0.3]])
       .sort((a, b) => Math.hypot(b[0] - sx, b[1] - sy) - Math.hypot(a[0] - sx, a[1] - sy))[0];
     const look = op ?? far ?? [sx + 1, sy];
-    this.fps.setTarget(new Vector3(look[0], z + EYE - 0.1, -look[1]));
+    this.fps.setTarget(new Vector3(look[0], z + this.posture.eye - 0.1, -look[1]));
     this.fps.cameraDirection.setAll(0);
   }
 
@@ -543,6 +558,8 @@ export class BlockoutViewer {
     if (this.disposed) return;
     this.disposed = true;
     document.removeEventListener('pointerlockchange', this.onLock);
+    window.removeEventListener('keydown', this.onPoseKey);
+    this.posture.dispose();
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
     this.ro.disconnect();
     this.engine.stopRenderLoop();

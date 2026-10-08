@@ -43,6 +43,16 @@ describe('coop: хаб лобби', () => {
     a.send({ t: 'state', s: { room: 'i1', p: [1, 1.6, 2], yaw: 0, pitch: 0, loc: null, fps: true } });
     expect(b.last('state')).toMatchObject({ id: 'A', s: { room: 'i1' } });
     expect(a.last('state')).toBeUndefined();
+    // адресное действие — только адресату
+    const c = client(hub);
+    c.send(hello('C'));
+    a.send({ t: 'act', to: 'B', a: 'dig' });
+    expect(b.last('act')).toEqual({ t: 'act', from: 'A', a: 'dig' });
+    expect(c.last('act')).toBeUndefined();
+    expect(a.last('act')).toBeUndefined();
+    a.send({ t: 'act', to: 'A', a: 'dig' });
+    a.send({ t: 'act', to: 'нет-такого', a: 'dig' });
+    expect(a.last('act')).toBeUndefined();
     // мусор — молча мимо
     a.send({ t: 'op', op: 'x' });
     a.send({ t: 'nope' });

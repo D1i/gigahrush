@@ -24,7 +24,14 @@ export interface PlayerState {
   loc: string | null;
   /** от первого лица (в облёте аватар стоит, где был) */
   fps: boolean;
+  /** глаза над полом, м (нет — 1.6: стоя; в снежных лазах — ползком ~0.5, скрючившись ~1.15) */
+  eye?: number;
+  /** засыпан обвалом в снегу — напарник рядом может откапывать (E) */
+  buried?: boolean;
 }
+
+/** Действие игрока над другим игроком (адресное, без журнала мира): dig — откапывать засыпанного. */
+export type PlayerAct = 'dig';
 
 export interface PlayerInfo {
   id: string;
@@ -62,6 +69,8 @@ export type ClientMsg =
     }
   | { t: 'op'; req: number; op: WorldOp }
   | { t: 'state'; s: PlayerState }
+  /** действие над игроком to (сервер передаёт только ему) */
+  | { t: 'act'; to: string; a: PlayerAct }
   | { t: 'checkpoint'; seq: number; save: string; opened: string[]; fp: string }
   | { t: 'project' }
   | { t: 'bye' };
@@ -85,6 +94,7 @@ export type ServerMsg =
   | Welcome
   | ({ t: 'op' } & SeqOp)
   | { t: 'state'; id: string; s: PlayerState }
+  | { t: 'act'; from: string; a: PlayerAct }
   | { t: 'join'; player: PlayerInfo }
   | { t: 'leave'; id: string }
   | { t: 'host'; id: string }
