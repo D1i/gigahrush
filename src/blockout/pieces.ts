@@ -93,6 +93,7 @@ export function pieceOf(model: BlockoutModel, id: string): BlockoutModel {
   const ceilings = model.ceilings.filter(mine);
   const openings = model.openings.filter((o) => o.a.inst === id || o.b.inst === id);
   const deadEnds = model.deadEnds.filter((d) => d.inst === id);
+  const doors = model.doors?.filter((d) => d.inst === id);
   const faces = model.faces.filter((f) => f.inst === id);
   const props = model.props.filter((p) => p.inst === id);
   const rooms = model.rooms.filter((r) => r.inst === id);
@@ -122,6 +123,7 @@ export function pieceOf(model: BlockoutModel, id: string): BlockoutModel {
     rooms,
     stats: { ...model.stats, floorCells, solids: solids.length, openings: openings.length, deadEnds: deadEnds.length },
     issues: model.issues.filter((s) => re.test(s)),
+    ...(doors ? { doors } : {}),
   };
 }
 
@@ -238,6 +240,7 @@ export function mergePieces(pieces: BlockoutModel[]): BlockoutModel {
     props: all((m) => m.props),
     rooms: all((m) => m.rooms),
     issues: all((m) => m.issues),
+    ...(pieces.some((m) => m.doors) ? { doors: all((m) => m.doors ?? []) } : {}),
   };
 }
 

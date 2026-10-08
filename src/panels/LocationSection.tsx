@@ -1,15 +1,17 @@
-// Секция инспектора «Спец-локация»: вид локации комнаты и параметры «Бесконечной лестницы», «Ржавого лифта»
-// и «Логова босса» (механика — src/locations/, правила и формулы — docs/LOCATIONS.md).
-import type { LairSpec, LiftSpec, LocationSpec, Room, StairwellSpec } from '../model/types';
+// Секция инспектора «Спец-локация»: вид локации комнаты и параметры «Бесконечной лестницы», «Ржавого лифта»,
+// «Логова босса» и финала «Болото на крыше» (механика — src/locations/, правила и формулы — docs/LOCATIONS.md).
+import type { HangarSpec, LairSpec, LiftSpec, LocationSpec, Room, StairwellSpec, SwampSpec } from '../model/types';
 import { grabTime, LOCATION_KINDS, newStairwell, STAIRWELL_LIMITS, stairwellRule } from '../locations/stairwell';
 import { LIFT_FLOOR_M, LIFT_LIMITS, LIFT_PUMP_RATE, liftRule, newLift } from '../locations/lift';
 import { lairSign, newLair } from '../locations/lair';
+import { newSwamp, swampRule } from '../locations/swampEnd';
+import { hangarBossSign, hangarRule, newHangar } from '../locations/hangar';
 import { NumField, Section, Select, TextField } from '../ui/kit';
 import { mutRoom } from './util';
 
 type Kind = 'none' | LocationSpec['kind'];
 
-const NEW: Record<LocationSpec['kind'], () => LocationSpec> = { stairwell: newStairwell, lift: newLift, lair: newLair };
+const NEW: Record<LocationSpec['kind'], () => LocationSpec> = { stairwell: newStairwell, lift: newLift, lair: newLair, hangar: newHangar, swamp: newSwamp };
 
 export function LocationSection({ room }: { room: Room }) {
   const loc = room.location ?? null;
@@ -32,6 +34,10 @@ export function LocationSection({ room }: { room: Room }) {
         <LiftFields room={room} spec={loc} />
       ) : loc?.kind === 'lair' ? (
         <LairFields room={room} spec={loc} />
+      ) : loc?.kind === 'hangar' ? (
+        <HangarFields room={room} spec={loc} />
+      ) : loc?.kind === 'swamp' ? (
+        <SwampFields room={room} spec={loc} />
       ) : (
         <div className="hint">
           Вход в такую комнату переводит игрока в особую сцену со своей механикой. В плане генератора это обычная комната
@@ -305,6 +311,101 @@ function LairFields({ room, spec }: { room: Room; spec: LairSpec }) {
       </div>
       <div className="pn-loc-rule">
         <b>Табличка.</b> {lairSign(spec)}
+      </div>
+    </>
+  );
+}
+
+function HangarFields({ room, spec }: { room: Room; spec: HangarSpec }) {
+  const upd = (key: string, fn: (s: HangarSpec) => void) =>
+    mutRoom(room.id, (r) => {
+      if (r.location?.kind === 'hangar') fn(r.location);
+    }, { key: `room-loc-${key}:${room.id}` });
+  const range = (key: 'hits' | 'floorsDown', i: 0 | 1, v: number, lo: number, hi: number) =>
+    upd(key, (s) => {
+      const a: [number, number] = [s[key][0], s[key][1]];
+      a[i] = Math.min(hi, Math.max(lo, Math.round(v)));
+      s[key] = a[0] <= a[1] ? a : [a[1], a[0]];
+    });
+  return (
+    <>
+      <Range label="Ударов по подтаявшему снегу" value={spec.hits} lim={[1, 30]} int title="Сколько раз ударить (E) по пятну, чтобы провалиться в ангар" onChange={(i, v) => range('hits', i, v, 1, 30)} />
+      <Range label="Ворота ангара — этажей ниже" value={spec.floorsDown} lim={[1, 50]} int title="На сколько этажей ниже комната за воротами ангара (ангар — под снегом)" onChange={(i, v) => range('floorsDown', i, v, 1, 50)} />
+      <TextField
+        label="Мини-босс (id для движка)"
+        value={spec.boss}
+        placeholder="пусто — «здесь будет мини-босс»"
+        onChange={(v) => upd('boss', (s) => (s.boss = v.slice(0, 64)))}
+      />
+      <NumField
+        label="Темнота цеха"
+        value={Math.round(spec.darkness * 100)}
+        min={0}
+        max={100}
+        step={5}
+        digits={0}
+        suffix="%"
+        title="0 — светло; 100% — только лампы и печь"
+        onChange={(v) => upd('dark', (s) => (s.darkness = v / 100))}
+      />
+      <div className="hint">
+        В снежных ходах — «Подтаявшая берлога» (хаб сети: через 60–150 м ползком). Сцена ангара открывается не при входе, а
+        когда пятно в полу пробито: падение сквозь крышу в кучу мусора; ворота цеха — выход (этажом ниже; есть биом «Завод» —
+        в его хаб).
+      </div>
+      <div className="pn-loc-rule">
+        <b>Правило для игрока.</b> {hangarRule(spec)} <b>Табличка.</b> {hangarBossSign(spec)}
+      </div>
+    </>
+  );
+}
+
+function SwampFields({ room, spec }: { room: Room; spec: SwampSpec }) {
+  const upd = (key: string, fn: (s: SwampSpec) => void) =>
+    mutRoom(room.id, (r) => {
+      if (r.location?.kind === 'swamp') fn(r.location);
+    }, { key: `room-loc-${key}:${room.id}` });
+  return (
+    <>
+      <NumField
+        label="Шестерня: зуб за"
+        value={spec.toothS}
+        min={0.5}
+        max={30}
+        step={0.1}
+        digits={1}
+        suffix="с"
+        title="За сколько секунд огромная шестерня проворачивается на один зуб (рывком), пока игрок ходит по крыше"
+        onChange={(v) => upd('tooth', (s) => (s.toothS = Math.min(30, Math.max(0.5, v))))}
+      />
+      <Range
+        label="Номер части"
+        value={spec.unit}
+        lim={[1, 99999]}
+        int
+        title="Номер войсковой части на воротах — случайное целое в диапазоне (по сиду мира)"
+        onChange={(i, v) => upd('unit', (s) => {
+          s.unit[i] = Math.round(v);
+          if (s.unit[0] > s.unit[1]) s.unit = [s.unit[1], s.unit[0]];
+        })}
+      />
+      <NumField
+        label="Темнота крыши"
+        value={Math.round(spec.darkness * 100)}
+        min={0}
+        max={100}
+        step={5}
+        digits={0}
+        suffix="%"
+        title="0 — светлее (луна и туман), 100% — почти ночь"
+        onChange={(v) => upd('dark', (s) => (s.darkness = v / 100))}
+      />
+      <div className="hint">
+        Финал игры. Само не растёт по весу: в биоме «Завод» эту комнату ставит правило влажности — когда мокрый ход дошёл до
+        болота. Вход — метка factory (проход цеха 2 м).
+      </div>
+      <div className="pn-loc-rule">
+        <b>Правило для игрока.</b> {swampRule(spec)}
       </div>
     </>
   );

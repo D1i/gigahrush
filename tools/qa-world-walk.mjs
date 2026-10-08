@@ -156,7 +156,8 @@ const setup = async (page, seed, world, kinds) => {
     async ({ world, kinds }) => {
       const { mutate } = await import('/src/model/store.ts');
       mutate((p) => {
-        Object.assign(p.world, world);
+        // переходы здесь — спец-комнаты (лестница, лифт), не площадки
+        Object.assign(p.world, { trLanding: 0, ...world });
         for (const r of p.rooms) if (r.location && r.location.kind !== 'lair') r.gen.weight = kinds.includes(r.location.kind) ? 1 : 0;
       });
       window.__rfLiftSpec = { boardChance: 0, boardFirst: false };

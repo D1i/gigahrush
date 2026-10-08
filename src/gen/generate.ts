@@ -28,6 +28,16 @@ import { CellGrid } from './grid';
 import { PORTAL, portalOf, scanSight, seedsWithinLimit, sightLimits, type EdgeSet, type OwnerFn, type SightResult } from './sight';
 import { WalkRoll, walkWarning, type ContentGroup } from './walk';
 
+/** Тег «только в биоме»: комната растёт только в биомах бесконечного мира («Прогулка» с квартирами, биом с этой
+ *  комнатой). В прогонах («Прогон», евклидов и складчатый) и в прежней прогулке без биомов её нет — сеть проходов
+ *  сарая не вылезает за маршем подъезда, а миры без неё — бит в бит прежние. */
+export const BIOME_ONLY_TAG = 'только-биом';
+
+/** Проект без комнат «только в биоме» (их нет — тот же объект). */
+export function withoutBiomeOnly(p: Project): Project {
+  return p.rooms.some((r) => r.tags.includes(BIOME_ONLY_TAG)) ? { ...p, rooms: p.rooms.filter((r) => !r.tags.includes(BIOME_ONLY_TAG)) } : p;
+}
+
 // ───────────────────────── Упаковка клеток в число ─────────────────────────
 // Ключ (x + 16384)·32768 + (y + 16384) — малое целое V8 (< 2^30), Set<number> быстрее строк.
 // Допустимый мир: |x|, |y| ≤ LIMIT; экземпляры за пределами считаются коллизией.
@@ -792,8 +802,9 @@ function stopWarnings(st: RunStop, placed: number, settings: GeneratorSettings, 
 }
 
 /** Сгенерировать прогон. Детерминирован по (проект, settings.seed). Не мутирует проект. */
-export function generateRun(p: Project, overrides?: Partial<GeneratorSettings>): Run {
+export function generateRun(p0: Project, overrides?: Partial<GeneratorSettings>): Run {
   const t0 = now();
+  const p = withoutBiomeOnly(p0);
   const settings = sanitize(p, overrides);
   const root = makeRng(settings.seed);
   const warnings: string[] = [];

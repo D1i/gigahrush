@@ -24,9 +24,11 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
+import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
 import type { BaseTexture } from '@babylonjs/core/Materials/Textures/baseTexture';
-import type { BlockoutModel, DeadEnd, Rect, RunFinish, Solid, SolidKind, Surface, WallFace } from './types';
+import { DOOR_STYLE_BY_ID, doorGeometry, type DoorLeafGeo, type DoorPart, type DoorStyle, type HandleKind } from './doors';
+import type { BlockoutModel, DeadEnd, DoorSlot, Rect, RunFinish, Solid, SolidKind, Surface, WallFace } from './types';
 
 export type BlockoutMaterialKey = 'wall' | 'partition' | 'lintel' | 'column' | 'floor' | 'portalFloor' | 'ceiling' | 'deadEnd';
 
@@ -53,6 +55,33 @@ export interface BabylonBlockoutOptions {
    *  рендера строятся десятками — без этого у каждого была бы своя сетка-текстура и свои материалы.
    *  dispose() болванки общее не трогает — его освобождает shared.dispose(). */
   shared?: BlockoutShared;
+  /** двери (BlockoutModel.doors): поза полотна при постройке — угол (градусы) и ручка (0…1, нажата); null — из слота
+   *  (закрыто / распахнуто в покое). Анимация открытия (src/view3d/doorAnim.ts) отдаёт текущую позу: кусок комнаты,
+   *  пересобранный посреди анимации, встаёт в ту же позу — без скачка */
+  doorPose?: (slot: DoorSlot) => DoorPose | null;
+}
+
+/** Поза двери: угол полотна (градусы, к комнате) и ручка (0 — отпущена, 1 — нажата / засов отодвинут / штурвал
+ *  докручен). */
+export interface DoorPose {
+  angle: number;
+  handle: number;
+}
+
+/** Полотно двери, которое можно двигать (выход, открытый выход): меш на оси петель, ручка — его ребёнок. */
+export interface DoorLeafMesh {
+  mesh: Mesh;
+  handle: Mesh | null;
+  geo: DoorLeafGeo;
+  /** поворот двери в мире (RotationY), рад: полотно — yaw + sign·угол */
+  yaw: number;
+}
+
+/** Подвижная дверь куска: слот, дверь из каталога, полотна. */
+export interface DoorMeshes {
+  slot: DoorSlot;
+  style: DoorStyle;
+  leaves: DoorLeafMesh[];
 }
 
 /** Общие материалы/текстуры нескольких болванок одной сцены (см. BabylonBlockoutOptions.shared). */
@@ -65,6 +94,8 @@ export interface BlockoutShared {
   readonly propMats: Map<string, StandardMaterial>;
   readonly topMats: Map<string, StandardMaterial>;
   readonly tintMats: Map<string, StandardMaterial>;
+  /** материал дверей (цвета — в вершинах) */
+  readonly doorMats: Map<string, StandardMaterial>;
   readonly textures: BaseTexture[];
   readonly extraMats: StandardMaterial[];
   dispose(): void;
@@ -94,6 +125,7 @@ export function createBlockoutShared(scene: Scene, colors?: Partial<Record<Block
     propMats: new Map(),
     topMats: new Map(),
     tintMats: new Map(),
+    doorMats: new Map(),
     textures,
     extraMats,
     dispose() {
@@ -112,6 +144,10 @@ export interface BabylonBlockout {
   ceilings: Mesh[];
   props: Mesh[];
   deadEnds: Mesh[];
+  /** двери: наличники и неподвижные полотна (один меш), подвижные полотна — в doorLeaves */
+  doors: Mesh[];
+  /** подвижные двери (выходы и открытые выходы) по «inst/connector» */
+  doorLeaves: Map<string, DoorMeshes>;
   /** общие материалы по видам — можно перекрасить или заменить текстуру (см. docs/BLOCKOUT-BABYLON.md) */
   materials: Record<BlockoutMaterialKey, StandardMaterial>;
   /** облицовка стен: по мешу на отделку (metadata.kind = 'facing', finishId) */
@@ -127,7 +163,7 @@ export interface BabylonBlockout {
 
 /** metadata каждого меша болванки. */
 export interface BlockoutMeta {
-  kind: SolidKind | 'floor' | 'portalFloor' | 'ceiling' | 'portalCeiling' | 'prop' | 'propTop' | 'deadEnd' | 'facing';
+  kind: SolidKind | 'floor' | 'portalFloor' | 'ceiling' | 'portalCeiling' | 'prop' | 'propTop' | 'deadEnd' | 'facing' | 'door' | 'doorLeaf' | 'doorHandle';
   /** экземпляр комнаты (полы, потолки, мебель, тупики при merge: false) */
   inst?: string;
   propId?: string;
@@ -518,6 +554,10 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
     }
   }
 
+  // ── двери (BlockoutModel.doors): закрытые — вместо панели тупика ──
+  const doorClosed = new Set((model.doors ?? []).filter((d) => d.leaf && d.role !== 'open' && d.role !== 'opened').map((d) => `${d.inst}/${d.connector}`));
+  const { doors, doorLeaves } = buildDoors(scene, model, floorZ, opts.doorPose, (m, md) => add(m, md, doorMaterial(sh), false));
+
   // ── тупики: дверная панель, утопленная в стену, с ручкой ──
   const deadEnds: Mesh[] = [];
   if ((model.options?.deadEnds === 'panel' || model.options?.cutEnds === 'panel') && model.deadEnds.length) {
@@ -538,6 +578,8 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
       return m;
     };
     for (const d of model.deadEnds) {
+      // закрытая дверь из каталога вместо панели
+      if (doorClosed.has(`${d.inst}/${d.connector}`)) continue;
       const tint = opts.deadEndColor?.(d);
       const hex = tint && /^#[0-9a-f]{6}$/i.test(tint) ? tint.toLowerCase() : null;
       let g: BoxBatch;
@@ -619,7 +661,8 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
     if (tpl) {
       // модель вместо бокса: бокс — коллайдер (невидимый), модель — его ребёнок
       m.isVisible = false;
-      const v = tpl.clone(`propModel:${p.inst}:${p.propId}`, m, true);
+      // с детьми: у шаблона дети — подвижные части (шестерни, капли… — src/view3d/propAnim.ts их крутит)
+      const v = tpl.clone(`propModel:${p.inst}:${p.propId}`, m, false);
       v.setEnabled(true);
       v.isVisible = true;
       v.isPickable = false;
@@ -665,6 +708,8 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
     ceilings,
     props,
     deadEnds,
+    doors,
+    doorLeaves,
     materials,
     facings,
     finishMaterials,
@@ -683,6 +728,162 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
       if (ownShared) sh.dispose();
     },
   };
+}
+
+// ───────────────────────── двери ─────────────────────────
+
+/** Материал дверей: белый, цвет — в вершинах, лёгкий блик (крашеное дерево, металл). */
+function doorMaterial(sh: BlockoutShared): StandardMaterial {
+  let m = sh.doorMats.get('door');
+  if (!m) {
+    m = new StandardMaterial('blockout:door', sh.scene);
+    m.diffuseColor = Color3.White();
+    m.specularColor = new Color3(0.07, 0.07, 0.07);
+    m.specularPower = 28;
+    sh.doorMats.set('door', m);
+    sh.extraMats.push(m);
+  }
+  return m;
+}
+
+const rgbCache = new Map<string, [number, number, number, number]>();
+function rgba(hex: string): [number, number, number, number] {
+  let c = rgbCache.get(hex);
+  if (!c) {
+    const col = safeColor(hex);
+    c = [col.r, col.g, col.b, 1];
+    rgbCache.set(hex, c);
+  }
+  return c;
+}
+
+const scratch = new BoxBatch();
+const tv = new Vector3();
+const tn = new Vector3();
+
+/** Боксы модели двери (DoorPart) — в батч с цветами, через матрицу M (null — как есть). */
+export function emitDoorParts(g: BoxBatch, parts: DoorPart[], M: Matrix | null) {
+  for (const p of parts) {
+    const [sx, sy, sz] = p.s;
+    if (!(sx > 0 && sy > 0 && sz > 0)) continue;
+    scratch.p.length = scratch.n.length = scratch.uv.length = scratch.i.length = 0;
+    scratch.box(-sx / 2, -sy / 2, -sz / 2, sx / 2, sy / 2, sz / 2);
+    let m = Matrix.Translation(p.c[0], p.c[1], p.c[2]);
+    if (p.rz) m = Matrix.RotationZ(p.rz).multiply(m);
+    if (M) m = m.multiply(M);
+    const base = g.verts;
+    const col = rgba(p.color);
+    const n = scratch.verts;
+    for (let i = 0; i < n; i++) {
+      Vector3.TransformCoordinatesFromFloatsToRef(scratch.p[3 * i], scratch.p[3 * i + 1], scratch.p[3 * i + 2], m, tv);
+      Vector3.TransformNormalFromFloatsToRef(scratch.n[3 * i], scratch.n[3 * i + 1], scratch.n[3 * i + 2], m, tn);
+      tn.normalize();
+      g.p.push(tv.x, tv.y, tv.z);
+      g.n.push(tn.x, tn.y, tn.z);
+      g.uv.push(scratch.uv[2 * i], scratch.uv[2 * i + 1]);
+      g.c?.push(col[0], col[1], col[2], col[3]);
+    }
+    for (const k of scratch.i) g.i.push(base + k);
+  }
+}
+
+/** Поворот двери в мире (RotationY, рад) по нормали слота: z двери (в стену) = −нормаль. План (x, y↓) → Babylon. */
+export function doorYaw(slot: DoorSlot): number {
+  return Math.atan2(-slot.normal[0], slot.normal[1]);
+}
+
+/** Матрица «координаты двери → мир»: поворот и середина проёма на полу комнаты. */
+export function doorMatrix(slot: DoorSlot, floorZ: number): Matrix {
+  const [x1, y1, x2, y2] = slot.line;
+  return Matrix.RotationY(doorYaw(slot)).multiply(Matrix.Translation((x1 + x2) / 2, floorZ, -(y1 + y2) / 2));
+}
+
+/** Поставить ручку в позу h (0…1): нажимная и щеколда — поворот к петлям, круглая — поворот, штурвал — два оборота,
+ *  засов — сдвиг к петлям на 10 см. */
+export function poseHandle(mesh: Mesh, kind: HandleKind, sign: 1 | -1, pivotX: number, h: number) {
+  const k = Math.max(0, Math.min(1, h));
+  if (kind === 'lever') mesh.rotation.z = sign * k * 0.7;
+  else if (kind === 'latch') mesh.rotation.z = sign * k * 1.4;
+  else if (kind === 'knob') mesh.rotation.z = k * 1.2;
+  else if (kind === 'wheel') mesh.rotation.z = k * Math.PI * 4;
+  else if (kind === 'bolt') mesh.position.x = pivotX - sign * k * 0.1;
+}
+
+/** Поставить подвижную дверь в позу (угол — градусы к комнате, ручка 0…1). Замороженные матрицы пересчитываются. */
+export function poseDoor(d: DoorMeshes, angle: number, handle: number) {
+  const a = (angle * Math.PI) / 180;
+  for (const lf of d.leaves) {
+    lf.mesh.rotation.y = lf.yaw + lf.geo.sign * a;
+    if (lf.mesh.isWorldMatrixFrozen) lf.mesh.freezeWorldMatrix();
+    else lf.mesh.computeWorldMatrix(true);
+    if (lf.handle && lf.geo.handle) {
+      poseHandle(lf.handle, lf.geo.handle.kind, lf.geo.sign, lf.geo.handle.pivot[0], handle);
+      if (lf.handle.isWorldMatrixFrozen) lf.handle.freezeWorldMatrix();
+      else lf.handle.computeWorldMatrix(true);
+    }
+  }
+}
+
+/**
+ * Двери модели: наличники, доски заколоченных и неподвижные полотна — один меш с цветами в вершинах; подвижные полотна
+ * (выход, открытый выход) — меш на полотно (начало — ось петель), ручка — его ребёнок. Коллизий у дверей нет: закрытую
+ * дверь держит стена за ней, распахнутая стоит у стены.
+ */
+function buildDoors(
+  scene: Scene,
+  model: BlockoutModel,
+  floorZ: Map<string, number>,
+  pose: BabylonBlockoutOptions['doorPose'],
+  add: (m: Mesh, md: BlockoutMeta) => Mesh,
+): { doors: Mesh[]; doorLeaves: Map<string, DoorMeshes> } {
+  const doors: Mesh[] = [];
+  const doorLeaves = new Map<string, DoorMeshes>();
+  if (!model.doors?.length) return { doors, doorLeaves };
+  const g = new BoxBatch(true);
+  for (const slot of model.doors) {
+    const style = DOOR_STYLE_BY_ID.get(slot.style);
+    if (!style) continue;
+    const geo = doorGeometry({ style, widthM: slot.widthM, heightM: slot.heightM, hinge: slot.hinge, role: slot.role, leaf: slot.leaf, space: slot.space, seed: slot.seed, tag: slot.tag });
+    const D = doorMatrix(slot, floorZ.get(slot.inst) ?? 0);
+    const yaw = doorYaw(slot);
+    emitDoorParts(g, geo.frame, D);
+    const p = pose?.(slot) ?? null;
+    const angle = p ? p.angle : slot.angle;
+    const movable = slot.role === 'exit' || slot.role === 'opened';
+    const key = `${slot.inst}/${slot.connector}`;
+    const moving: DoorLeafMesh[] = [];
+    for (const lf of geo.leaves) {
+      const hinge = Vector3.TransformCoordinates(new Vector3(lf.axis[0], lf.y0, lf.axis[1]), D);
+      // полотно: поворот вокруг оси петель (вместе с поворотом двери), затем перенос на ось
+      const rot = yaw + (lf.sign * angle * Math.PI) / 180;
+      if (!movable) {
+        // неподвижное — в общий меш, сразу в позе слота
+        const M = Matrix.RotationY(rot).multiply(Matrix.Translation(hinge.x, hinge.y, hinge.z));
+        emitDoorParts(g, lf.parts, M);
+        if (lf.handle) emitDoorParts(g, lf.handle.parts, Matrix.Translation(lf.handle.pivot[0], lf.handle.pivot[1], lf.handle.pivot[2]).multiply(M));
+        continue;
+      }
+      const lg = new BoxBatch(true);
+      emitDoorParts(lg, lf.parts, null);
+      const name = `doorLeaf:${key}:${lf.hinge}`;
+      const mesh = add(lg.toMesh(name, scene), { kind: 'doorLeaf', inst: slot.inst, connector: slot.connector, name: style.name });
+      mesh.position.copyFrom(hinge);
+      mesh.rotation.y = rot;
+      let handle: Mesh | null = null;
+      if (lf.handle) {
+        const hb = new BoxBatch(true);
+        emitDoorParts(hb, lf.handle.parts, null);
+        handle = add(hb.toMesh(name + ':handle', scene), { kind: 'doorHandle', inst: slot.inst, connector: slot.connector });
+        handle.parent = mesh;
+        handle.position.set(lf.handle.pivot[0], lf.handle.pivot[1], lf.handle.pivot[2]);
+        poseHandle(handle, lf.handle.kind, lf.sign, lf.handle.pivot[0], p ? p.handle : 0);
+      }
+      moving.push({ mesh, handle, geo: lf, yaw });
+    }
+    if (moving.length) doorLeaves.set(key, { slot, style, leaves: moving });
+  }
+  if (g.verts > 0) doors.push(add(g.toMesh('doors', scene), { kind: 'door' }));
+  return { doors, doorLeaves };
 }
 
 // ───────────────────────── внутренние грани объёмов ─────────────────────────

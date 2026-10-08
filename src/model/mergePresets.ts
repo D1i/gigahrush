@@ -15,6 +15,19 @@ export interface MergeReport {
   biomes: number;
 }
 
+/** Пресеты, убранные из набора: «Обновить пресеты» удаляет их из проекта (иначе они остались бы как «свои» — их id в
+ *  пресетах больше нет), подсказка при запуске считает их устаревшими. Сарай первых версий (2026-10-08): крест проходов,
+ *  сеновал, стойла-комнаты за калитками (стойла теперь — открытые загоны в самом проходе), сено на полу (текстура
+ *  ковра), тюк сена (текстура коробок), кормушка и насест. */
+export const RETIRED_PRESETS: { rooms: readonly string[]; props: readonly string[] } = {
+  rooms: ['barn_tun_X', 'barn_hub_hay', 'barn_tun_3', 'barn_hub_stalls', 'barn_stall', 'barn_coop', 'barn_tools', 'barn_side_pass'],
+  props: ['p_barn_hay', 'p_barn_bale', 'p_barn_trough', 'p_barn_nests'],
+};
+
+/** Убранных пресетов в проекте. */
+const retiredIn = (p: Project): number =>
+  p.rooms.filter((r) => RETIRED_PRESETS.rooms.includes(r.id)).length + p.props.filter((x) => RETIRED_PRESETS.props.includes(x.id)).length;
+
 const cloneRule = (r: FinishRule): FinishRule => ({
   tag: r.tag,
   wall: r.wall.map((x) => ({ ...x })),
@@ -108,13 +121,25 @@ export function outdatedPresets(p: Project, fresh: Project = createDefaultProjec
     if (d && sig(d) !== sig(r)) n++;
   }
   cmp(fresh.world.biomes, p.world?.biomes ?? []);
-  return n;
+  return n + retiredIn(p);
 }
 
 /** Обновить пресеты до последней версии: сущности с id из пресетов заменяются свежими
  *  (правки автора в них теряются), недостающие добавляются, собственные — не трогаются.
  *  Настройки генератора: старт, обзор, дозаполнение — из пресетов; сид, count, gap, проходка — прежние. */
 export function updatePresets(p: Project, fresh: Project = createDefaultProject()): MergeReport {
+  // убранные пресеты — прочь, и ссылки на убранные предметы из комнат (декор, варианты спотов) — тоже
+  const gone = new Set(RETIRED_PRESETS.props);
+  p.rooms = p.rooms.filter((r) => !RETIRED_PRESETS.rooms.includes(r.id));
+  p.props = p.props.filter((x) => !gone.has(x.id));
+  for (const r of p.rooms) {
+    r.decor = r.decor.filter((d) => !gone.has(d.propId));
+    for (const g of r.spotGroups) {
+      for (const v of g.variants) {
+        for (const [k, a] of Object.entries(v.assign)) if (a.kind === 'prop' && gone.has(a.id)) delete v.assign[k];
+      }
+    }
+  }
   const put = <T extends { id: string }>(src: T[], dst: T[]) => {
     const idx = new Map(dst.map((x, i) => [x.id, i]));
     let n = 0;

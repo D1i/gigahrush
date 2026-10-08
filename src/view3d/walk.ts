@@ -13,13 +13,41 @@
 //  • Режим квартир (WalkOptions.clusters, настройки — Project.world, docs/GENERATOR-4D.md §16): мир растёт квартирами,
 //    закрытый выход квартиры — дверь-панель (метка с флагом exit), её открывает игрок (openDoor); исчезнувшие двери и
 //    лишние проёмы квартиры — стены; вход в комнату — счётчик переходов (world.enter).
+//  • Двери (docs/DOORS.md): открытые игроком выходы помнятся (метка с флагом opened — полотно остаётся у этой комнаты,
+//    распахнутым); список — в localStorage рядом с позицией игрока.
+//  • Биом старта (WalkOptions.biome): мир начинается в выбранном биоме (WorldSettings.startBiome поверх проекта); у
+//    каждого биома — свой мир сида и своё сохранение (ключ с модификатором «биом:id»), переключение — без потери прогулки.
+//  • Операции мира (WorldOp: вход в комнату, открыть дверь, спуск, выход лифта) — через request(op): в одиночной игре
+//    применяются сразу, в коопе (docs/COOP.md, src/coop/) уходят на сервер лобби (sink) и применяются apply(op) у всех
+//    игроков в одном порядке — копии мира одинаковы. Кооп-мир не пишется в localStorage (WalkSource).
 import {
   DEFAULT_STREAM, DEFAULT_STREAM_FOLD, createStreamWorld, streamSettings, viewHorizonM, worldKey,
   type EnterResult, type StreamSave, type StreamSettings, type StreamStats, type StreamWorld,
 } from '../gen4d/stream';
 import { exportRunJSON } from '../gen/world';
-import type { Project } from '../model/types';
+import { startBiomeOf } from '../gen4d/biomes';
+import type { LiftSide, Project, WorldSettings } from '../model/types';
 import type { RunExport, RunFinish, RunInstance } from '../blockout/types';
+
+/** Операция, меняющая мир прогулки. Детерминирована: тот же мир + та же операция → тот же мир. */
+export type WorldOp =
+  /** игрок вошёл в комнату: счётчик переходов, раскрыть двери вперёд и всё, что может попасть в кадр */
+  | { k: 'enter'; id: string }
+  /** открыть закрытый выход квартиры → id комнаты за дверью */
+  | { k: 'door'; inst: string; conn: string }
+  /** спуск из спец-локации (лестница) → id комнаты-выхода */
+  | { k: 'descend'; id: string }
+  /** выход лифта → id комнаты за выходом */
+  | { k: 'ascend'; id: string; floor: number; side: LiftSide }
+  /** обвал снежного хода у метки (src/locations/snowCollapse.ts) → inst, если завалило */
+  | { k: 'collapse'; inst: string; conn: string };
+
+/** Мир не из localStorage (кооп): снимок лобби, открытые двери; key — ключ позиции игрока в localStorage. */
+export interface WalkSource {
+  save: StreamSave | null;
+  opened: string[];
+  key: string;
+}
 
 export interface WalkOptions {
   seed: string;
@@ -31,6 +59,29 @@ export interface WalkOptions {
   aheadDoors: number;
   /** режим квартир: биомы, квартиры с дверями-выходами, переходы (настройки — Project.world); false — прежний рост */
   clusters: boolean;
+  /** режим квартир: биом, в котором начинается мир (id); null — стартовый биом проекта (Project.world.startBiome) */
+  biome: string | null;
+}
+
+/** Биом старта прогулки, отличный от стартового биома проекта (он и есть в проекте), иначе null — мир проекта как есть. */
+export function walkBiome(p: Project, opts: Pick<WalkOptions, 'biome' | 'clusters'>): string | null {
+  const w = p.world;
+  if (!opts.clusters || !w || !opts.biome || !w.biomes.some((b) => b.id === opts.biome && !b.rich)) return null;
+  return opts.biome === startBiomeOf(w)?.id ? null : opts.biome;
+}
+
+/** Мир прогулки: настройки проекта, старт — в выбранном биоме. */
+function walkWorld(p: Project, opts: Pick<WalkOptions, 'biome' | 'clusters'>): WorldSettings | null {
+  if (!opts.clusters || !p.world) return null;
+  const b = walkBiome(p, opts);
+  return b ? { ...p.world, startBiome: b } : p.world;
+}
+
+/** Модификаторы ключа сохранения: у мира с квартирами — «квартиры», у старта в другом биоме — ещё «биом:id». */
+function walkMods(p: Project, opts: Pick<WalkOptions, 'biome' | 'clusters'>): string[] {
+  if (!opts.clusters) return [];
+  const b = walkBiome(p, opts);
+  return b ? ['квартиры', `биом:${b}`] : ['квартиры'];
 }
 
 /**
@@ -38,7 +89,7 @@ export interface WalkOptions {
  * обзора и «вперёд дверей» — из «Бесконечного мира» (Project.world.walk); в прежнем росте (без квартир) «вперёд дверей»,
  * тупики и ветвистость — из панели прогулки.
  */
-export function walkStreamSettings(p: Project, opts: Pick<WalkOptions, 'seed' | 'deadEndChance' | 'branching' | 'aheadDoors' | 'clusters'>): StreamSettings {
+export function walkStreamSettings(p: Project, opts: Pick<WalkOptions, 'seed' | 'deadEndChance' | 'branching' | 'aheadDoors' | 'clusters'> & Partial<Pick<WalkOptions, 'biome'>>): StreamSettings {
   const g = p.generator;
   const wk = p.world?.walk;
   return streamSettings(opts.seed, {
@@ -50,12 +101,12 @@ export function walkStreamSettings(p: Project, opts: Pick<WalkOptions, 'seed' | 
     branching: opts.branching,
     aheadDoors: opts.clusters && wk ? wk.aheadDoors : opts.aheadDoors,
     ...(wk ? { fold: { ...DEFAULT_STREAM_FOLD, shiftChance: wk.shiftChance, maxShift: wk.maxShift, localRadius: wk.localRadius, localM: wk.localM, maxLayer: wk.maxLayer } } : {}),
-    world: opts.clusters ? p.world : null,
+    world: walkWorld(p, { clusters: opts.clusters, biome: opts.biome ?? null }),
   });
 }
 
 export const DEFAULT_WALK: WalkOptions = {
-  seed: 'гигахрущ', deadEndChance: DEFAULT_STREAM.deadEndChance, branching: DEFAULT_STREAM.branching, aheadDoors: DEFAULT_STREAM.aheadDoors, clusters: true,
+  seed: 'гигахрущ', deadEndChance: DEFAULT_STREAM.deadEndChance, branching: DEFAULT_STREAM.branching, aheadDoors: DEFAULT_STREAM.aheadDoors, clusters: true, biome: null,
 };
 
 const WALK_KEY = 'room-forge/walk';
@@ -70,6 +121,7 @@ export function readWalk(): WalkOptions & { on: boolean } {
       branching: Number.isFinite(o.branching) ? o.branching : DEFAULT_WALK.branching,
       aheadDoors: Number.isFinite(o.aheadDoors) ? o.aheadDoors : DEFAULT_WALK.aheadDoors,
       clusters: typeof o.clusters === 'boolean' ? o.clusters : DEFAULT_WALK.clusters,
+      biome: typeof o.biome === 'string' && o.biome ? o.biome : null,
       on: o.on === true,
     };
   } catch {
@@ -106,6 +158,8 @@ export interface WalkStatus {
 }
 
 const playerKey = (key: string): string => key + '/player';
+/** открытые игроком выходы («inst/connector») — их двери остаются у комнаты выхода */
+const doorsKey = (key: string): string => key + '/doors';
 
 export class WalkSession {
   readonly world: StreamWorld;
@@ -120,26 +174,46 @@ export class WalkSession {
   private queued = false;
   private saveTimer = 0;
   private saved: WalkStatus['saved'] = null;
+  /** выходы, открытые игроком («inst/connector») */
+  private opened = new Set<string>();
   private error: string | null = null;
   private disposed = false;
+  /** мир пишется в localStorage (одиночная игра); кооп-мир живёт на сервере лобби */
+  private readonly persist: boolean;
+  /** кооп: операции уходят сюда (на сервер), результат — когда операция вернулась и применена; null — сразу */
+  sink: ((op: WorldOp) => Promise<string | null>) | null = null;
 
   constructor(
     private readonly p: Project,
     readonly opts: WalkOptions,
+    src?: WalkSource,
   ) {
-    // режим квартир — свой ключ сохранения (у сида два разных мира: с квартирами и без)
-    this.key = worldKey(opts.seed, opts.clusters ? ['квартиры'] : []);
+    // режим квартир — свой ключ сохранения (у сида разные миры: без квартир, с квартирами, со стартом в другом биоме)
+    this.key = src ? src.key : worldKey(opts.seed, walkMods(p, opts));
+    this.persist = !src;
     let save: StreamSave | undefined;
-    try {
-      const s = localStorage.getItem(this.key);
-      if (s) save = JSON.parse(s) as StreamSave;
-    } catch {
-      save = undefined;
+    if (src) save = src.save ?? undefined;
+    else {
+      try {
+        const s = localStorage.getItem(this.key);
+        if (s) save = JSON.parse(s) as StreamSave;
+      } catch {
+        save = undefined;
+      }
     }
     const settings = walkStreamSettings(p, opts);
     this.world = createStreamWorld(p, settings, save);
-    if (save && !this.world.stale) this.saved = { at: save.savedAt, bytes: 0 };
+    if (save && !this.world.stale && this.persist) this.saved = { at: save.savedAt, bytes: 0 };
     this.tables = projectTables(p);
+    if (!this.world.stale) {
+      if (src) for (const k of src.opened) this.opened.add(k);
+      else {
+        try {
+          const list = JSON.parse(localStorage.getItem(doorsKey(this.key)) || '[]');
+          if (Array.isArray(list)) for (const k of list) if (typeof k === 'string') this.opened.add(k);
+        } catch {}
+      }
+    }
     this.rx = this.assemble().rx;
     this.unsub = this.world.onChange(() => {
       // раскрытие может сообщать по частям — собрать один раз после всех
@@ -155,7 +229,12 @@ export class WalkSession {
   /** Игрок в комнате id: раскрыть двери вперёд и всё, что из неё может попасть в кадр (после кадра):
    *  дальность — горизонт портального рендера (viewHorizonM), тумана нет — нераскрытая дверь в кадре была
    *  бы дырой в пустоту. */
-  enter(id: string): EnterResult {
+  enter(id: string): EnterResult | null {
+    // кооп: вход — операция мира, применится у всех по порядку сервера (с раскрытием — синхронно, см. apply)
+    if (this.sink) {
+      void this.sink({ k: 'enter', id });
+      return null;
+    }
     setTimeout(() => {
       if (this.disposed) return;
       this.world.ensureAround(id);
@@ -169,12 +248,95 @@ export class WalkSession {
 
   /** Открыть закрытый выход квартиры (режим квартир): за ним — новая квартира или переход. null — не вышло. */
   openDoor(inst: string, connector: string): string | null {
+    // кооп: дверь уже открыл другой игрок (его операция пришла раньше) — за ней та же комната
+    if (this.world.doorState(inst, connector) === 'linked') return this.linkedTo(inst, connector);
+    // до роста мира: связь появится уже с флагом opened (дверь останется у этой комнаты — без скачка)
+    const key = `${inst}/${connector}`;
+    this.opened.add(key);
+    let id: string | null = null;
     try {
-      return this.world.openDoor(inst, connector);
+      id = this.world.openDoor(inst, connector);
     } catch (e) {
       console.error(e);
-      return null;
     }
+    if (!id) this.opened.delete(key);
+    this.saveDoors();
+    return id;
+  }
+
+  /** Операция мира: в одиночной игре — сразу, в коопе — через сервер лобби (sink): результат придёт, когда операция
+   *  вернётся и применится у всех. Результат — id комнаты (дверь, спуск, лифт) или null (не вышло; вход в комнату). */
+  request(op: WorldOp): Promise<string | null> {
+    if (this.sink) return this.sink(op);
+    if (op.k === 'enter') {
+      this.enter(op.id);
+      return Promise.resolve(null);
+    }
+    return Promise.resolve(this.apply(op));
+  }
+
+  /** Применить операцию сразу и целиком (кооп: в порядке сервера — у всех игроков одинаково). Ошибка мира — null. */
+  apply(op: WorldOp): string | null {
+    try {
+      switch (op.k) {
+        case 'enter': {
+          // раскрытие — синхронно: отложенное легло бы между операциями других игроков по-разному у разных копий
+          const r = this.world.enter(op.id);
+          this.world.ensureAround(op.id);
+          this.world.ensureVisible(op.id, viewHorizonM(this.world.settings.sightM));
+          if (r.counted) this.scheduleSave();
+          return null;
+        }
+        case 'door':
+          return this.openDoor(op.inst, op.conn);
+        case 'descend':
+          return this.world.descend(op.id);
+        case 'ascend':
+          return this.world.ascend(op.id, op.floor, op.side);
+        case 'collapse':
+          return this.world.collapse(op.inst, op.conn) ? op.inst : null;
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    return null;
+  }
+
+  /** Комната за связанной дверью метки connector комнаты inst (null — не связана). */
+  private linkedTo(inst: string, connector: string): string | null {
+    for (const l of this.world.run().links) {
+      if (l.kind === 'descent' || l.kind === 'lift' || l.sealed) continue;
+      if (l.a.inst === inst && l.a.connector === connector) return l.b.inst;
+      if (l.b.inst === inst && l.b.connector === connector) return l.a.inst;
+    }
+    return null;
+  }
+
+  /** Открытые выходы («inst/connector») — для чекпойнта кооп-лобби. */
+  openedList(): string[] {
+    return [...this.opened];
+  }
+
+  /** Отпечаток мира — сверка копий у игроков кооп-лобби. Только то, что однозначно задано состоянием мира (и так же
+   *  восстанавливается из сохранения): счётчики экземпляров, связей, раскрытых, тупиков, квартир, переходов и место
+   *  последней комнаты — у разошедшихся копий почти наверняка разные. */
+  fingerprint(): string {
+    const run = this.world.run();
+    const s = this.world.stats();
+    const tr = s.transition;
+    const last = run.instances[run.instances.length - 1];
+    return [
+      run.instances.length, run.links.length, s.expanded, s.pending, s.deadChance + s.deadFail, s.clusters, s.exitsOpen,
+      tr ? `${tr.count}.${tr.pending ? 1 : 0}` : '-', this.opened.size,
+      last ? `${last.id}:${last.roomId}:${last.rot}:${last.dx},${last.dy},${last.w ?? 0},${last.floor ?? 0}` : '-',
+    ].join('/');
+  }
+
+  private saveDoors() {
+    if (!this.persist) return;
+    try {
+      localStorage.setItem(doorsKey(this.key), JSON.stringify([...this.opened]));
+    } catch {}
   }
 
   private refresh() {
@@ -216,7 +378,7 @@ export class WalkSession {
       for (const k of e.connectors) {
         const to = linkBy.get(`${i.id}/${k.id}`);
         const st = to || k.len < 1 ? null : this.world.doorState(i.id, k.id);
-        sig += to ? 'L' : st === 'pending' ? 'P' : st === 'exit' ? 'X' : arrival.has(`${i.id}/${k.id}`) ? 'A' : 'D';
+        sig += to ? (this.opened.has(`${i.id}/${k.id}`) ? 'O' : 'L') : st === 'pending' ? 'P' : st === 'exit' ? 'X' : st === 'collapsed' ? 'C' : arrival.has(`${i.id}/${k.id}`) ? 'A' : 'D';
       }
       if (this.sig.get(i.id) !== sig) {
         changed.push(i.id);
@@ -224,10 +386,13 @@ export class WalkSession {
           ...e,
           connectors: e.connectors.map((k, n) => {
             const to = linkBy.get(`${i.id}/${k.id}`) ?? null;
-            const { cut: _c, exit: _x, arrival: _a, ...rest } = k;
+            const { cut: _c, exit: _x, arrival: _a, opened: _o, collapsed: _k, ...rest } = k;
             if (sig[n] === 'P') return { ...rest, linkedTo: null, cut: true };
             if (sig[n] === 'X') return { ...rest, linkedTo: null, exit: true };
             if (sig[n] === 'A') return { ...rest, linkedTo: null, arrival: true };
+            // завал снежного лаза (StreamWorld.collapse): тупик навсегда, у оболочки снега — пробка
+            if (sig[n] === 'C') return { ...rest, linkedTo: null, collapsed: true };
+            if (sig[n] === 'O') return { ...rest, linkedTo: to ? { ...to } : null, opened: true };
             return { ...rest, linkedTo: to ? { ...to } : null };
           }),
         };
@@ -258,13 +423,14 @@ export class WalkSession {
   // ───────────────────────── сохранение ─────────────────────────
 
   private scheduleSave() {
+    if (!this.persist) return;
     clearTimeout(this.saveTimer);
     this.saveTimer = window.setTimeout(() => this.saveNow(), 400);
   }
 
   /** Сохранить мир сейчас (автосохранение — через 0.4 с после роста). */
   saveNow() {
-    if (this.disposed) return;
+    if (this.disposed || !this.persist) return;
     clearTimeout(this.saveTimer);
     try {
       const text = JSON.stringify(this.world.save());
@@ -292,12 +458,13 @@ export class WalkSession {
     }
   }
 
-  /** Стереть сохранение этого сида (мир и игрока). */
-  static reset(seed: string) {
-    for (const key of [worldKey(seed, []), worldKey(seed, ['квартиры'])]) {
+  /** Стереть сохранение этого сида (мир и игрока; с квартирами — и миры со стартом в биомах biomes). */
+  static reset(seed: string, biomes: string[] = []) {
+    for (const key of [worldKey(seed, []), worldKey(seed, ['квартиры']), ...biomes.map((b) => worldKey(seed, ['квартиры', `биом:${b}`]))]) {
       try {
         localStorage.removeItem(key);
         localStorage.removeItem(playerKey(key));
+        localStorage.removeItem(doorsKey(key));
       } catch {}
     }
   }

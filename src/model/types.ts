@@ -10,6 +10,10 @@
 //  • Поворот rot — градусы по часовой стрелке (при оси Y вниз это визуально по часовой).
 //  • Габариты декора w (вдоль X при rot=0) и h (вдоль Y при rot=0) — в метрах.
 //    «Передняя» грань декора при rot=0 — нижняя (сторона S).
+import type { SwampSpec } from '../locations/swampEnd';
+
+/** «Болото на крыше» — финал игры: спецификация рядом с механикой (src/locations/swampEnd.ts). */
+export type { SwampSpec };
 
 export type Side = 'N' | 'S' | 'E' | 'W';
 
@@ -234,7 +238,24 @@ export interface LairSpec {
   darkness: number;
 }
 
-export type LocationSpec = StairwellSpec | LiftSpec | LairSpec;
+/**
+ * «Ангар» — переходная спец-локация промкомплекса под снегом (механика — src/locations/hangar.ts): в снежных ходах —
+ * «Подтаявшая берлога», пятно в полу пробивается ударами (E), игрок проваливается сквозь крышу ангара в кучу мусора;
+ * мини-босс — заглушка; ворота цеха — выход (StreamWorld.descend, этажи ниже).
+ */
+export interface HangarSpec {
+  kind: 'hangar';
+  /** ударов, чтобы пробить подтаявший снег: случайное целое в [min, max] */
+  hits: [number, number];
+  /** на сколько этажей ниже выводят ворота ангара: случайное целое в [min, max] */
+  floorsDown: [number, number];
+  /** мини-босс: id для движка; пусто — «здесь будет мини-босс» */
+  boss: string;
+  /** темнота цеха 0…1 */
+  darkness: number;
+}
+
+export type LocationSpec = StairwellSpec | LiftSpec | LairSpec | HangarSpec | SwampSpec;
 
 export type MatchMode =
   /** стыкуются метки с одинаковым tag и одинаковой длиной */
@@ -448,7 +469,23 @@ export interface Biome {
   /** свои параметры генератора биома поверх общих (WorldSettings): квартиры — у квартирных, ходы — у подвалов */
   apartments?: Partial<ApartmentSettings>;
   tunnels?: Partial<TunnelSettings>;
+  /** темнота в «Прогулке», 0…1: пока игрок в квартире (сети ходов) биома, рассеянный свет — × (1 − dark); светят только
+   *  светящиеся модели (гирлянды, лампочки) и тусклый тёплый свет у игрока. Нет / 0 — как везде */
+  dark?: number;
+  /** влажность сети ходов (завод, src/gen4d/wet.ts): нет — без влажности. Кусок за «мокрым» выходом развилки —
+   *  мокрее, за прочими — суше; дошёл до 1 — болото (комната-финал). Ступени — теги комнат сухо / сыро / течь / топь */
+  wet?: WetSettings;
   note: string;
+}
+
+/** Влажность сети ходов (биом «Завод», docs/GENERATOR-4D.md §21). */
+export interface WetSettings {
+  /** прибавка (убыль) за кусок по ходу, который становится влажнее (суше) */
+  line: number;
+  /** развилка или хаб: «мокрый» выход — мокрее на fork */
+  fork: number;
+  /** прочие выходы развилки — суше на dry */
+  dry: number;
 }
 
 /** Параметры роста квартир (общие — в WorldSettings, свои — Biome.apartments). */
@@ -529,6 +566,9 @@ export interface WorldSettings extends ApartmentSettings {
   trStep: number;
   /** куда ведёт переход: доля «в другой биом», остальное — в богатую квартиру */
   trToBiome: number;
+  /** чем будет переход: доля лестничных площадок (обычная площадка подъезда, все двери которой ведут в биом назначения),
+   *  остальное — спец-комнаты (бесконечная лестница, лифт) */
+  trLanding: number;
   /** богатая квартира: множитель весов тиров элитности ≥ 2 (как Pass.tierBoost) */
   richBoost: number;
   biomes: Biome[];

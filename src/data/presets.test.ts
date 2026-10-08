@@ -44,7 +44,7 @@ function coveredCells(rc: { x0: number; x1: number; y0: number; y1: number }, sh
   return out;
 }
 
-const GROUPS = ['лестница', 'коридор', 'лифт', 'подвал', 'служебное', 'общежитие', 'прихожая', 'кухня', 'санузел', 'жилая', 'балкон', 'кладовка'];
+const GROUPS = ['лестница', 'коридор', 'лифт', 'подвал', 'сарай', 'снег', 'завод', 'служебное', 'общежитие', 'прихожая', 'кухня', 'санузел', 'жилая', 'балкон', 'кладовка'];
 // на полу (ковёр, лужа, доска) и под потолком (лампа, труба): проёмы и проход не загораживают
 const isFloorProp = (propId: string) => propById.get(propId)!.tags.includes('пол') || isFlatProp(propById.get(propId)!);
 
@@ -284,8 +284,9 @@ describe('стартовый проект', () => {
     expect(r.gen.weight).toBeLessThan(1);
     expect(r.gen.max).toBe(1);
     expect(p.economy.tiers.filter((t) => r.elite.some((e) => e.tierId === t.id)).every((t) => t.level >= 8)).toBe(true);
-    // кроме спец-локаций «Бесконечная лестница», «Ржавый лифт» и «Логово босса» в пресетах их нет
-    expect(p.rooms.filter((x) => x.location).map((x) => x.id)).toEqual(['stair_loop', 'lift_rusty', 'lift_carriage', 'boss_lair']);
+    // кроме спец-локаций «Бесконечная лестница», «Ржавый лифт», «Логово босса», «Ангар» (подтаявшая берлога снежных
+    // ходов) и «Болото на крыше» (финал, завод) в пресетах их нет
+    expect(p.rooms.filter((x) => x.location).map((x) => x.id)).toEqual(['snow_thaw', 'fac_swamp_roof', 'stair_loop', 'lift_rusty', 'lift_carriage', 'boss_lair']);
   });
 
   const levels = (r: Room) => p.economy.tiers.filter((t) => r.elite.some((e) => e.tierId === t.id)).map((t) => t.level);
@@ -412,7 +413,15 @@ describe('стартовый проект', () => {
     it('правила: у каждой группы есть, ссылки валидны, поверхность совпадает, веса > 0', () => {
       const tags = p.finishRules.map((r) => r.tag);
       expect(new Set(tags).size).toBe(tags.length);
-      for (const g of GROUPS) expect(tags, g).toContain(g);
+      // у группы — своё правило; у завода — по ступени влажности (сухо, сыро, течь, топь): правило 'завод' победило бы
+      // их (правило — по первому тегу комнаты, у которого оно есть), поэтому его нет — у каждой комнаты группы правило
+      // по другому её тегу
+      for (const g of GROUPS) {
+        if (tags.includes(g)) continue;
+        const rooms = p.rooms.filter((r) => r.tags[0] === g);
+        expect(rooms.length, g).toBeGreaterThan(0);
+        for (const r of rooms) expect(finishRuleFor(p, r)?.tag, `${g}: ${r.id}`).toBeTruthy();
+      }
       for (const r of p.finishRules) {
         expect(r.wall.length, r.tag).toBeGreaterThan(0);
         expect(r.floor.length, r.tag).toBeGreaterThan(0);

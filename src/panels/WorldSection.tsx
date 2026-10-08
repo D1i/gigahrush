@@ -51,12 +51,13 @@ export function WorldSection() {
         </div>
       </Block>
 
-      <Block title="Переходы" hint="Лестница или лифт по счётчику пройденных комнат: ведут в другой биом или в богатую квартиру.">
+      <Block title="Переходы" hint="Лестничная площадка, лестница или лифт по счётчику пройденных комнат: ведут в другой биом или в богатую квартиру.">
         <div className="grid2">
           <NumField label="Переход после комнат" value={w.trAfter} min={0} max={10000} step={5} digits={0} title="Сколько комнат пройти (впервые), прежде чем появится шанс перехода" onChange={(v) => upd('trAfter', (x) => (x.trAfter = Math.max(0, Math.round(v))))} />
           <NumField label="Шанс перехода" value={w.trBase * 100} min={0} max={100} step={1} digits={1} suffix="%" title="Шанс для первой комнаты после порога" onChange={(v) => upd('trBase', (x) => (x.trBase = pct(v)))} />
           <NumField label="+ за комнату" value={w.trStep * 100} min={0} max={100} step={0.5} digits={1} suffix="%" title="Прибавка шанса за каждую следующую пройденную комнату" onChange={(v) => upd('trStep', (x) => (x.trStep = pct(v)))} />
           <NumField label="В другой биом" value={w.trToBiome * 100} min={0} max={100} step={5} digits={0} suffix="%" title="Доля переходов в другой биом; остальные — в богатую квартиру" onChange={(v) => upd('trToBiome', (x) => (x.trToBiome = pct(v)))} />
+          <NumField label="Переход — площадка" value={w.trLanding * 100} min={0} max={100} step={5} digits={0} suffix="%" title="Доля переходов — обычная лестничная площадка подъезда (биома, где выпал переход; нет в биоме — хрущёвская): за любой её дверью — биом назначения, прошёл — счёт с нуля. Остальные — спец-комнаты (бесконечная лестница, лифт). 0 — только спец-комнаты, 100 — только площадки" onChange={(v) => upd('trLanding', (x) => (x.trLanding = pct(v)))} />
           <NumField label="Дверь под переход от" value={w.transitionMinLen} min={0.1} max={10} step={0.1} digits={2} suffix="м" title="Переход встаёт за дверью не уже этого (0.7 — межкомнатная и шире); выходами квартиры становятся только такие двери (уже — лишь чтобы набрать минимум выходов). Выпал переход — он за той дверью, которую откроешь, какой бы ширины она ни была" onChange={(v) => upd('trMin', (x) => (x.transitionMinLen = Math.min(10, Math.max(0.1, v))))} />
           <NumField label="Богатая: элитность ×" value={w.richBoost} min={1} max={1000} step={1} digits={0} title="Множитель весов тиров элитности ≥ 2 в богатой квартире (как у проходки)" onChange={(v) => upd('richBoost', (x) => (x.richBoost = Math.max(1, v)))} />
           <Select
@@ -102,7 +103,7 @@ export function WorldSection() {
           </Btn>
           <Btn
             sm
-            title="Вернуть биомы по умолчанию (хрущёвки, малосемейки, общежитие, подвалы, богатая квартира)"
+            title="Вернуть биомы по умолчанию (хрущёвки, малосемейки, общежитие, подвалы, сарай, богатая квартира)"
             onClick={() => confirm('Заменить биомы пресетами? Ваши биомы удалятся (Ctrl+Z — отменить).') && mutate((pp) => (pp.world.biomes = defaultBiomes()))}
           >
             пресеты
@@ -311,6 +312,17 @@ function BiomeFields(props: { b: Biome; p: Project; tags: string[]; onChange: (f
         </div>
         <ColorField value={b.color} onChange={(v) => onChange((x) => (x.color = v), 'color')} title="Цвет на плане и в HUD" />
       </div>
+      <NumField
+        label="Темнота в прогулке"
+        value={(b.dark ?? 0) * 100}
+        min={0}
+        max={100}
+        step={5}
+        digits={0}
+        suffix="%"
+        title="Пока игрок в этом биоме, рассеянный свет «Прогулки» гаснет на столько; светят только светящиеся модели (гирлянды, лампочки) и тусклый тёплый свет у игрока. 0 — как везде"
+        onChange={(v) => onChange((x) => (v > 0 ? (x.dark = Math.min(1, v / 100)) : delete x.dark), 'dark')}
+      />
       <Check
         label="богатая квартира"
         value={!!b.rich}

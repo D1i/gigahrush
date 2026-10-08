@@ -15,21 +15,32 @@ import { DEFAULT_BLOCKOUT, type BlockoutModel, type BlockoutOptions, type DeadEn
 import { BlockoutViewer, type CamMode } from './viewer';
 import { FoldDriver, layerColor, type FoldOrbitView, type FoldRender, type FoldResume, type FoldState } from './fold';
 import { downloadBlob, parseRunJSON, propTexturesOf, runExportOf, singleRoomRun, startInst } from './sources';
-import { readWalk, writeWalk, WalkSession, type WalkOptions, type WalkStatus } from './walk';
+import { readWalk, walkBiome, writeWalk, WalkSession, type WalkOptions, type WalkStatus } from './walk';
+import { plainBiomes, startBiomeOf } from '../gen4d/biomes';
 import { StairwellLayer, type LocationRequest } from './StairwellLayer';
 import { LiftLayer, type LiftRequest } from './LiftLayer';
+import { SwampLayer, type SwampRequest } from './SwampLayer';
+import { HangarLayer, type HangarRequest } from './HangarLayer';
+import { SnowWalk, type SnowHud } from './snowWalk';
+import { collapseSite } from '../locations/snowCollapse';
 import { LairDecor } from './lairDecor';
+import { BiomeMood } from './biomeMood';
 import { lairSign } from '../locations/lair';
 import type { LiftSide } from '../model/types';
 import { locationSeedKey, parseLocation } from '../locations/stairwell';
-import { seedKey as worldSeedKey, type ClusterInfo } from '../gen4d/stream';
+import { seedKey as worldSeedKey, type ClusterInfo, type WetInfo } from '../gen4d/stream';
+import { WET_TAGS } from '../gen4d/wet';
 import { viewHorizonM } from '../gen4d/pvs';
+import { coopResume, useCoop } from '../coop/store';
+import { CoopHud, CoopModal, CoopSection, COOP_STATUS, coopActive } from '../coop/CoopPanel';
+import { CoopPresence } from '../coop/presence';
+import type { CoopOpEvent, CoopSession } from '../coop/session';
 import './view3d.css';
 
 type Source = 'run' | 'room' | 'file' | 'walk';
 
-/** Спец-локация на экране: лестница или лифт (у каждой свой слой и сцена). */
-type LocReq = (LocationRequest & { kind: 'stairwell' }) | LiftRequest;
+/** Спец-локация на экране: лестница, лифт или ангар (у каждой свой слой и сцена). */
+type LocReq = (LocationRequest & { kind: 'stairwell' }) | LiftRequest | HangarRequest | SwampRequest;
 const SIDE_RU: Record<LiftSide, string> = { straight: 'прямо', right: 'направо' };
 
 /** Самопроверка моделей частей складчатого прогона — один раз на модель (модели кэшируются драйвером). */
@@ -53,9 +64,9 @@ const fmtFloor = (f: number) => (f < 0 ? `−${-f}` : `${f}`);
 const OPTS_KEY = 'room-forge/blockout-opts';
 const readOpts = (): BlockoutOptions => {
   try {
-    return { ...DEFAULT_BLOCKOUT, ...JSON.parse(localStorage.getItem(OPTS_KEY) || '{}') };
+    return { ...DEFAULT_BLOCKOUT, doors: true, ...JSON.parse(localStorage.getItem(OPTS_KEY) || '{}') };
   } catch {
-    return { ...DEFAULT_BLOCKOUT };
+    return { ...DEFAULT_BLOCKOUT, doors: true };
   }
 };
 
@@ -135,6 +146,16 @@ export default function View3DPage() {
   /** спец-локация (src/locations/): своя сцена поверх болванки, пока задана */
   const [loc, setLoc] = useState<LocReq | null>(null);
   const roomAttempts = useRef(new Map<string, number>());
+  // ── кооп (src/coop/, docs/COOP.md): лобби страницы; в лобби «Прогулка» — его копия мира ──
+  const coop = useCoop();
+  const coopOn = coopActive(coop);
+  /** копия мира лобби (null — не в лобби или ещё грузится) */
+  const coopWalk = coopOn ? coop.walk : null;
+  const [coopModal, setCoopModal] = useState(false);
+  /** рядом другой игрок — идём медленнее (HUD) */
+  const [coopSlow, setCoopSlow] = useState(false);
+  const locRef = useRef<LocReq | null>(null);
+  locRef.current = loc;
 
   const setSource = (s: Source) => {
     setLoc(null);
@@ -142,6 +163,13 @@ export default function View3DPage() {
     setSourceS(s);
     writeWalk({ ...readWalk(), on: s === 'walk' });
   };
+  // вошли в лобби — сразу в его мир; вкладка была в лобби до перезагрузки — войти снова
+  useEffect(() => {
+    if (coopOn && source !== 'walk') setSource('walk');
+  }, [coopOn]);
+  useEffect(() => {
+    coopResume(() => p);
+  }, []);
 
   // ── прогулка: бесконечный мир (src/gen4d/stream.ts) ──
   const [walkOpts, setWalkOptsS] = useState<WalkOptions>(() => readWalk());
@@ -153,6 +181,10 @@ export default function View3DPage() {
   /** режим квартир: закрытый выход рядом с игроком (подсказка «E — открыть») и квартира под ногами */
   const [doorAt, setDoorAt] = useState<{ inst: string; connector: string } | null>(null);
   const [walkHere, setWalkHere] = useState<ClusterInfo | null>(null);
+  /** влажность куска сети цехов под ногами (завод) */
+  const [walkWet, setWalkWet] = useState<WetInfo | null>(null);
+  /** снежные ходы: засыпан / треск / подсказка у подтаявшего снега (src/view3d/snowWalk.ts) */
+  const [snowHud, setSnowHud] = useState<SnowHud | null>(null);
   const walkRef = useRef<WalkSession | null>(null);
   const setWalkOpt = <K extends keyof WalkOptions>(k: K, v: WalkOptions[K]) => {
     const next = { ...walkOpts, [k]: v };
@@ -161,12 +193,35 @@ export default function View3DPage() {
   };
   const startWalk = (seed: string, reset = false) => {
     const s = seed.trim() || 'гигахрущ';
-    if (reset) WalkSession.reset(s);
+    if (reset) WalkSession.reset(s, (p.world?.biomes ?? []).map((b) => b.id));
     const next = { ...walkOpts, seed: s };
     setWalkOptsS(next);
     setWalkSeedDraft(s);
     writeWalk({ ...next, on: true });
     setWalkRun((r) => ({ seed: s, n: r.n + 1 }));
+  };
+  /** «Новая игра» после финала: стереть миры сида во всех биомах и начать с биома старта проекта. */
+  const newGame = () => {
+    if (coopOn) {
+      notify('В лобби мир общий — «Новая игра» после выхода из лобби', 'info');
+      return;
+    }
+    const s = walkRun.seed;
+    WalkSession.reset(s, (p.world?.biomes ?? []).map((b) => b.id));
+    const next = { ...walkOpts, seed: s, biome: null };
+    setWalkOptsS(next);
+    writeWalk({ ...next, on: true });
+    setWalkRun((r) => ({ seed: s, n: r.n + 1 }));
+  };
+  const newGameRef = useRef(newGame);
+  newGameRef.current = newGame;
+  /** Режим квартир: биом, в котором начинается мир прогулки (у каждого — свой мир сида и своё сохранение). */
+  const walkStartBiome = walkBiome(p, walkOpts) ?? (p.world ? startBiomeOf(p.world)?.id ?? null : null);
+  const switchBiome = (id: string) => {
+    const next = { ...walkOpts, biome: id };
+    setWalkOptsS(next);
+    writeWalk({ ...next, on: true });
+    setWalkRun((r) => ({ seed: r.seed, n: r.n + 1 }));
   };
   const setOpt = <K extends keyof BlockoutOptions>(k: K, v: BlockoutOptions[K]) => {
     if (k === 'deadEnds' && source === 'room') {
@@ -181,7 +236,7 @@ export default function View3DPage() {
     } catch {}
   };
   const resetOpts = () => {
-    setOptsS({ ...DEFAULT_BLOCKOUT });
+    setOptsS({ ...DEFAULT_BLOCKOUT, doors: true });
     memo.deadRoom = 'open';
     setDeadRoomS('open');
     try {
@@ -211,8 +266,8 @@ export default function View3DPage() {
 
   // «Комната» — свои тупики; «Прогулка» в режиме квартир — глухие двери стенами (закрытые выходы — двери-панели)
   const effOpts = useMemo(
-    () => (source === 'room' ? { ...opts, deadEnds: deadRoom } : source === 'walk' && walkOpts.clusters ? { ...opts, deadEnds: 'wall' as const } : opts),
-    [opts, source, deadRoom, walkOpts.clusters],
+    () => (source === 'room' ? { ...opts, deadEnds: deadRoom } : source === 'walk' && (coopWalk ? coopWalk.opts.clusters : walkOpts.clusters) ? { ...opts, deadEnds: 'wall' as const } : opts),
+    [opts, source, deadRoom, walkOpts.clusters, coopWalk],
   );
   // складчатый (4D) прогон: целиком не строится — частями через FoldDriver
   const fold = useMemo(() => isFoldRun(rx.data), [rx.data]);
@@ -378,6 +433,15 @@ export default function View3DPage() {
       setWalkStatus(null);
       return;
     }
+    // кооп: мир лобби ещё грузится — сцены нет (сообщение поверх холста)
+    if (coopOn && !coopWalk) {
+      setWalkRx(null);
+      setWalkStatus(null);
+      return;
+    }
+    /** лобби, чья копия мира — эта прогулка (null — одиночная) */
+    const co: CoopSession | null = coopWalk ? coop : null;
+    let presence: CoopPresence | null = null;
     setPick(null);
     let session: WalkSession | null = null;
     let d: FoldDriver | null = null;
@@ -395,6 +459,50 @@ export default function View3DPage() {
     /** после выхода из лифта — не войти обратно, пока игрок ещё стоит у стены, через которую пришёл */
     let liftCool = 0;
     const lair = new LairDecor(v.scene);
+    // темнота биома (Biome.dark): свет сцены — по квартире под ногами
+    const mood = new BiomeMood(v.scene);
+    // снежные ходы: поза (ползком / скрючившись), туман, обвалы, подтаявший снег → ангар (src/view3d/snowWalk.ts)
+    let roomIdx: { rx: unknown; by: Map<string, RunExport['instances'][number]> } = { rx: null, by: new Map() };
+    const snow = new SnowWalk(v.scene, v.fps, {
+      room: () => {
+        const s = session, dd = d;
+        if (!s || !dd) return null;
+        const id = dd.portal?.current ?? dd.current.center;
+        if (!id) return null;
+        if (roomIdx.rx !== s.rx) roomIdx = { rx: s.rx, by: new Map(s.rx.instances.map((i) => [i.id, i])) };
+        const inst = roomIdx.by.get(id);
+        return inst ? { id, inst } : null;
+      },
+      pickSite: (id, x, y) => (session ? collapseSite(session.rx, id, x, y) : null),
+      collapse: (site) => {
+        void session?.request({ k: 'collapse', inst: site.inst, conn: site.connector });
+      },
+      thawOf: (id) => {
+        const L = session?.world.locationOf(id);
+        return L?.kind === 'hangar' ? L.roll : null;
+      },
+      onBreak: (id) => enterHangar(id),
+      onHud: setSnowHud,
+      live: () => !v.hasOverlay && v.mode === 'fps',
+    }, walkRun.seed);
+    if (import.meta.env.DEV) (window as any).__rfSnow = snow; // для QA-скриптов
+    /** Подтаявший снег пробит — сцена ангара (падение); ворота цеха — world.descend (этажи ниже: завод или другой биом). */
+    const enterHangar = (id: string) => {
+      const s = session;
+      if (!s || !d || v.hasOverlay) return;
+      const L = s.world.locationOf(id);
+      if (L?.kind !== 'hangar') return;
+      setLoc({
+        kind: 'hangar',
+        key: `${id}:${Date.now()}`,
+        spec: L.spec,
+        seedKey: locKey(s, id),
+        roll: L.roll,
+        title: 'Ангар',
+        mode: 'walk',
+        onExit: () => exitLoc('descend', id, null),
+      });
+    };
     const enterLoc = (id: string) => {
       const s = session;
       if (!s || !d || v.hasOverlay) return;
@@ -410,6 +518,31 @@ export default function View3DPage() {
         const link = s.world.run().links.find((l) => l.kind === 'lift' && l.b.inst === id);
         const de = link ? d.deadEndAt(id, link.b.connector) : null;
         if (de) lair.show(id, de.center, de.u, de.depth, lairSign(L.spec), L.spec.darkness);
+        return;
+      }
+      if (L?.kind === 'swamp') {
+        // финал: крыша с шестернёй; люк — назад к двери, «Новая игра» — мир сида с начала
+        const inst = s.rx.instances.find((i) => i.id === id);
+        const cross = d.current.cross;
+        const from = cross && cross.to === id ? cross.from : null;
+        lair.hide();
+        setLoc({
+          kind: 'swamp',
+          key: `${id}:${Date.now()}`,
+          spec: L.spec,
+          seedKey: locKey(s, id),
+          roll: L.roll,
+          title: inst?.roomName || 'Лестница на крышу',
+          mode: 'walk',
+          onExit: (kind) => {
+            if (kind === 'new') {
+              setLoc(null);
+              newGameRef.current();
+              return;
+            }
+            exitLoc('back', id, from);
+          },
+        });
         return;
       }
       if (!L || L.kind !== 'stairwell') return;
@@ -454,7 +587,7 @@ export default function View3DPage() {
         onExit: (kind, f, isLair) => exitLift(kind, f, isLair, id, from),
       });
     };
-    const exitLift = (kind: 'entry' | LiftSide, floor: number, isLair: boolean, id: string, from: string | null) => {
+    const exitLift = async (kind: 'entry' | LiftSide, floor: number, isLair: boolean, id: string, from: string | null) => {
       const s = session;
       const dd = d;
       setLoc(null);
@@ -464,12 +597,9 @@ export default function View3DPage() {
         back();
         return;
       }
-      let exitId: string | null = null;
-      try {
-        exitId = s.world.ascend(id, floor, kind);
-      } catch (e) {
-        console.error(e);
-      }
+      // операция мира (кооп: через сервер лобби — у всех за этим выходом одна и та же комната)
+      const exitId = await s.request({ k: 'ascend', id, floor, side: kind });
+      if (!alive) return;
       if (!exitId) {
         notify('Лифт никуда не вывел: мир не смог поставить комнату выше (см. консоль)', 'error');
         back();
@@ -525,8 +655,27 @@ export default function View3DPage() {
       const { inst, connector } = door;
       door = null;
       setDoorAt(null);
-      const id = s.openDoor(inst, connector);
-      if (!id) notify('Дверь не открылась: за ней ничего не встало', 'error');
+      // анимация (портальный рендер): ручка → мир растёт за закрытым полотном → распах, когда комната за дверью готова
+      // (docs/DOORS.md §4); без неё (набор PVS, нет модели двери) — сразу
+      const dd = d;
+      const slot = dd?.doorAt(inst, connector) ?? null;
+      let target: string | null = null;
+      const anim = slot && dd?.doors ? dd.doors.open(slot, { ready: () => !!target && s.world.doorState(inst, connector) === 'linked' && dd.roomReady(target) }) : null;
+      const go = () => {
+        if (!alive || session !== s) return;
+        // операция мира (кооп: через сервер лобби — дверь открывается у всех; комната за ней — когда операция вернулась)
+        void s.request({ k: 'door', inst, conn: connector }).then((id) => {
+          if (!alive || session !== s) return;
+          target = id;
+          if (!target) {
+            anim?.fail();
+            notify('Дверь не открылась: за ней ничего не встало', 'error');
+          }
+        });
+      };
+      // мир растёт после первого кадра анимации (ручка уже пошла) — пауза генерации прячется в отпирании
+      if (anim) requestAnimationFrame(() => setTimeout(go, 0));
+      else go();
     };
     window.addEventListener('keydown', onDoorKey);
     // возврат в лифт: игрок в комнате за выходом лифта шагнул к стене, через которую пришёл
@@ -539,7 +688,10 @@ export default function View3DPage() {
         nearDoor(s, dd, room);
         if (room !== hereRoom) {
           hereRoom = room;
-          setWalkHere(s.world.clusterAt(room));
+          const here = s.world.clusterAt(room);
+          setWalkHere(here);
+          setWalkWet(s.world.wetAt(room));
+          mood.set(here?.biome?.dark ?? 0);
         }
       }
       if (performance.now() < liftCool) return;
@@ -555,7 +707,7 @@ export default function View3DPage() {
         }
       }
     }, 100);
-    const exitLoc = (kind: 'back' | 'descend', id: string, from: string | null) => {
+    const exitLoc = async (kind: 'back' | 'descend', id: string, from: string | null) => {
       const s = session;
       const dd = d;
       setLoc(null);
@@ -565,12 +717,9 @@ export default function View3DPage() {
         back();
         return;
       }
-      let exitId: string | null = null;
-      try {
-        exitId = s.world.descend(id);
-      } catch (e) {
-        console.error(e);
-      }
+      // операция мира (кооп: через сервер лобби — у всех внизу одна и та же комната)
+      const exitId = await s.request({ k: 'descend', id });
+      if (!alive) return;
       if (!exitId) {
         notify('Лестница никуда не вывела: мир не смог поставить комнату ниже (см. консоль)', 'error');
         back();
@@ -600,9 +749,10 @@ export default function View3DPage() {
       session.savePlayer({ room, pos: [c.position.x, c.position.y, c.position.z], rot: [c.rotation.x, c.rotation.y, c.rotation.z], at: Date.now() });
     };
     try {
-      session = walkRef.current = new WalkSession(p, { ...walkOpts, seed: walkRun.seed });
+      session = walkRef.current = coopWalk ?? new WalkSession(p, { ...walkOpts, seed: walkRun.seed });
       const s = session;
-      const player = s.loadPlayer();
+      // кооп: своё место в этом лобби (после перезагрузки) или рядом с другим игроком
+      const player = co ? co.spawnPoint() : s.loadPlayer();
       setWalkRx(s.rx);
       setWalkStatus(s.status());
       v.setMode('fps');
@@ -611,7 +761,7 @@ export default function View3DPage() {
         v,
         s.rx,
         effOpts,
-        { propTextures: propTexturesOf(p, s.rx), finishes: view.finishes },
+        { propTextures: propTexturesOf(co?.project ?? p, s.rx), finishes: view.finishes },
         {
           onState: (st) => {
             setFs(st);
@@ -644,6 +794,13 @@ export default function View3DPage() {
         v.fps.rotation.set(...player.rot);
         v.fps.cameraDirection.setAll(0);
       }
+      if (co) {
+        // другие игроки: аватары, своё положение для них, «рядом — медленнее»
+        presence = new CoopPresence(v, co, () => d, () => locRef.current?.kind ?? null);
+        co.beforeOp.add(beforeOp);
+        co.afterOp.add(afterOp);
+        if (import.meta.env.DEV) (window as any).__rfCoop = { co, presence }; // для QA-скриптов
+      }
       timer = window.setInterval(() => {
         savePlayer();
         setWalkStatus(s.status());
@@ -654,6 +811,25 @@ export default function View3DPage() {
       v.setParts([]);
       setSceneErr(String(e?.message ?? e));
     }
+    // кооп: дверь открыл другой игрок — у нас та же анимация (если кусок её комнаты построен), мир растёт его операцией
+    const remote = new Map<number, { anim: { fail(): void }; to: (id: string) => void }>();
+    function beforeOp(e: CoopOpEvent) {
+      const dd = d;
+      if (e.mine || e.op.k !== 'door' || !dd?.doors || !dd.portal?.cache.peek(e.op.inst)) return;
+      const slot = dd.doorAt(e.op.inst, e.op.conn);
+      if (!slot || slot.role !== 'exit') return;
+      let target: string | null = null;
+      const anim = dd.doors.open(slot, { ready: () => !!target && dd.roomReady(target) });
+      if (anim) remote.set(e.seq, { anim, to: (id) => (target = id) });
+    }
+    function afterOp(e: CoopOpEvent, res: string | null) {
+      const r = remote.get(e.seq);
+      if (!r) return;
+      remote.delete(e.seq);
+      if (res) r.to(res);
+      else r.anim.fail();
+    }
+    const coopTimer = co ? window.setInterval(() => setCoopSlow(!!presence?.slowed), 150) : 0;
     const onUnload = () => {
       savePlayer();
       session?.saveNow();
@@ -668,10 +844,26 @@ export default function View3DPage() {
       window.removeEventListener('keydown', onDoorKey);
       setDoorAt(null);
       setWalkHere(null);
+      setWalkWet(null);
       lair.hide();
+      mood.dispose();
+      snow.dispose();
+      setSnowHud(null);
+      if (import.meta.env.DEV) delete (window as any).__rfSnow;
       savePlayer();
+      clearInterval(coopTimer);
+      setCoopSlow(false);
+      presence?.dispose();
+      if (co) {
+        co.beforeOp.delete(beforeOp);
+        co.afterOp.delete(afterOp);
+        if (import.meta.env.DEV) delete (window as any).__rfCoop;
+      }
       d?.dispose();
-      session?.dispose();
+      // кооп: копия мира принадлежит лобби (операции применяются и без страницы) — только отцепиться
+      if (co) {
+        if (session) session.onUpdate = null;
+      } else session?.dispose();
       walkRef.current = null;
       driver.current = null;
       if (import.meta.env.DEV) {
@@ -679,7 +871,7 @@ export default function View3DPage() {
         delete (window as any).__rfWalk;
       }
     };
-  }, [source, walkRun, effOpts, view.finishes]);
+  }, [source, walkRun, effOpts, view.finishes, coopOn, coopWalk]);
 
   // вспышка «W 2 → 3» при переходе через порог со сдвигом
   const crossSeq = fs?.cross?.seq ?? 0;
@@ -861,7 +1053,8 @@ export default function View3DPage() {
     runLocSkip.current = null;
     const inst = data.instances.find((i) => i.id === runRoom);
     const spec = parseLocation(inst?.location);
-    if (!inst || !spec || spec.kind === 'lair') return;
+    // логово — без сцены; ангар — сцена открывается только пробитым снегом («Прогулка»)
+    if (!inst || !spec || spec.kind === 'lair' || spec.kind === 'hangar') return;
     const n = roomAttempts.current.get(inst.id) ?? 0;
     roomAttempts.current.set(inst.id, n + 1);
     const base = { key: `run:${inst.id}:${Date.now()}`, seedKey: locationSeedKey(data.seed, inst.id), attempt: n, title: inst.roomName, mode: 'walk' as const };
@@ -874,6 +1067,8 @@ export default function View3DPage() {
     const far = 'в «Прогулке» отсюда — квартира другого биома или богатая квартира';
     if (spec.kind === 'lift') {
       setLoc({ kind: 'lift', ...base, spec, onExit: (kind, floor) => back(kind === 'entry' ? null : `Выход ${SIDE_RU[kind]} на этаже ${floor > 0 ? '+' : '−'}${Math.abs(floor)}: ${far}`) });
+    } else if (spec.kind === 'swamp') {
+      setLoc({ kind: 'swamp', ...base, spec, onExit: () => back(null) });
     } else {
       setLoc({ kind: 'stairwell', ...base, spec, onExit: (kind, floors) => back(kind === 'descend' ? `Лестница вывела вниз на ${floors} эт.: ${far}` : null) });
     }
@@ -887,6 +1082,38 @@ export default function View3DPage() {
     if (!room || !spec || spec.kind === 'lair') return;
     const n = roomAttempts.current.get(room.id) ?? 0;
     roomAttempts.current.set(room.id, n + 1);
+    if (spec.kind === 'swamp') {
+      setLoc({
+        kind: 'swamp',
+        key: `room:${room.id}:${Date.now()}`,
+        spec,
+        seedKey: locationSeedKey('room-' + room.id, 'i0'),
+        title: room.name,
+        mode: 'room',
+        onExit: (kind) => {
+          setLoc(null);
+          if (document.pointerLockElement) document.exitPointerLock();
+          if (kind === 'new') notify('«Новая игра» в «Прогулке» стирает мир сида и начинает с биома старта', 'ok');
+        },
+      });
+      return;
+    }
+    if (spec.kind === 'hangar') {
+      setLoc({
+        kind: 'hangar',
+        key: `room:${room.id}:${Date.now()}`,
+        spec,
+        seedKey: locationSeedKey('room-' + room.id, 'i0'),
+        title: 'Ангар',
+        mode: 'room',
+        onExit: () => {
+          setLoc(null);
+          if (document.pointerLockElement) document.exitPointerLock();
+          notify('Вышли за ворота ангара: в «Прогулке» это комната этажами ниже — хаб завода (если он есть) или другой биом', 'ok');
+        },
+      });
+      return;
+    }
     if (spec.kind === 'lift') {
       setLoc({
         kind: 'lift',
@@ -966,6 +1193,7 @@ export default function View3DPage() {
   // сообщение поверх холста
   let msg: { kind: 'info' | 'err'; title: string; text?: string; action?: React.ReactNode } | null = null;
   if (glErr) msg = { kind: 'err', title: 'WebGL недоступен', text: glErr };
+  else if (source === 'walk' && coopOn && !coopWalk) msg = { kind: 'info', title: `Лобби: ${COOP_STATUS[coop.status]}`, text: `Мир лобби загружается с сервера ${coop.url}…` };
   else if (rx.error) msg = { kind: 'err', title: 'Нет данных', text: rx.error };
   else if (!rx.data && source === 'run')
     msg = { kind: 'info', title: 'Прогона ещё нет', text: 'Сгенерируйте раскладку — болванка построится по ней.', action: <Btn variant="primary" onClick={() => generateNow()}>Сгенерировать</Btn> };
@@ -989,6 +1217,7 @@ export default function View3DPage() {
   return (
     <div className="cols3">
       <aside className="side">
+        <CoopSection co={coop} onOpen={() => setCoopModal(true)} />
         <Section title="Источник">
           <div className="v3-seg four">
             <Btn sm on={source === 'run'} onClick={() => setSource('run')} title="Последний прогон генератора">
@@ -1030,7 +1259,7 @@ export default function View3DPage() {
             <div className="v3-src">
               <Select value={roomSel} options={p.rooms.map((r) => ({ value: r.id, label: r.name + (r.location ? ' · спец-локация' : '') }))} onChange={setRoomSel} />
               <div className="hint">Один экземпляр, rot 0, без розыгрыша спотов. Тупики по умолчанию открыты.</div>
-              {(selRoom?.location?.kind === 'stairwell' || selRoom?.location?.kind === 'lift') && (
+              {(selRoom?.location?.kind === 'stairwell' || selRoom?.location?.kind === 'lift' || selRoom?.location?.kind === 'hangar' || selRoom?.location?.kind === 'swamp') && (
                 <>
                   <Btn variant="primary" onClick={enterRoomLoc} disabled={!!loc || !!glErr} title="Сцена спец-локации сама по себе, без мира: вход у двери, выход назад — через неё же">
                     Войти в локацию
@@ -1038,6 +1267,10 @@ export default function View3DPage() {
                   <div className="hint">
                     {selRoom.location.kind === 'stairwell'
                       ? 'Спец-локация «Бесконечная лестница». В «Прогулке» вход — через дверь комнаты, выход вниз ведёт на этаж ниже.'
+                      : selRoom.location.kind === 'swamp'
+                      ? 'Финал игры «Болото на крыше». В «Прогулке» сюда выводит мокрый ход завода; встань на зуб шестерни — конец игры, назад — люк.'
+                      : selRoom.location.kind === 'hangar'
+                      ? 'Спец-локация «Ангар». В «Прогулке» — подтаявшая берлога снежных ходов: пробил пятно в полу — падение сквозь крышу в ангар; ворота цеха ведут дальше (этажами ниже). Здесь — стоя у кучи, без падения.'
                       : 'Спец-локация «Ржавый лифт». В «Прогулке» вход — через дверь шахты, выходы прямо и направо ведут на этажи выше и ниже, к лифту — назад к той же стене.'}
                   </div>
                 </>
@@ -1049,6 +1282,12 @@ export default function View3DPage() {
           )}
           {source === 'walk' && (
             <div className="v3-src v3-walk">
+              {coopOn && (
+                <div className="hint">
+                  Мир лобби{coop.meta ? <> — сид <span className="mono">«{coop.meta.seed}»</span></> : null}: общий для всех игроков, хранится на сервере. Сид, биом и сброс ниже — для
+                  одиночной прогулки (после выхода из лобби).
+                </div>
+              )}
               <div className="v3-walk-seed">
                 <input
                   className="input"
@@ -1057,7 +1296,7 @@ export default function View3DPage() {
                   onKeyDown={(e) => e.key === 'Enter' && startWalk(walkSeedDraft)}
                   title="Сид мира: тот же сид — тот же мир (и его сохранение)"
                 />
-                <Btn sm onClick={() => startWalk(walkSeedDraft)} disabled={walkSeedDraft.trim() === walkRun.seed} title="Открыть мир этого сида (сохранённый — с того же места)">
+                <Btn sm onClick={() => startWalk(walkSeedDraft)} disabled={coopOn || walkSeedDraft.trim() === walkRun.seed} title="Открыть мир этого сида (сохранённый — с того же места)">
                   Открыть
                 </Btn>
               </div>
@@ -1065,6 +1304,16 @@ export default function View3DPage() {
                 <input type="checkbox" checked={walkOpts.clusters} onChange={(e) => setWalkOpt('clusters', e.target.checked)} />
                 Квартиры, биомы и переходы
               </label>
+              {walkOpts.clusters && p.world && walkStartBiome && (
+                <div className="v3-walk-biome" title="Мир начинается в этом биоме: переключение сразу открывает его мир этого сида (у каждого биома — свой, сохраняется отдельно — вернётесь туда же). Дальше биомы меняются переходами, как обычно">
+                  <Select
+                    label="Биом"
+                    value={walkStartBiome}
+                    options={plainBiomes(p.world).map((b) => ({ value: b.id, label: b.name + (b.layout === 'tunnels' ? ' · ходы' : '') }))}
+                    onChange={switchBiome}
+                  />
+                </div>
+              )}
               {!walkOpts.clusters && (
                 <div className="grid2">
                   <NumField label="Тупики" value={walkOpts.deadEndChance * 100} min={0} max={100} step={5} digits={0} suffix="%" title="Вероятность, что нераскрытая дверь окажется заколоченной" onChange={(v) => setWalkOpt('deadEndChance', Math.min(1, Math.max(0, v / 100)))} />
@@ -1073,10 +1322,10 @@ export default function View3DPage() {
                 </div>
               )}
               <div className="v3-seg">
-                <Btn sm onClick={() => startWalk('мир-' + Math.random().toString(36).slice(2, 7))} title="Новый мир со случайным сидом и настройками выше">
+                <Btn sm onClick={() => startWalk('мир-' + Math.random().toString(36).slice(2, 7))} disabled={coopOn} title="Новый мир со случайным сидом и настройками выше">
                   Новый мир
                 </Btn>
-                <Btn sm onClick={() => startWalk(walkRun.seed, true)} title="Стереть сохранение этого сида и начать его заново (с настройками выше)">
+                <Btn sm onClick={() => startWalk(walkRun.seed, true)} disabled={coopOn} title="Стереть сохранение этого сида и начать его заново (с настройками выше)">
                   Сбросить сохранение
                 </Btn>
               </div>
@@ -1150,6 +1399,7 @@ export default function View3DPage() {
           </div>
           <Select label="Тупики" value={source === 'room' ? deadRoom : opts.deadEnds} options={DEAD} onChange={(v) => setOpt('deadEnds', v)} />
           <Check label="потолки" value={opts.ceilings} onChange={(v) => setOpt('ceilings', v)} />
+          <Check label="двери (модели)" value={opts.doors !== false} onChange={(v) => setOpt('doors', v)} title="Двери из каталога (docs/DOORS.md): закрытые выходы, заколоченные тупики, распахнутые полотна и наличники у проходов" />
           <Check label="мебель (декор)" value={opts.props} onChange={(v) => setOpt('props', v)} />
           <Check label="мебель со спотов" value={opts.spotProps} onChange={(v) => setOpt('spotProps', v)} title="Ставить и то, что выпало на спотах" />
           <Check label="заполнять пустоты" value={opts.fillVoids} onChange={(v) => setOpt('fillVoids', v)} title="Замкнутые пустоты (дыры в полу, щели между стенами) — сплошной массой" />
@@ -1282,6 +1532,10 @@ export default function View3DPage() {
         {loc &&
           (loc.kind === 'lift' ? (
             <LiftLayer viewer={viewer.current} req={loc} onClose={closeLoc} />
+          ) : loc.kind === 'hangar' ? (
+            <HangarLayer viewer={viewer.current} req={loc} onClose={closeLoc} />
+          ) : loc.kind === 'swamp' ? (
+            <SwampLayer viewer={viewer.current} req={loc} onClose={closeLoc} />
           ) : (
             <StairwellLayer viewer={viewer.current} req={loc} onClose={closeLoc} />
           ))}
@@ -1374,19 +1628,35 @@ export default function View3DPage() {
               </>
             )}
             {walkHere?.biome ? (
-              <span style={{ color: walkHere.biome.color }} title={walkHere.rich ? 'богатая квартира: элитность выше' : 'биом квартиры'}>
+              <span style={{ color: walkHere.biome.color }} title={walkHere.gate ? 'площадка-переход: любая её дверь — в другой биом' : walkHere.rich ? 'богатая квартира: элитность выше' : 'биом квартиры'}>
                 {walkHere.biome.name}
                 {walkHere.rich ? ' ★' : ''}
+                {walkHere.gate ? ' · переход' : ''}
               </span>
             ) : (
               <span>тупиков {walkStatus.dead}</span>
             )}
-            <span className={walkStatus.error ? 'v3-err' : 'muted'} title={walkStatus.error ?? 'автосохранение мира в localStorage'}>
-              {walkStatus.error ? '⚠ не сохранено' : walkStatus.saved ? `✓ сохранено ${new Date(walkStatus.saved.at).toLocaleTimeString()}` : '…'}
-            </span>
+            {walkWet && (
+              <span title="Влажность куска цеха: иди туда, где влажнее — там болото (финал). Ступени: сухо, сыро, течь, топь">
+                {WET_TAGS[walkWet.level]} {Math.round(walkWet.w * 100)}%{walkWet.dir > 0 ? ' ↑' : ' ↓'}
+              </span>
+            )}
+            {coopOn ? (
+              <span className={coop.status === 'online' ? 'muted' : 'v3-err'} title="мир лобби хранится на сервере">
+                онлайн · {COOP_STATUS[coop.status]}
+              </span>
+            ) : (
+              <span className={walkStatus.error ? 'v3-err' : 'muted'} title={walkStatus.error ?? 'автосохранение мира в localStorage'}>
+                {walkStatus.error ? '⚠ не сохранено' : walkStatus.saved ? `✓ сохранено ${new Date(walkStatus.saved.at).toLocaleTimeString()}` : '…'}
+              </span>
+            )}
           </div>
         )}
         {source === 'walk' && mode === 'fps' && doorAt && !loc && <div className="float hud v3-lift-prompt">E — открыть дверь</div>}
+        {source === 'walk' && mode === 'fps' && coopOn && coopWalk && !loc && <CoopHud co={coop} slow={coopSlow} />}
+        {source === 'walk' && mode === 'fps' && !loc && snowHud?.buried != null && <div className="v3-snow-buried" style={{ opacity: 0.94 - 0.55 * snowHud.buried }} />}
+        {source === 'walk' && mode === 'fps' && !loc && snowHud?.crack != null && <div className="v3-snow-crack" style={{ opacity: 0.25 + 0.5 * snowHud.crack }} />}
+        {source === 'walk' && mode === 'fps' && !loc && snowHud?.prompt && <div className="float hud v3-lift-prompt">{snowHud.prompt}</div>}
         {flash && mode === 'fps' && !loc && (
           <div key={flash.seq} className="v3-flash" style={{ color: flash.color }}>
             {flash.text}
@@ -1607,6 +1877,15 @@ export default function View3DPage() {
           <div className="hint">Подключение к своему Babylon-проекту — docs/BLOCKOUT-BABYLON.md, пример — examples/babylon-demo/.</div>
         </Section>
       </aside>
+      {coopModal && (
+        <CoopModal
+          co={coop}
+          walk={{ ...walkOpts, seed: walkRun.seed }}
+          project={p}
+          biomeName={p.world?.biomes.find((b) => b.id === walkStartBiome)?.name ?? null}
+          onClose={() => setCoopModal(false)}
+        />
+      )}
     </div>
   );
 }

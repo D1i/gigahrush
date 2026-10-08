@@ -40,9 +40,10 @@ import type { Camera } from '@babylonjs/core/Cameras/camera';
 import type { Observer } from '@babylonjs/core/Misc/observable';
 import type { Scene } from '@babylonjs/core/scene';
 import type { AbstractEngine } from '@babylonjs/core/Engines/abstractEngine';
-import { buildBabylonBlockout, createBlockoutShared, type BabylonBlockout, type BlockoutShared } from '../blockout/babylon';
+import { buildBabylonBlockout, createBlockoutShared, type BabylonBlockout, type BlockoutShared, type DoorPose } from '../blockout/babylon';
 import { buildPiece, pieceFloorRects, piecePortals, type PiecePortal } from '../blockout/pieces';
-import type { BlockoutModel, BlockoutOptions, Rect, RunExport } from '../blockout/types';
+import type { BlockoutModel, BlockoutOptions, DoorSlot, Rect, RunExport } from '../blockout/types';
+import { snowPieceFor, snowPrefetch } from './snowView';
 
 /** Слой мешей кусков: камеры его не рисуют — куски рисует только портальный рендер. */
 export const PORTAL_LAYER = 0x10000000;
@@ -133,6 +134,8 @@ export interface PieceCacheOptions {
   maxPieces?: number;
   /** метки комнаты с флагом cut (нераскрытые двери бесконечного мира) — проём в темноту, а не стена */
   openCut?: boolean;
+  /** двери: поза полотна при постройке куска (анимация открытия, src/view3d/doorAnim.ts) */
+  doorPose?: (slot: DoorSlot) => DoorPose | null;
 }
 
 const now = (): number => performance.now();
@@ -189,11 +192,14 @@ export class PieceCache {
   /** Прогон вырос (бесконечный мир): у комнат changed (новые связи, раскрытые двери) кусок — заново. */
   setRun(run: RunExport, changed: Iterable<string>) {
     this.run = run;
-    for (const id of changed) {
+    const ids = [...changed];
+    for (const id of ids) {
       this.models.delete(id);
       const p = this.pieces.get(id);
       if (p) this.drop(id, p);
     }
+    // снежные ходы: оболочки новых и изменившихся кусков — заранее, в воркере
+    snowPrefetch(this.scene, run, ids);
   }
 
   has(id: string): boolean {
@@ -222,8 +228,18 @@ export class PieceCache {
       finishes: this.opts.finishes !== false,
       shared: this.shared,
       propModel: this.opts.propModel,
+      doorPose: this.opts.doorPose,
     });
     bo.setCeilingsVisible(true);
+    // снежные ходы: вместо стен, пола и потолка болванки — полость в снегу и её коллайдер (src/view3d/snowView.ts)
+    const snow = snowPieceFor(this.scene, this.run, id);
+    if (snow) {
+      for (const m of bo.root.getChildMeshes(false)) {
+        m.isVisible = false;
+        m.checkCollisions = false;
+      }
+      for (const m of [snow.shell, snow.collider, ...snow.extra]) m.parent = bo.root;
+    }
     const all = bo.root.getChildMeshes(false) as Mesh[];
     // рисуются только видимые (невидимые — коллайдеры, например бокс под моделью предмета)
     const meshes = all.filter((m) => m.isVisible);
@@ -448,6 +464,9 @@ export class PortalRenderer {
   private offNow = new Vector3();
   /** игрок прошёл шов бесконечного хода: камеру перенесли на −shift (колбэк — драйверу) */
   onWrap?: (shift: Vector3) => void;
+  /** свои меши комнаты сверх куска (аватары игроков кооп-лобби, src/coop/presence.ts): рисуются вместе с ней — в её
+   *  области стенсила, с её отсечением и сдвигом; слой мешей — PORTAL_LAYER (камера сама их не рисует) */
+  extras: ((room: string) => readonly Mesh[] | undefined) | null = null;
 
   constructor(
     readonly scene: Scene,
@@ -621,6 +640,8 @@ export class PortalRenderer {
         m.render(sm, false);
       }
     }
+    const ex = this.extras?.(p.id);
+    if (ex) for (const m of ex) for (const sm of m.subMeshes ?? []) m.render(sm, false);
     this.stats.rooms++;
     this.lastRooms.add(p.id);
   }

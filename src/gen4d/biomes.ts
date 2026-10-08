@@ -1,11 +1,13 @@
 // Биомы и настройки бесконечного мира (4D, «Прогулка»): квартиры (кластеры комнат), двери-выходы, переходы, сеть
-// ходов подвала. Механика — src/gen4d/stream.ts (режим квартир), правила — docs/GENERATOR-4D.md §16–17.
+// ходов подвала и сарая. Механика — src/gen4d/stream.ts (режим квартир), правила — docs/GENERATOR-4D.md §16–17, §19.
 //
 // Биом — набор комнат по тегам: вес комнаты в биоме = вес роста × наибольший множитель среди её тегов
 // (тега нет в списке — 0). Пресеты — по группам комнат (первый тег): хрущёвки (подъезд и квартиры), малосемейки
 // (коридорный дом, гостинки), общежитие, «богатая квартира» (куда ведут переходы, с усилением элитности) и три
-// подвала — сеть ходов (layout 'tunnels') с одними комнатами и разной отделкой: сухой, заброшенный, затопленный.
+// подвала — сеть ходов (layout 'tunnels') с одними комнатами и разной отделкой: сухой, заброшенный, затопленный;
+// сарай — тоже сеть ходов, но из своих комнат (проходы 1.5 м, стойла, сеновал).
 import type { ApartmentSettings, Biome, FinishRule, Room, TunnelSettings, WalkGenSettings, WorldSettings } from '../model/types';
+import { DEFAULT_WET, normWet } from './wet';
 
 /** Предел комнат в квартире (из правил заказчика). */
 export const CLUSTER_MAX = 15;
@@ -30,10 +32,30 @@ const rule = (tag: string, wall: Rows, floor: Rows): FinishRule => ({
 
 /** Подвал — сеть ходов: те же комнаты (ходы, повороты, развилки, хабы, кладовые), своя отделка. */
 const TUNNEL_TAGS: [string, number][] = [['подвал', 1], ['кладовка', 1], ['служебное', 0.3]];
-const T = (id: string, name: string, color: string, rules: FinishRule[], note: string): Biome => {
-  const { note: n, ...rest } = B(id, name, color, TUNNEL_TAGS, note);
+/** Сарай — сеть проходов из своих комнат (src/data/roomsBarn.ts). */
+const BARN_TAGS: [string, number][] = [['сарай', 1]];
+/** Завод — сеть цехов из своих комнат (src/data/roomsFactory.ts). */
+const FACTORY_TAGS: [string, number][] = [['завод', 1]];
+
+/** Завод: сеть цехов с влажностью (src/gen4d/wet.ts) — порядок полей как у normBiome (wet — перед note). */
+function factoryBiome(): Biome {
+  const { note, ...rest } = T('factory', 'Завод', '#b0703a', [
+    rule('сухо', [['f_bsm_brick', 4], ['f_concrete', 1]], [['f_bsm_concrete', 1]]),
+    rule('сыро', [['f_bsm_brick', 3], ['f_bsm_damp', 2]], [['f_bsm_concrete', 2], ['f_bsm_damp_floor', 1]]),
+    rule('течь', [['f_bsm_damp', 4], ['f_bsm_brick', 1]], [['f_bsm_damp_floor', 3], ['f_bsm_water', 1]]),
+    rule('топь', [['f_bsm_damp', 1]], [['f_bsm_water', 3], ['f_bsm_damp_floor', 1]]),
+  ], 'Завод: цеха из шестерёнок, сталелитейки и кручения всего подряд — проходы 2 м между рядами станков за перилами, ' +
+    'хабы — машинный зал, литейный цех, насосная, затопленный цех. Выход один — болото: иди туда, где влажнее (на ' +
+    'развилке один проход ведёт к сырости), дошёл — лестница на крышу, финал игры.', FACTORY_TAGS,
+  { hubEvery: [30, 70], turn: 0.14, branch: 0.3, ring: 0, loop: 0 }, 0.45);
+  return { ...rest, wet: { ...DEFAULT_WET }, note };
+}
+/** Снежные тоннели — сеть лазов из своих комнат (src/data/roomsSnow.ts). */
+const SNOW_TAGS: [string, number][] = [['снег', 1]];
+const T = (id: string, name: string, color: string, rules: FinishRule[], note: string, tags = TUNNEL_TAGS, tunnels?: Partial<TunnelSettings>, dark?: number): Biome => {
+  const { note: n, ...rest } = B(id, name, color, tags, note);
   // порядок полей — как у normBiome (сохранение → загрузка без изменений)
-  return { ...rest, layout: 'tunnels', finishRules: rules, note: n };
+  return { ...rest, layout: 'tunnels', finishRules: rules, ...(tunnels ? { tunnels } : {}), ...(dark ? { dark } : {}), note: n };
 };
 
 /** Биомы по умолчанию (свежие объекты при каждом вызове). */
@@ -65,6 +87,17 @@ export function defaultBiomes(): Biome[] {
       rule('кладовка', [['f_bsm_damp', 3], ['f_bsm_planks', 1]], [['f_bsm_damp_floor', 2], ['f_bsm_boards', 1]]),
       rule('служебное', [['f_bsm_damp', 1]], [['f_bsm_damp_floor', 1]]),
     ], 'Затопленный подвал: сырой бетон с плесенью, вода по полу, лужи, настилы.'),
+    T('barn', 'Сарай', '#9a7a4a', [
+      rule('сарай', [['f_barn_vertical', 5], ['f_barn_rust', 3], ['f_barn_horizontal', 2]], [['f_barn_floor', 3], ['f_barn_floor_grey', 2]]),
+    ], 'Бесконечный трухлявый сарай: длинные тёмные проходы 1.5 м — гирлянда по одной стене, с другой ряд открытых стойл ' +
+      '(перегородки, ясли), иногда вместо стойла проход дальше. Хабы — двор, верхняя комната, конюшня. Вход — переходом, ' +
+      'выход — лестницей хаба наверх.', BARN_TAGS, { hubEvery: [60, 140], turn: 0.06, branch: 0.12 }, 0.85),
+    factoryBiome(),
+    T('snow', 'Снежные тоннели', '#c9d6e6', [rule('снег', [['f_snow', 1]], [['f_snow_floor', 1]])],
+      'Лазы под снегом: ползком, ходы виляют влево-вправо, ныряют вниз и лезут вверх, много развилок, вдаль не видно. ' +
+      'Берлоги — стоять скрючившись. Обвалы заваливают лазы навсегда. Выход — подтаявший снег в полу редкой берлоги ' +
+      '(через 60–150 м ползком): пробить — провалишься в ангар. Вход — переходом.',
+      SNOW_TAGS, { hubEvery: [60, 150], turn: 0.32, branch: 0.24, storage: 0.4, ring: 0.3, ringLen: [24, 60], loop: 0.02 }, 0.9),
     B('rich', 'Богатая квартира', '#d06a4e', [
       ['прихожая', 1], ['кухня', 1], ['санузел', 1], ['жилая', 1.5], ['балкон', 1], ['кладовка', 1], ['коридор', 0.2],
     ], 'Сюда ведут переходы: квартира с усиленной элитностью (richBoost), выходы — в обычные квартиры биома, откуда пришли.', true),
@@ -110,6 +143,7 @@ export const DEFAULT_WORLD: WorldSettings = {
   trBase: 0.1,
   trStep: 0.01,
   trToBiome: 0.7,
+  trLanding: 0.4,
   transitionMinLen: 0.7,
   richBoost: 8,
   biomes: [],
@@ -137,6 +171,7 @@ export const cloneBiome = (b: Biome): Biome => ({
   ...(b.finishRules ? { finishRules: b.finishRules.map(cloneRule) } : {}),
   ...(b.apartments ? { apartments: cloneApt(b.apartments) } : {}),
   ...(b.tunnels ? { tunnels: cloneTunnels(b.tunnels) } : {}),
+  ...(b.wet ? { wet: { ...b.wet } } : {}),
 });
 
 export function newWorldSettings(): WorldSettings {
@@ -179,17 +214,25 @@ export function tunOf(w: WorldSettings, biome: string | null | undefined): Tunne
 }
 
 export type TunnelKind = 'hub' | 'straight' | 'turn' | 'branch' | 'storage';
-/** Проход хода — метка; двери кусков роста ходов (кроме хабов). */
+/** Проход хода подвала — метка ('basement', 1.0 м); «Спуск в подвал» — выход квартиры с этой меткой. */
 export const TUNNEL_TAG = 'basement';
-const TUNNEL_DOORS: ReadonlySet<string> = new Set([TUNNEL_TAG, 'basement>storage', 'corridor>service']);
+/** Проходы сетей ходов: подвал — 'basement' (1.0 м), сарай — 'barn' (1.5 м), снег — 'snow' (лаз 1.2 м). Сети друг с
+ *  другом не стыкуются. */
+export const TUNNEL_PASS_TAGS: ReadonlySet<string> = new Set([TUNNEL_TAG, 'barn', 'snow', 'factory']);
+/** Дверь бокового помещения (кладовая подвала) — со стороны помещения: по ней кусок — «кладовая». */
+export const TUNNEL_STORE_TAGS: ReadonlySet<string> = new Set(['storage>basement', 'den>snow']);
+/** Дверь хода в боковое помещение (кладовая) — со стороны хода. */
+export const TUNNEL_SIDE_TAGS: ReadonlySet<string> = new Set(['basement>storage', 'snow>den']);
+/** Метки кусков роста ходов (кроме хабов): проходы, двери в боковые помещения, дверь в служебку. */
+const TUNNEL_DOORS: ReadonlySet<string> = new Set([...TUNNEL_PASS_TAGS, ...TUNNEL_SIDE_TAGS, 'corridor>service']);
 
-/** Вид комнаты в сети ходов: хаб (тег «хаб»), кладовая (дверь к ходу 'storage>basement'), прямой (два прохода на
- *  противоположных стенах), поворот (на соседних), развилка (три и больше); null — не кусок хода. */
+/** Вид комнаты в сети ходов: хаб (тег «хаб»), кладовая (дверь к ходу 'storage>basement'), прямой (два
+ *  прохода на противоположных стенах), поворот (на соседних), развилка (три и больше); null — не кусок хода. */
 export function tunnelKind(room: Room): TunnelKind | null {
   if (room.tags.includes('хаб')) return 'hub';
-  if (room.connectors.some((c) => c.len >= 1 && c.tag === 'storage>basement')) return 'storage';
+  if (room.connectors.some((c) => c.len >= 1 && TUNNEL_STORE_TAGS.has(c.tag))) return 'storage';
   if (!room.connectors.every((c) => c.len < 1 || TUNNEL_DOORS.has(c.tag))) return null;
-  const t = room.connectors.filter((c) => c.len >= 1 && c.tag === TUNNEL_TAG);
+  const t = room.connectors.filter((c) => c.len >= 1 && TUNNEL_PASS_TAGS.has(c.tag));
   if (t.length >= 3) return 'branch';
   if (t.length !== 2) return null;
   const opp: Record<string, string> = { N: 'S', S: 'N', E: 'W', W: 'E' };
@@ -240,6 +283,8 @@ export function normBiome(v: unknown): Biome | null {
     ...(finishRules && finishRules.length ? { finishRules } : {}),
     ...(Object.keys(apartments).length ? { apartments } : {}),
     ...(Object.keys(tunnels).length ? { tunnels } : {}),
+    ...(fin(o.dark) && o.dark > 0 ? { dark: clampN(o.dark, 0, 1) } : {}),
+    ...(normWet(o.wet) ? { wet: normWet(o.wet)! } : {}),
     note: typeof o.note === 'string' ? o.note : '',
   };
 }
@@ -333,6 +378,7 @@ export function normWorld(v: unknown): WorldSettings {
     trBase: fin(o.trBase) ? clampN(o.trBase, 0, 1) : D.trBase,
     trStep: fin(o.trStep) ? clampN(o.trStep, 0, 1) : D.trStep,
     trToBiome: fin(o.trToBiome) ? clampN(o.trToBiome, 0, 1) : D.trToBiome,
+    trLanding: fin(o.trLanding) ? clampN(o.trLanding, 0, 1) : D.trLanding,
     transitionMinLen: fin(o.transitionMinLen) ? clampN(o.transitionMinLen, 0.1, 10) : D.transitionMinLen,
     richBoost: fin(o.richBoost) ? clampN(o.richBoost, 1, 1000) : D.richBoost,
     biomes,
@@ -362,6 +408,12 @@ export function tunnelBiomes(w: WorldSettings): Biome[] {
   return w.biomes.filter((b) => isTunnels(b) && !b.rich);
 }
 
+/** Куда ведёт «Спуск в подвал» (выход квартиры с меткой хода tag): биомы-ходы, у которых есть хаб с проходом этой
+ *  метки (подвалы — да, сарай с проходами 'barn' — нет). */
+export function descentBiomes(w: WorldSettings, rooms: readonly Room[], tag: string): Biome[] {
+  return tunnelBiomes(w).filter((b) => rooms.some((r) => r.gen.weight > 0 && biomeMul(b, r) > 0 && tunnelKind(r) === 'hub' && r.connectors.some((c) => c.len >= 1 && c.tag === tag)));
+}
+
 /** Квартирные обычные биомы (куда ведут выходы из подвала, если не знаем, откуда в него пришли). */
 export function apartmentBiomes(w: WorldSettings): Biome[] {
   return w.biomes.filter((b) => !isTunnels(b) && !b.rich);
@@ -385,7 +437,8 @@ export function worldRule(w: WorldSettings): string {
   return `Квартира — ${r0 === r1 ? r0 : `${r0}–${r1}`} комнат и ${e0 === e1 ? e0 : `${e0}–${e1}`} закрытых выходов; открыл выход — новая квартира, ` +
     `остальные выходы исчезают. После ${w.trAfter} пройденных комнат каждая новая даёт шанс перехода ${pct(w.trBase)} и +${pct(w.trStep)} за следующую; ` +
     `выпал — переход будет прямо за следующей открытой дверью. Пропустил — исчезнет. Прошёл — счёт с нуля; ` +
-    `переход ведёт в другой биом (${pct(w.trToBiome)}) или в богатую квартиру.` +
+    `переход ведёт в другой биом (${pct(w.trToBiome)}) или в богатую квартиру. Переход — лестничная площадка ` +
+    `(${pct(w.trLanding)}: любая её дверь — туда) или спец-комната (лестница, лифт).` +
     (tunnelBiomes(w).length ? ' Подвалы растут ходами (правило подвала — отдельно).' : '');
 }
 

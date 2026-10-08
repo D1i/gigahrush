@@ -118,7 +118,9 @@ describe('параметры генераторов «Прогулки»', { tim
         expect(w.transitionState()!.pending).toBe(true);
         // гарантия — и за самой узкой из выходов
         const d = ex.reduce((a, b) => (lenOf(w, b) < lenOf(w, a) ? b : a));
-        expect(roomOf(w, w.openDoor(...d)!).location, `${seed} ${min} м`).toBeTruthy();
+        const t = w.openDoor(...d)!;
+        // переход — спец-комната или площадка-переход (§19.4)
+        expect(!!roomOf(w, t).location || w.clusterAt(t)!.gate, `${seed} ${min} м`).toBe(true);
       }
       // при 1.2 м выходов не больше, чем при 0.7 м
       expect(narrow[1]).toBeLessThanOrEqual(narrow[0]);
@@ -235,7 +237,8 @@ describe('параметры генераторов «Прогулки»', { tim
           const ex = exitsOf(w, cid);
           const t = w.openDoor(...ex[k % ex.length]);
           tried++;
-          expect(t && roomOf(w, t).location?.kind, `${localM} ${seed} ${k}`).toMatch(/^(lift|stairwell)$/);
+          // спец-комната или площадка-переход (§19.4)
+          expect(t && (roomOf(w, t).location?.kind ?? (w.clusterAt(t)?.gate ? 'landing' : null)), `${localM} ${seed} ${k}`).toMatch(/^(lift|stairwell|landing)$/);
           expect(w.transitionState()!.pending).toBe(false);
           expect(validateFoldRun(p, w.run())).toEqual([]);
         }

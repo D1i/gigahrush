@@ -20,7 +20,8 @@ const project = (): Project => {
 const p = project();
 const roomOf = (run: Run, id: string) => p.rooms.find((r) => r.id === run.instances.find((i) => i.id === id)!.roomId)!;
 const world = (o: Partial<WorldSettings> = {}, t: Partial<TunnelSettings> = {}): WorldSettings => {
-  const w = { ...newWorldSettings(), ...o };
+  // переходы здесь — спец-комнаты (лестница, лифт); площадки-переходы — stream.barn.test.ts
+  const w = { ...newWorldSettings(), trLanding: 0, ...o };
   w.tunnels = { ...DEFAULT_TUNNELS, ...t };
   return w;
 };

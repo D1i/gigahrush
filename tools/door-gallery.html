@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Room Forge — двери</title>
+    <style>
+      body { margin: 0; padding: 12px; background: #1d1f22; color: #ddd; font: 12px/1.35 system-ui, sans-serif; }
+      h1 { font-size: 15px; margin: 0 0 4px; }
+      p.hint { margin: 0 0 10px; color: #9aa; }
+      #grid { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+      .cell { background: #2a2d31; padding: 6px; border-radius: 4px; width: 372px; }
+      .cell .imgs { display: flex; gap: 4px; }
+      .cell img { width: 182px; height: 240px; border-radius: 2px; background: #111; }
+      .cell b { display: block; margin: 4px 0 2px; color: #f0e2c4; font-size: 13px; }
+      .cell .g { color: #7fb4a4; }
+      .cell .w { color: #aab; }
+      .cell .m { color: #ccc; margin-top: 2px; }
+      #stage { position: fixed; left: -9999px; top: 0; width: 364px; height: 480px; }
+    </style>
+  </head>
+  <body>
+    <h1 id="sum">Двери — строится…</h1>
+    <p class="hint">Слева — закрытая (выход: E — открыть), справа — распахнутая. ?only=apt_dermantin,int_dg · ?dead=1 — заколоченные · ?w=1.2 — ширина проёмов, м. Анимация — в «Прогулке» (E у закрытого выхода).</p>
+    <div id="grid"></div>
+    <canvas id="stage" width="364" height="480"></canvas>
+    <script type="module" src="./door-gallery.ts"></script>
+  </body>
+</html>

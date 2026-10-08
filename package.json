@@ -9,7 +9,8 @@
     "typecheck": "tsc -b",
     "test": "vitest run",
     "preview": "vite preview",
-    "test:perf": "vitest run --config vitest.perf.config.ts"
+    "test:perf": "vitest run --config vitest.perf.config.ts",
+    "coop-server": "node tools/coop-server.mjs"
   },
   "dependencies": {
     "@babylonjs/core": "^9.29.0",

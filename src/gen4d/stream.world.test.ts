@@ -13,7 +13,8 @@ const project = (): Project => {
   p.finishRules ??= [];
   return p;
 };
-const world = (o: Partial<WorldSettings> = {}): WorldSettings => ({ ...newWorldSettings(), ...o });
+// переходы здесь — спец-комнаты (лестница, лифт); площадки-переходы — stream.barn.test.ts
+const world = (o: Partial<WorldSettings> = {}): WorldSettings => ({ ...newWorldSettings(), trLanding: 0, ...o });
 const settings = (seed: string, w: Partial<WorldSettings> = {}) => streamSettings(seed, { world: world(w) });
 
 const inst = (run: Run, id: string) => run.instances.find((i) => i.id === id)!;

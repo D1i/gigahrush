@@ -6,11 +6,14 @@
 // Тонкие перегородки (gap = 0) стоят на рёбрах между клетками разных комнат и живут по высоте между
 // плитой пола и плитой потолка. Подробно — docs/BLOCKOUT.md.
 import { DEFAULT_BLOCKOUT } from './types';
+import { chooseHinge, doorStyleFor, leafHere, restAngle } from './doors';
 import type {
   BlockoutModel,
   BlockoutOptions,
   DeadEnd,
   DeadEndMode,
+  DoorRole,
+  DoorSlot,
   Opening,
   PropBox,
   Rect,
@@ -163,6 +166,7 @@ function normOptions(o: BlockoutOptions, cellM: number, issues: string[]): Block
     ...(o.cutEnds && DEAD_MODES.includes(o.cutEnds) ? { cutEnds: o.cutEnds } : {}),
     fillVoids: o.fillVoids !== false,
     ...(o.ownership === true ? { ownership: true } : {}),
+    ...(o.doors === true ? { doors: true } : {}),
   };
 }
 
@@ -945,6 +949,88 @@ export function buildBlockoutModel(run: RunExport, opts?: Partial<BlockoutOption
     }
   }
 
+  // 10a. Двери (BlockoutOptions.doors, src/blockout/doors.ts): слот у каждой метки, где есть дверь. Геометрия — как у
+  // тупика (грань стены со стороны комнаты) и зависит только от самой комнаты: у закрытого выхода и у того же выхода,
+  // открытого (связанного), слот один и тот же — меняется только роль и угол (бесшовное открытие, docs/DOORS.md §4).
+  let doorSlots: DoorSlot[] | undefined;
+  if (o.doors) {
+    const out: DoorSlot[] = (doorSlots = []);
+    const deadMode = new Map<string, DeadEndMode>();
+    for (const de of dead) if (de.source === 'connector') deadMode.set(`${de.ii}|${(de.seg as RunConnector).id}`, de.mode);
+    const MAX_SPACE = 15;
+    insts.forEach((inst, ii) => {
+      if (idx.get(inst.id) !== ii) return;
+      const ks = (inst.connectors ?? []).filter((k) => k.len >= 1);
+      let mine: Set<string> | null = null;
+      const isMine = (x: number, y: number): boolean => {
+        if (!mine) {
+          mine = new Set();
+          const list = cellLists[ii];
+          for (let q = 0; q < list.length; q += 2) mine.add(list[q] + ',' + list[q + 1]);
+        }
+        return mine.has(x + ',' + y);
+      };
+      for (const k of ks) {
+        const key = `${inst.id}/${k.id}`;
+        let role: DoorRole;
+        if (linked.has(key)) role = k.opened ? 'opened' : 'open';
+        else {
+          const mode = deadMode.get(`${ii}|${k.id}`);
+          if (!mode || mode === 'wall') continue;
+          // связь, срезанная подпрогоном (дверь в другой слой, за край набора), — панель отладочных видов, не дверь
+          if (mode === 'panel' && k.cut) continue;
+          role = mode === 'open' ? 'open' : k.exit ? 'exit' : k.arrival || arrive.has(key) ? 'arrival' : 'dead';
+        }
+        // открытый игроком выход — та же дверь, что была закрытой (не сквозная решётка вместо железной)
+        const style = doorStyleFor(k.tag, inst.roomTags ?? [], role !== 'open', key);
+        if (!style) continue;
+        const sg = SIGMA[k.side], line = lineOf(k), s0 = startOf(k), ax = alongX(k.side);
+        // грань стены — как у тупика (за меткой сразу чужой пол, gap = 0 — грань перегородки ближе на t/2)
+        let facesFloor = false;
+        for (let t = s0; t < s0 + k.len; t++) {
+          const g = ax ? at(t, sg > 0 ? line : line - 1) : at(sg > 0 ? line : line - 1, t);
+          if (g >= 0 && cls[g] === FLOOR && own[g] !== ii) facesFloor = true;
+        }
+        const pos = line * c - sg * (facesFloor ? th : 0);
+        const a = s0 * c, b = (s0 + k.len) * c;
+        const normal: [number, number] = ax ? [0, -sg] : [-sg, 0];
+        // стена вдоль проёма до угла (или до другой метки) — по клеткам самой комнаты
+        const nIn = sg > 0 ? line - 1 : line, nOut = sg > 0 ? line : line - 1;
+        const cellXY = (t: number, n: number): [number, number] => (ax ? [t, n] : [n, t]);
+        const other = ks.filter((q) => q !== k && q.side === k.side && lineOf(q) === line);
+        const wallAt = (t: number): boolean => {
+          if (other.some((q) => t >= startOf(q) && t < startOf(q) + q.len)) return false;
+          return isMine(...cellXY(t, nIn)) && !isMine(...cellXY(t, nOut));
+        };
+        let before = 0, after = 0;
+        while (before < MAX_SPACE && wallAt(s0 - 1 - before)) before++;
+        while (after < MAX_SPACE && wallAt(s0 + k.len + after)) after++;
+        // справа, если стоять в комнате лицом к двери: r = (ny, −nx); отрезок идёт по +x (N/S) или +y (E/W)
+        const rightIsEnd = (ax ? normal[1] : -normal[0]) > 0;
+        const space: [number, number] = rightIsEnd ? [r6(before * c), r6(after * c)] : [r6(after * c), r6(before * c)];
+        const hinge = chooseHinge(key, space);
+        const widthM = r6(k.len * c);
+        const open = role === 'open' || role === 'opened';
+        out.push({
+          inst: inst.id,
+          connector: k.id,
+          tag: k.tag,
+          style: style.id,
+          role,
+          leaf: role !== 'open' || leafHere(k.tag),
+          line: ax ? [r6(a), r6(pos), r6(b), r6(pos)] : [r6(pos), r6(a), r6(pos), r6(b)],
+          normal,
+          widthM,
+          heightM: r6(doorH),
+          hinge,
+          angle: open ? restAngle(style, key, widthM, hinge === 'left' ? space[0] : space[1]) : 0,
+          space,
+          seed: key,
+        });
+      }
+    });
+  }
+
   // 11. Комнаты: якорь — центр наибольшего прямоугольника пола.
   const rooms: RoomInfo3D[] = [];
   insts.forEach((inst, i) => {
@@ -1058,6 +1144,7 @@ export function buildBlockoutModel(run: RunExport, opts?: Partial<BlockoutOption
       ms: Math.round((nowMs() - tStart) * 10) / 10,
     },
     issues,
+    ...(doorSlots ? { doors: doorSlots } : {}),
   };
 }
 
@@ -1256,6 +1343,7 @@ function emptyModel(c: number, o: BlockoutOptions, issues: string[], ms: number)
     rooms: [],
     stats: { floorCells: 0, wallCells: 0, solids: 0, openings: 0, deadEnds: 0, ms: Math.round(ms * 10) / 10 },
     issues,
+    ...(o.doors ? { doors: [] } : {}),
   };
 }
 

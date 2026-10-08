@@ -22,9 +22,10 @@ import { BoxBatch } from '../blockout/babylon';
 import { buildBlockoutModel } from '../blockout/core';
 import { mergePieces } from '../blockout/pieces';
 import { PieceCache, PortalRenderer, type PortalFrameStats } from './portal';
+import { DoorAnimator } from './doorAnim';
 import { viewHorizonM } from '../gen4d/pvs';
 import { hasPvs, layerOf, layerRun, layersOf, linkBetween, overlapIds, pvsIds, safeDepth, subRun, visibleIds } from '../blockout/subrun';
-import type { BlockoutModel, BlockoutOptions, DeadEnd, RunExport } from '../blockout/types';
+import type { BlockoutModel, BlockoutOptions, DeadEnd, DoorSlot, RunExport } from '../blockout/types';
 import type { BlockoutViewer, SetModelOptions, ViewPart, ViewPartBuilt } from './viewer';
 
 export type FoldOrbitView = { kind: 'tower' } | { kind: 'layer'; w: number } | { kind: 'vis'; inst: string | null };
@@ -140,6 +141,8 @@ export class FoldDriver {
   /** портальный рендер: кэш кусков комнат и рендер (создаются при первом входе от первого лица) */
   private pieces: PieceCache | null = null;
   portal: PortalRenderer | null = null;
+  /** анимация открытия дверей (портальный рендер; в наборе PVS двери открываются сразу) */
+  doors: DoorAnimator | null = null;
   /** горизонт портального рендера, м (viewHorizonM: проёмы открываются, пока видны; дальше — без рекурсии) */
   readonly horizonM: number;
 
@@ -333,6 +336,19 @@ export class FoldDriver {
     return true;
   }
 
+  /** Слот двери метки connector комнаты inst в её куске (портальный рендер); null — нет куска / двери. */
+  doorAt(inst: string, connector: string): DoorSlot | null {
+    if (this.render !== 'portal' || !this.ensurePortal()) return null;
+    return this.pieces!.get(inst)?.model.doors?.find((d) => d.inst === inst && d.connector === connector) ?? null;
+  }
+
+  /** Кусок комнаты id построен (строится, если его нет) и готов к отрисовке — за дверью её можно показывать. */
+  roomReady(id: string): boolean {
+    if (this.render !== 'portal' || !this.pieces) return true;
+    const p = this.pieces.get(id);
+    return !!p && this.pieces.ready(p);
+  }
+
   /**
    * Закрытый проём (тупик болванки) метки connector комнаты inst — в Babylon: центр на полу комнаты и единичное
    * направление внутрь комнаты. Так выглядит метка прихода перехода спец-локации (выход лифта, спуск лестницы):
@@ -482,7 +498,9 @@ export class FoldDriver {
       this.pieces = new PieceCache(this.v.scene, this.rx, {
         blockout: this.partOpts('vis'), propTextures: this.build.propTextures, finishes: this.build.finishes, openCut: this.openCut,
         propModel: (id) => this.v.props.get(id),
+        doorPose: (slot) => this.doors?.pose(slot) ?? null,
       });
+      this.doors = new DoorAnimator(this.v.scene, this.v.fps, (inst, connector) => this.pieces?.peek(inst)?.bo.doorLeaves.get(`${inst}/${connector}`) ?? null);
     }
     if (!this.portal) {
       this.portal = new PortalRenderer(this.v.scene, this.v.fps, this.pieces, {
@@ -791,6 +809,8 @@ export class FoldDriver {
     this.cache.clear();
     this.portal?.dispose();
     this.portal = null;
+    this.doors?.dispose();
+    this.doors = null;
     this.pieces?.dispose();
     this.pieces = null;
   }

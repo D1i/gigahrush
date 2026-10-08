@@ -20,7 +20,7 @@ import type {
   Run,
   RunStop,
 } from '../model/types';
-import { rollContent } from '../gen/generate';
+import { rollContent, withoutBiomeOnly } from '../gen/generate';
 import { compatible, OUT_SIGN, segLine } from '../gen/geom';
 import { runMeters, SIGHT_DIRS, sightLimits } from '../gen/sight';
 import { walkWarning } from '../gen/walk';
@@ -277,8 +277,10 @@ const now = (): number => (globalThis.performance ? globalThis.performance.now()
 
 /** Сгенерировать складчатый прогон. Детерминирован по (проект, сид). Не мутирует проект.
  *  Instance.w, Link.dw и Run.fold заполнены. */
-export function generateFoldRun(p: Project, overrides?: Partial<GeneratorSettings>): Run {
+export function generateFoldRun(p0: Project, overrides?: Partial<GeneratorSettings>): Run {
   const t0 = now();
+  // комнаты «только в биоме» растут только в бесконечном мире (docs/GENERATOR-4D.md §19.3)
+  const p = withoutBiomeOnly(p0);
   const settings = sanitize(p, overrides);
   const f = settings.fold;
   const root = makeRng(settings.seed);

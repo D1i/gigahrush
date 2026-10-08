@@ -7,6 +7,9 @@ import { I, P, room } from './roomBuilder';
 import { buildFlatRooms } from './roomsFlats';
 import { buildPublicRooms } from './roomsPublic';
 import { buildBasementRooms } from './roomsBasement';
+import { buildBarnRooms } from './roomsBarn';
+import { buildSnowRooms } from './roomsSnow';
+import { buildFactoryRooms } from './roomsFactory';
 import { buildSpecialRooms } from './roomsSpecial';
 
 // Цвета групп спотов
@@ -938,6 +941,9 @@ export function buildRooms(): Room[] {
     balcony447(),
     ...buildPublicRooms(),
     ...buildBasementRooms(),
+    ...buildBarnRooms(),
+    ...buildSnowRooms(),
+    ...buildFactoryRooms(),
     ...buildFlatRooms(),
     ...buildSpecialRooms(),
   ];

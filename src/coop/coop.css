@@ -1,0 +1,20 @@
+/* Кооп (src/coop/CoopPanel.tsx): раздел «Онлайн», модалка лобби, игроки в HUD прогулки */
+.coop-side { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.coop-side .v3-seg { grid-template-columns: 1fr 1fr; }
+.coop-ok { color: var(--ok); }
+.coop-warn { color: var(--accent); }
+.coop-players { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; }
+.coop-player { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.coop-player i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; box-shadow: 0 0 0 1px #0008; }
+.coop-modal { display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
+.coop-row { display: flex; gap: 6px; }
+.coop-row .input { flex: 1; min-width: 0; }
+.coop-code { font-family: var(--mono); letter-spacing: 0.02em; }
+.coop-box { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.coop-box .btn { align-self: flex-start; }
+.coop-colors { display: flex; gap: 6px; align-items: center; height: 28px; }
+.coop-color { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.coop-color.on { border-color: var(--text, #fff); box-shadow: 0 0 0 2px #0009; }
+/* HUD прогулки: игроки лобби и «рядом — медленнее» */
+.coop-hud { top: 84px; left: 10px; display: flex; gap: 12px; font-size: 12px; pointer-events: none; padding: 4px 10px; align-items: center; }
+.coop-hud .coop-slow { color: var(--accent); }

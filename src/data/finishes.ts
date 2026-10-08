@@ -15,6 +15,10 @@ import bsmPlasterUrl from './assets/basement/plaster_blue.jpg?inline';
 import bsmWoodUrl from './assets/basement/wood_old.jpg?inline';
 import bsmDampUrl from './assets/basement/concrete_damp.jpg?inline';
 import bsmWaterUrl from './assets/basement/water.jpg?inline';
+// набор сарая пользователя (barn-wall-*.png, tools/optimize-barn.mjs): бесшовные 512 px
+import barnVerticalUrl from './assets/barn/planks_vertical.jpg?inline';
+import barnRustUrl from './assets/barn/planks_rust.jpg?inline';
+import barnHorizontalUrl from './assets/barn/planks_horizontal.jpg?inline';
 import { makeFinishTexture, type FinishTexKind, type FinishTexOpts } from './finishTextures';
 
 /** Текстура пользователя: зелёные обои «Дамаск» (фото → бесшовная плитка, см. tools/make-seamless.html).
@@ -53,6 +57,21 @@ const BASEMENT_FINISHES: FinishDef[] = [
   { id: 'f_bsm_boards', name: 'Подвал: старые доски (пол)', surface: 'floor', color: '#6f6150', tileW: 1.2, tileH: 1.2, tags: ['подвал', 'доски'], tex: { url: bsmWoodUrl } },
   { id: 'f_bsm_damp_floor', name: 'Подвал: сырой бетон (пол)', surface: 'floor', color: '#737a68', tileW: 1.5, tileH: 1.5, tags: ['подвал', 'бетон', 'сырость'], tex: { url: bsmDampUrl } },
   { id: 'f_bsm_water', name: 'Подвал: вода по щиколотку (пол)', surface: 'floor', color: '#4a4a2a', tileW: 1.5, tileH: 1.5, tags: ['подвал', 'вода'], tex: { url: bsmWaterUrl } },
+];
+
+/** Отделки сарая (набор пользователя): в плитке ~8 досок по 0.18 м → повтор 1.5 м. Стены — вертикальная серая доска,
+ *  выцветшая с ржавыми подтёками от гвоздей, горизонтальная тёмная; пол — те же доски. В биоме «Сарай» — свои правила
+ *  отделки (src/gen4d/biomes.ts). */
+const BARN_FINISHES: FinishDef[] = [
+  { id: 'f_barn_vertical', name: 'Сарай: вертикальные серые доски', surface: 'wall', color: '#6e6255', tileW: 1.5, tileH: 1.5, tags: ['сарай', 'доски'], tex: { url: barnVerticalUrl } },
+  { id: 'f_barn_rust', name: 'Сарай: выцветшие доски, ржавые гвозди', surface: 'wall', color: '#6f675d', tileW: 1.5, tileH: 1.5, tags: ['сарай', 'доски'], tex: { url: barnRustUrl } },
+  { id: 'f_barn_horizontal', name: 'Сарай: горизонтальные тёмные доски', surface: 'wall', color: '#4a3a2c', tileW: 1.5, tileH: 1.5, tags: ['сарай', 'доски'], tex: { url: barnHorizontalUrl } },
+  { id: 'f_barn_floor', name: 'Сарай: тёмные половые доски (пол)', surface: 'floor', color: '#4a3a2c', tileW: 1.5, tileH: 1.5, tags: ['сарай', 'доски'], tex: { url: barnHorizontalUrl } },
+  { id: 'f_barn_floor_grey', name: 'Сарай: серые трухлявые доски (пол)', surface: 'floor', color: '#6f675d', tileW: 1.5, tileH: 1.5, tags: ['сарай', 'доски'], tex: { url: barnRustUrl } },
+  // снежные ходы (src/data/roomsSnow.ts): в «Прогулке» стен нет — оболочка снега (src/view3d/snowMesh.ts); отделка — для
+  // болванки и движка без полости
+  { id: 'f_snow', name: 'Снег: утрамбованные стены лаза', surface: 'wall', color: '#dfe6ef', tileW: 0.8, tileH: 0.8, tags: ['снег'], tex: WHITEWASH },
+  { id: 'f_snow_floor', name: 'Снег: пол лаза (пол)', surface: 'floor', color: '#d6dde8', tileW: 0.8, tileH: 0.8, tags: ['снег'], tex: WHITEWASH },
 ];
 
 export const FINISH_DEFS: FinishDef[] = [
@@ -94,6 +113,7 @@ export const FINISH_DEFS: FinishDef[] = [
   { id: 'f_boards', name: 'Крашеная доска (сурик)', surface: 'floor', color: '#873f2b', tileW: 1.2, tileH: 0.6, tags: ['доска'], tex: { kind: 'boards', w: 512, h: 256 } },
   { id: 'f_tile_floor', name: 'Кафель (пол) 20×20', surface: 'floor', color: '#b2aa99', tileW: 0.6, tileH: 0.6, tags: ['кафель', 'санузел'], tex: { kind: 'tile_floor', w: 384, h: 384, opts: { base: '#b7ae9c', accent: '#6f685d', n: 3 } } },
   ...BASEMENT_FINISHES,
+  ...BARN_FINISHES,
 ];
 
 /** Правила по тегу (первому тегу комнаты из групп спавна): варианты стен и пола с весами. */
@@ -113,6 +133,16 @@ const RULES: [string, [string, number][], [string, number][]][] = [
   ['балкон', [['f_brick', 4], ['f_concrete', 2], ['f_plaster', 1]], [['f_concrete_floor', 1]]],
   // кладовка — и в квартире, и клетушка в подвале
   ['кладовка', [['f_whitewash', 5], ['f_plaster', 2], ['f_dvp', 1]], [['f_boards', 3], ['f_concrete_floor', 2], ['f_lino_gray', 1]]],
+  // сарай — доски набора пользователя (в биоме «Сарай» — свои правила поверх этих)
+  ['сарай', [['f_barn_vertical', 5], ['f_barn_rust', 3], ['f_barn_horizontal', 2]], [['f_barn_floor', 3], ['f_barn_floor_grey', 2]]],
+  // снежные ходы — снег (в «Прогулке» вместо стен — оболочка снега)
+  ['снег', [['f_snow', 1]], [['f_snow_floor', 1]]],
+  // завод — по ступени влажности (тег после 'завод' и 'ход' / 'хаб'; правила 'завод' нет — иначе оно бы победило):
+  // кирпич с побелкой и пыльный бетон → сырой бетон → вода по полу (текстуры набора пользователя, как у подвала)
+  ['сухо', [['f_bsm_brick', 4], ['f_concrete', 1]], [['f_bsm_concrete', 1]]],
+  ['сыро', [['f_bsm_brick', 3], ['f_bsm_damp', 2]], [['f_bsm_concrete', 2], ['f_bsm_damp_floor', 1]]],
+  ['течь', [['f_bsm_damp', 4], ['f_bsm_brick', 1]], [['f_bsm_damp_floor', 3], ['f_bsm_water', 1]]],
+  ['топь', [['f_bsm_damp', 1]], [['f_bsm_water', 3], ['f_bsm_damp_floor', 1]]],
 ];
 
 function texOf(d: FinishDef): string | null {

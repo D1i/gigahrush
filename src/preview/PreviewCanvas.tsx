@@ -54,7 +54,7 @@ type Look = 'full' | 'trans' | 'ghost' | 'hidden';
 const OVERLAP_COLOR = '#ff5cd6';
 
 /** Пометка спец-локации перед названием комнаты на плане (docs/LOCATIONS.md). */
-const LOC_MARK: Record<LocationSpec['kind'], string> = { stairwell: '∞', lift: '⇅', lair: '☠' };
+const LOC_MARK: Record<LocationSpec['kind'], string> = { stairwell: '∞', lift: '⇅', lair: '☠', hangar: '❄', swamp: '⚙' };
 
 export function PreviewCanvas(props: {
   p: Project;
