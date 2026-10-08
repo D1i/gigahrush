@@ -341,6 +341,18 @@ export function floorPlan(run: RunExport, inst: RunInstance): FloorPlan {
       paths.push(line);
     }
   }
+  // в зону прохода — и прямой отрезок между серединами проёмов, если он свободен: так идёт игрок, видя дверь
+  // напротив, а натянутая ломаная от углов решётки может отойти от него на полклетки (в paths плана его нет)
+  const straight: number[][] = [];
+  const mids = walk.openings.filter((o) => o.stand).map((o) => {
+    const [ax, ay, bx, by] = openingLine(o);
+    return [(ax + bx) / 2, (ay + by) / 2] as const;
+  });
+  for (let a = 0; a < mids.length; a++) {
+    for (let b = a + 1; b < mids.length; b++) {
+      if (los(mids[a][0], mids[a][1], mids[b][0], mids[b][1])) straight.push([mids[a][0], mids[a][1], mids[b][0], mids[b][1]]);
+    }
+  }
 
   // расстояние до путей и зоны проёмов (по центрам клеток)
   const pathDist = new Float32Array(w * h).fill(Infinity);
@@ -355,7 +367,7 @@ export function floorPlan(run: RunExport, inst: RunInstance): FloorPlan {
       }
     }
   };
-  for (const line of paths) {
+  for (const line of [...paths, ...straight]) {
     for (let s = 0; s + 3 < line.length; s += 2) stampSeg(pathDist, line[s], line[s + 1], line[s + 2], line[s + 3], rp);
     if (line.length === 2) stampSeg(pathDist, line[0], line[1], line[0], line[1], rp);
   }

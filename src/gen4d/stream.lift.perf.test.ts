@@ -8,6 +8,8 @@ import type { Project, Run } from '../model/types';
 import { createStreamWorld, DEFAULT_STREAM, streamSettings, viewHorizonM } from './stream';
 
 const env = ((globalThis as any).process?.env ?? {}) as Record<string, string | undefined>;
+/** Лифты А (клетка) и Б (каретка) — оба пресета считаются вместе; LIFT_W — их общий вес (поровну). */
+const LIFTS = new Set(['lift_rusty', 'lift_carriage']);
 /** бот идёт столько шагов (дальше — «не встретился»), считая и все лифты-соседи по пути — плотность */
 const MAX_STEPS = 200;
 
@@ -39,7 +41,7 @@ function stepsToLift(p: Project, seed: string): { steps: number; doors: number; 
     const run = w.run();
     const nb = doorNeighbors(run, cur).sort();
     for (const x of nb) near.add(x);
-    if (steps > MAX_STEPS && nb.some((x) => run.instances[+x.slice(1)].roomId === 'lift_rusty')) steps = k;
+    if (steps > MAX_STEPS && nb.some((x) => LIFTS.has(run.instances[+x.slice(1)].roomId))) steps = k;
     if (nb.length === 0) break;
     const fresh = nb.filter((x) => !seen.has(x));
     const pool = fresh.length && R.next() < 0.8 ? fresh : nb;
@@ -47,20 +49,20 @@ function stepsToLift(p: Project, seed: string): { steps: number; doors: number; 
     seen.add(cur);
   }
   const run = w.run();
-  const lifts = [...near].filter((x) => run.instances[+x.slice(1)].roomId === 'lift_rusty').length;
+  const lifts = [...near].filter((x) => LIFTS.has(run.instances[+x.slice(1)].roomId)).length;
   return { steps, doors: near.size, lifts };
 }
 
 it('калибровка веса лифта', { timeout: 3_600_000 }, () => {
   const weights = (env.LIFT_W ?? '').split(',').map(Number).filter((x) => x > 0);
   const base = createDefaultProject();
-  const preset = base.rooms.find((r) => r.id === 'lift_rusty')!.gen.weight;
+  const preset = base.rooms.filter((r) => LIFTS.has(r.id)).reduce((a, r) => a + r.gen.weight, 0);
   const n = Number(env.SEEDS) > 0 ? Number(env.SEEDS) : 30;
   for (const wt of weights.length ? weights : [preset]) {
     const p = createDefaultProject();
     p.finishes ??= [];
     p.finishRules ??= [];
-    p.rooms.find((r) => r.id === 'lift_rusty')!.gen.weight = wt;
+    for (const r of p.rooms) if (LIFTS.has(r.id)) r.gen.weight = wt / LIFTS.size;
     const res = Array.from({ length: n }, (_, i) => stepsToLift(p, `lift-cal-${i}`));
     const st = res.map((r) => r.steps).sort((a, b) => a - b);
     const q = (f: number) => st[Math.min(st.length - 1, Math.floor(f * st.length))];

@@ -282,31 +282,36 @@ describe('стартовый проект', () => {
     expect(r.gen.max).toBe(1);
     expect(p.economy.tiers.filter((t) => r.elite.some((e) => e.tierId === t.id)).every((t) => t.level >= 8)).toBe(true);
     // кроме спец-локаций «Бесконечная лестница», «Ржавый лифт» и «Логово босса» в пресетах их нет
-    expect(p.rooms.filter((x) => x.location).map((x) => x.id)).toEqual(['stair_loop', 'lift_rusty', 'boss_lair']);
+    expect(p.rooms.filter((x) => x.location).map((x) => x.id)).toEqual(['stair_loop', 'lift_rusty', 'lift_carriage', 'boss_lair']);
   });
 
   const levels = (r: Room) => p.economy.tiers.filter((t) => r.elite.some((e) => e.tierId === t.id)).map((t) => t.level);
 
-  it('спец-локация «Ржавый лифт»: шахта 3.6×4.4 м (ассет rusted_lift_v2), один вход 1.0 м (apt>landing) по центру стороны S, без декора', () => {
-    const r = p.rooms.find((x) => x.id === 'lift_rusty')!;
-    expect(r).toBeDefined();
-    expect(r.location).toEqual(DEFAULT_LIFT);
-    expect((r.location as LiftSpec).floorsUp).not.toBe(DEFAULT_LIFT.floorsUp); // своя копия
-    expect(r.tags[0]).toBe('лифт');
-    expect(r.tags).toEqual(expect.arrayContaining(['спец', 'лифт-шахта']));
-    const n = Math.round(LIFT_SHAFT_X / M), d = Math.round(LIFT_SHAFT_Z / M);
-    expect(r.cells.size).toBe(n * d);
-    expect(r.decor).toEqual([]);
-    expect(r.spots).toEqual([]);
-    expect(r.connectors).toHaveLength(1);
-    const c = r.connectors[0];
-    expect(c).toMatchObject({ tag: 'apt>landing', len: 10, side: 'S', cy: d - 1 });
-    expect(Math.abs(c.cx + c.len / 2 - n / 2)).toBeLessThanOrEqual(0.5); // по центру (±0.05 м)
-    expect(r.gen.weight).toBeGreaterThan(0);
-    expect(r.gen.weight).toBeLessThanOrEqual(3);
-    expect(r.gen.max).toBe(1);
-    // умеренно элитный: тиры 3…8
-    expect(levels(r).every((l) => l >= 3 && l <= 8)).toBe(true);
+  it('спец-локации «Ржавый лифт А — клетка» и «Б — каретка»: шахта 3.6×4.4 м (ассет rusted_lift_v2), один вход 1.0 м (apt>landing) по центру стороны S, без декора', () => {
+    let weight = 0;
+    for (const [id, cageChance, tag] of [['lift_rusty', 1, 'лифт-клетка'], ['lift_carriage', 0, 'лифт-каретка']] as const) {
+      const r = p.rooms.find((x) => x.id === id)!;
+      expect(r).toBeDefined();
+      expect(r.location).toEqual({ ...DEFAULT_LIFT, cageChance });
+      expect((r.location as LiftSpec).floorsUp).not.toBe(DEFAULT_LIFT.floorsUp); // своя копия
+      expect(r.tags[0]).toBe('лифт');
+      expect(r.tags).toEqual(expect.arrayContaining(['спец', 'лифт-шахта', tag]));
+      const n = Math.round(LIFT_SHAFT_X / M), d = Math.round(LIFT_SHAFT_Z / M);
+      expect(r.cells.size).toBe(n * d);
+      expect(r.decor).toEqual([]);
+      expect(r.spots).toEqual([]);
+      expect(r.connectors).toHaveLength(1);
+      const c = r.connectors[0];
+      expect(c).toMatchObject({ tag: 'apt>landing', len: 10, side: 'S', cy: d - 1 });
+      expect(Math.abs(c.cx + c.len / 2 - n / 2)).toBeLessThanOrEqual(0.5); // по центру (±0.05 м)
+      expect(r.gen.weight).toBeGreaterThan(0);
+      expect(r.gen.max).toBe(1);
+      weight += r.gen.weight;
+      // умеренно элитный: тиры 3…8
+      expect(levels(r).every((l) => l >= 3 && l <= 8)).toBe(true);
+    }
+    // вместе — как откалиброванный вес лифта (docs/LOCATIONS.md §8.1)
+    expect(weight).toBeLessThanOrEqual(3);
   });
 
   it('спец-локация «Логово босса»: заглушка 6.0×4.8 м, проём 1.3 м (corridor), вес 0 — только через лифт, богаче лифта', () => {

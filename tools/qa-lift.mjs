@@ -1,7 +1,8 @@
 // QA спец-локации «Ржавый лифт» (src/locations/sceneLift.ts) — playwright + системный Chrome.
 // Свой dev-сервер (vite, порт 5214) поднимается в фоне и гасится в конце.
 //
-// Вкладка 3D → «Комната» → «Ржавый лифт» → «Войти в локацию» (доска на каждом пролёте — window.__rfLiftSpec):
+// Вкладка 3D → «Комната» → «Ржавый лифт А — клетка» / «Б — каретка» → «Войти в локацию» (доска на каждом пролёте —
+// window.__rfLiftSpec):
 //  (а) клетка: вход по узкому коридору этажа 0, в кабину, кнопка «вверх» → доска (пыль, крен), бот гасит раскачку,
 //      перебегая на поднявшуюся сторону → кабина едет дальше → этаж 1, оба проёма открыты; этаж логова — дверь
 //      логова в конце коридора, подсказка «E — открыть»; выход через конец коридора → onExit;
@@ -108,13 +109,13 @@ const PILOT = () => {
   };
 };
 
-async function openLift(page, spec) {
+async function openLift(page, spec, id = 'lift_rusty') {
   await page.evaluate((sp) => {
     window.__rfLiftSpec = sp;
   }, spec);
   await page.getByRole('button', { name: 'Комната', exact: true }).click();
   await page.waitForTimeout(400);
-  await page.locator('aside.side select').first().selectOption({ value: 'lift_rusty' });
+  await page.locator('aside.side select').first().selectOption({ value: id });
   await page.waitForTimeout(500);
   await page.getByRole('button', { name: 'Войти в локацию' }).click();
   await page.waitForFunction(() => window.__rfLift?.ready, null, { timeout: 180000 });
@@ -137,7 +138,7 @@ try {
   await page.waitForFunction(() => window.__rf3d, null, { timeout: 120000 });
 
   // ═════════ (а) клетка ═════════
-  await openLift(page, { cageChance: 1, boardChance: 1, lairChance: 1, floorsUp: [3, 3] });
+  await openLift(page, { boardChance: 1, lairChance: 1, floorsUp: [3, 3] }, 'lift_rusty');
   ok('(а) «Войти в локацию» — сцена и приглашение', (await page.locator('.v3-loc-center.prompt').count()) === 1);
   await shot(page, 'lift-1-prompt.png');
   await page.locator('.v3-loc-center.prompt').click();
@@ -240,7 +241,7 @@ try {
   ok('(а) выход через конец коридора — сцена закрыта, сообщение', !closed.lift && !closed.overlay, (walked ? '' : 'не дошёл; ') + toast.join(' | ').slice(0, 160));
 
   // ═════════ (б) каретка: стоять — выбросит ═════════
-  await openLift(page, { cageChance: 0, boardChance: 1, floorsUp: [3, 3] });
+  await openLift(page, { boardChance: 1, floorsUp: [3, 3] }, 'lift_carriage');
   await page.locator('.v3-loc-center.prompt').click();
   await page.waitForTimeout(300);
   await page.evaluate(() => window.__rfLift.qaStart());
