@@ -1,6 +1,7 @@
 // QA подвала в «Прогулке» (docs/GENERATOR-4D.md §17): playwright + системный Chrome, свой vite (порт 5220).
 //  A: старт в подвале — хаб: модели набора пользователя (стеллажи, столбы, лампы) вместо боксов, отделка подвала,
-//     HUD «Подвал»; вид вдоль хода — длинный; марш наверх — закрытый выход.
+//     HUD «Подвал»; вид вдоль хода — длинный; марш наверх — закрытый выход; рамки подмешей моделей в кусках
+//     портального рендера — там, где модель (иначе drawRoom отсекает её, и модель мигает, когда подходишь).
 //  B: кольцо из хаба: пройти его комнатами (через проёмы) — снова в хабе, через другой проход.
 //  C: бесконечный прямой участок: шагнул в шов — камера перенесена на длину участка назад, текущая — тройник; кадр до и
 //     после шага одинаковый (картинка не прыгает).
@@ -156,6 +157,33 @@ try {
     await page.screenshot({ path: out + 'bsm-2-tunnel.png' });
     void far;
   }
+  // рамки подмешей моделей (слиты по материалам — подмешей несколько): в мире, там, где вершины
+  const boxes = await page.evaluate(() => {
+    const d = window.__rf3dFold;
+    let clones = 0, subs = 0, bad = 0, worst = 0;
+    for (const piece of d.pieces.pieces.values()) {
+      for (const m of piece.meshes) {
+        if (!m.name.startsWith('propModel:')) continue;
+        clones++;
+        const wm = m.getWorldMatrix(), pos = m.getVerticesData('position'), idx = m.getIndices();
+        const V = m.position.constructor;
+        for (const sm of m.subMeshes) {
+          subs++;
+          const bb = sm.getBoundingInfo().boundingBox;
+          let miss = 0;
+          for (let i = sm.indexStart; i < sm.indexStart + sm.indexCount; i++) {
+            const v = idx[i];
+            const p = V.TransformCoordinates(new V(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]), wm);
+            miss = Math.max(miss, bb.minimumWorld.x - p.x, p.x - bb.maximumWorld.x, bb.minimumWorld.y - p.y, p.y - bb.maximumWorld.y, bb.minimumWorld.z - p.z, p.z - bb.maximumWorld.z);
+          }
+          if (miss > 1e-3) bad++;
+          worst = Math.max(worst, miss);
+        }
+      }
+    }
+    return { clones, subs, bad, worst: +worst.toFixed(2) };
+  });
+  ok('A рамки подмешей моделей — на месте моделей (не мигают при подходе)', boxes.clones >= 10 && boxes.subs > boxes.clones && boxes.bad === 0, JSON.stringify(boxes));
 
   // ═════════ B: кольцо ═════════
   await setup(page, 'qa-bsm-ring', { ring: 1, loop: 0 });

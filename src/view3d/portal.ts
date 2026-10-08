@@ -235,6 +235,10 @@ export class PieceCache {
       m.layerMask = PORTAL_LAYER;
       m.isPickable = false;
       m.freezeWorldMatrix();
+      // рамки — сейчас: Babylon обновляет их лениво (getBoundingInfo меша), а drawRoom проверяет подмеши напрямую
+      // (subMesh.isInFrustum). У модели предмета подмешей несколько (по материалам) — без этого их рамки остаются в
+      // координатах шаблона, и модель пропадает, когда начало координат комнаты уходит из обзора
+      m.getBoundingInfo();
       const n = m.getTotalVertices();
       bytes += n * 4 * (3 + 3 + 2 + 4) + m.getTotalIndices() * 4;
     }
