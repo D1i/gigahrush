@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { LiftSpec } from '../model/types';
 import {
   boardAhead, callLift, createLift, DEFAULT_LIFT, isLair, liftBoard, liftExits, liftExitsAt, liftFloorLabel, liftRule, normLift, rollLift, stepLift,
-  LIFT_FLOOR_M, LIFT_HALF_X, LIFT_HALF_Z, LIFT_RUN, LIFT_SLIP,
+  LIFT_CABLE, LIFT_FLOOR_M, LIFT_HALF_X, LIFT_HALF_Z, LIFT_RUN, LIFT_SLIP,
   type LiftAxis, type LiftEvent, type LiftRoll, type LiftState,
 } from './lift';
 
@@ -47,9 +47,9 @@ function ride(sp: LiftSpec, variant: LiftRoll['variant'], seed: string, bot: Bot
     }
     const pos = axis === 'x' ? { x: p * LIFT_HALF_X, z: 0 } : { x: 0, z: p * LIFT_HALF_Z };
     ev.push(...stepLift(sp, s, DT, pos));
-    if (s.phase === 'thrown' || (s.phase === 'idle' && s.floor === 1)) break;
+    if (s.phase === 'thrown' || s.phase === 'snapped' || (s.phase === 'idle' && s.floor === 1)) break;
   }
-  return { s, ev, axis: axis!, thrown: s.phase === 'thrown' };
+  return { s, ev, axis: axis!, thrown: s.phase === 'thrown', snapped: s.phase === 'snapped' };
 }
 
 const SEEDS = Array.from({ length: 60 }, (_, i) => 'bot' + i);
@@ -257,17 +257,47 @@ describe('«Ржавый лифт»: механика без движка', () =
     expect([...axes].sort()).toEqual(['x', 'z']);
   });
 
-  it('клетка: не выбрасывает — бьётся о стены (bang), стихает и доезжает', () => {
-    let bangs = 0;
-    for (const seed of SEEDS) {
-      const r = ride(DEFAULT_LIFT, 'cage', seed, BOTS.idle, 0);
-      expect(r.thrown).toBe(false);
-      expect(r.s.phase).toBe('idle');
-      expect(r.s.floor).toBe(1);
-      bangs += r.s.bangs;
-      for (const e of r.ev) if (e.type === 'bang') expect(e.strength).toBeGreaterThan(0);
+  it('клетка: стоит на месте, у края или бежит на опустившуюся сторону — бьётся о стены, трос трещит и рвётся всегда', () => {
+    for (const name of ['idle', 'edge', 'downhill']) {
+      for (const seed of SEEDS) {
+        const r = ride(DEFAULT_LIFT, 'cage', seed, BOTS[name], 0.3);
+        expect(r.snapped, `${name} ${seed}`).toBe(true);
+        // клетку не выбрасывает — она бьётся о стены
+        expect(r.thrown).toBe(false);
+        expect(r.s.bangs).toBeGreaterThan(0);
+        for (const e of r.ev) if (e.type === 'bang') expect(e.strength).toBeGreaterThan(0);
+        // трос трещит дважды, потом рвётся; износ — до предела
+        expect(r.ev.filter((e) => e.type === 'fray').map((e) => (e as { wear: number }).wear)).toEqual([1 / 3, 2 / 3]);
+        expect(r.ev.at(-1)).toEqual({ type: 'snap' });
+        expect(r.s.wear).toBeGreaterThanOrEqual(LIFT_CABLE);
+        // терминально; новая попытка — новый трос
+        expect(stepLift(DEFAULT_LIFT, r.s, 1, { x: 0, z: 0 })).toEqual([]);
+        expect(createLift(r.s.roll, r.s.attempt + 1).wear).toBe(0);
+      }
     }
-    expect(bangs).toBeGreaterThan(SEEDS.length);
+  });
+
+  it('клетка: перебегая на поднявшуюся сторону, трос держит — стихает и доезжает (и с опозданием, с ударами о стены)', () => {
+    let bangs = 0;
+    for (const [bot, react] of [['uphill', 0.3], ['uphillHalf', 0.5], ['uphillHalf', 0.7]] as const) {
+      for (const seed of SEEDS) {
+        const r = ride(DEFAULT_LIFT, 'cage', seed, BOTS[bot], react);
+        expect(r.snapped, `${bot} ${react} ${seed}`).toBe(false);
+        expect(r.s.phase).toBe('idle');
+        expect(r.s.floor).toBe(1);
+        expect(r.s.wear).toBeLessThan(LIFT_CABLE * 0.85);
+        bangs += r.s.bangs;
+      }
+    }
+    // опоздавший бьётся о стены, но доезжает
+    expect(bangs).toBeGreaterThan(SEEDS.length / 2);
+  });
+
+  it('каретка: трос не изнашивается (её губит крен, не трос)', () => {
+    const r = ride(DEFAULT_LIFT, 'carriage', 'bot0', BOTS.idle, 0);
+    expect(r.thrown).toBe(true);
+    expect(r.s.wear).toBe(0);
+    expect(r.ev.some((e) => e.type === 'fray' || e.type === 'snap')).toBe(false);
   });
 
   it('большой шаг времени — без NaN, тот же итог, что мелкими шагами (поездка без досок)', () => {

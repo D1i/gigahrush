@@ -7,6 +7,8 @@
 //      перебегая на поднявшуюся сторону → кабина едет дальше → этаж 1, оба проёма открыты; этаж логова — дверь
 //      логова в конце коридора, подсказка «E — открыть»; выход через конец коридора → onExit;
 //  (б) каретка: доска → игрок стоит → выброс в шахту → экран смерти, подсказка → «Ещё раз» (новая попытка у входа);
+//  (б2) клетка: доска → игрок стоит → трос трещит дважды и рвётся → клетка с игроком падает → «Трос оборвался»
+//      → «Ещё раз»;
 //  (в) ошибки консоли, число активных мешей, кадр.
 // Скриншоты — tools/qa/lift-*.png. node tools/qa-lift.mjs [--keep-server]
 import { chromium } from 'playwright-core';
@@ -338,6 +340,60 @@ try {
   const again = await page.evaluate(() => window.__rfLift.qaState());
   const deadLeft = await page.locator('.v3-loc-dead').count();
   ok('(б) «Ещё раз» — новая попытка у входа', again.attempt === before + 1 && again.floor === 0 && again.phase === 'idle' && deadLeft === 0, JSON.stringify({ a: again.attempt, f: again.floor, p: again.phase, dead: deadLeft }));
+  // ═════════ (б2) клетка: стоять — трос рвётся ═════════
+  await page.evaluate(() => [...document.querySelectorAll('.v3-loc-tools button')].find((b) => b.textContent.trim() === 'выйти')?.click());
+  await page.waitForTimeout(400);
+  await openLift(page, { boardChance: 1, floorsUp: [3, 3] }, 'lift_rusty');
+  await page.locator('.v3-loc-center.prompt').click();
+  await page.waitForTimeout(300);
+  await page.evaluate(() => window.__rfLift.qaStart());
+  ok('(б2) клетка', (await page.evaluate(() => window.__rfLift.qaState().variant)) === 'cage');
+  await page.evaluate(() => window.__lp.walk(window.__rfLift, 0, 0.2, 10));
+  await page.evaluate(() => window.__rfLift.place(0, 0, Math.PI * 0.75, 0.0));
+  await page.evaluate(() => window.__rfLift.press('up'));
+  // стоять до обрыва; кадр — в полёте
+  const snap = await page.evaluate(() => {
+    const s = window.__rfLift;
+    const ev = [];
+    let seen = s.log.length;
+    let y0 = null;
+    for (let k = 0; k < 60 * 60 && !ev.includes('snap'); k++) {
+      s.simulate(1 / 60, { f: 0, s: 0, run: false });
+      s.sync();
+      for (; seen < s.log.length; seen++) ev.push(s.log[seen].e.type);
+    }
+    // высота кабины и игрока (стойка) в момент обрыва и через 40 кадров
+    y0 = [s.cage.position.y, s.rig.position.y];
+    for (let k = 0; k < 40; k++) {
+      s.simulate(1 / 60, { f: 0, s: 0, run: false });
+      s.sync();
+    }
+    return { ev, wear: s.state.wear, fell: y0[0] - s.cage.position.y, fellP: y0[1] - s.rig.position.y };
+  });
+  await shot(page, 'lift-14-cage-snap-fall.png');
+  const cageDead = await page.evaluate(() => {
+    const s = window.__rfLift;
+    for (let k = 0; k < 60 * 10 && !s.hud().dead; k++) {
+      s.simulate(1 / 60, { f: 0, s: 0, run: false });
+      s.sync();
+    }
+    return s.hud().dead;
+  });
+  ok(
+    '(б2) клетка: стоял на месте → трос трещит дважды, рвётся, клетка с игроком падает',
+    snap.ev.filter((e) => e === 'fray').length === 2 && snap.ev.at(-1) === 'snap' && !snap.ev.includes('thrown') && snap.fell > 1 && Math.abs(snap.fellP - snap.fell) < 0.3 && cageDead?.reason === 'snap',
+    JSON.stringify({ ev: snap.ev.filter((e) => e !== 'sway').join(','), wear: +snap.wear.toFixed(2), fell: +snap.fell.toFixed(2), fellP: +snap.fellP.toFixed(2), dead: cageDead }),
+  );
+  await page.waitForTimeout(300);
+  const cageText = await page.locator('.v3-loc-dead').innerText().catch(() => '');
+  ok('(б2) экран смерти — «Трос оборвался»', /Трос оборвался/.test(cageText), cageText.replace(/\s+/g, ' '));
+  await shot(page, 'lift-15-cage-dead.png');
+  const cb = await page.evaluate(() => window.__rfLift.qaState().attempt);
+  await page.evaluate(() => document.querySelector('.v3-loc-dead button').click());
+  await page.waitForTimeout(400);
+  await page.evaluate(() => window.__rfLift.qaStart());
+  const cAgain = await page.evaluate(() => window.__rfLift.qaState());
+  ok('(б2) «Ещё раз» — новая попытка, трос целый', cAgain.attempt === cb + 1 && cAgain.phase === 'idle' && cAgain.floor === 0, JSON.stringify({ a: cAgain.attempt, p: cAgain.phase }));
   // перф: кадр в покое
   const perf = await page.evaluate(async () => {
     const s = window.__rfLift;

@@ -27,7 +27,7 @@ export interface LiftRequest {
   onExit(kind: LiftExitKind, floor: number, lair: boolean): void;
 }
 
-const PHASE: Record<string, string> = { idle: 'стоит', moving: 'едет', jammed: 'доска, качает', thrown: 'выброшен' };
+const PHASE: Record<string, string> = { idle: 'стоит', moving: 'едет', jammed: 'доска, качает', thrown: 'выброшен', snapped: 'трос оборвался' };
 const SIDE: Record<string, string> = { straight: 'прямо', right: 'направо' };
 const SOUND_KEY = 'room-forge/lift-sound';
 
@@ -171,7 +171,7 @@ export function LiftLayer(props: { viewer: BlockoutViewer | null; req: LiftReque
       {h?.dead && (
         <div className="v3-loc-dead">
           <div>
-            <h2>Вас выбросило в шахту</h2>
+            <h2>{h.dead.reason === 'snap' ? 'Трос оборвался' : 'Вас выбросило в шахту'}</h2>
             {h.deaths >= 1 && <p className="hint">Кренит — перебегай на поднявшуюся сторону</p>}
             <button className="btn primary" onClick={() => sceneRef.current?.retry()}>
               Ещё раз

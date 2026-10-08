@@ -94,7 +94,8 @@ export interface LiftHud {
   level: number;
   attempt: number;
   deaths: number;
-  dead: null | { reason: 'thrown' };
+  /** thrown — выбросило с каретки; snap — оборвался трос клетки */
+  dead: null | { reason: 'thrown' | 'snap' };
   /** подсказка у кнопок / двери логова */
   prompt: string | null;
   exits: LiftExit[];
@@ -192,6 +193,8 @@ export class LiftScene {
   private deaths = 0;
   private dead: LiftHud['dead'] = null;
   private fall: { t: number; from: Vector3; dir: Vector3 } | null = null;
+  /** клетка: трос оборвался — кабина с игроком падает (t — с обрыва, y0 — высота кабины в момент обрыва) */
+  private drop: { t: number; y0: number } | null = null;
   private board: { phase: 'fall' | 'stuck' | 'drop'; t: number; side: LiftSide; segment: number; y0?: number } | null = null;
   private shake = 0;
   private flicker = 0;
@@ -720,6 +723,7 @@ export class LiftScene {
     this.inCage = false;
     this.board = null;
     this.fall = null;
+    this.drop = null;
     this.dead = null;
     this.shake = 0;
     this.flicker = 0;
@@ -754,10 +758,11 @@ export class LiftScene {
     this.time += dt;
     this.shake = Math.max(0, this.shake - dt * 1.6);
     this.flicker = Math.max(0, this.flicker - dt);
-    if (this.fall) {
-      this.fall.t += dt;
-      if (this.fall.t > 2.6 && !this.dead) {
-        this.dead = { reason: 'thrown' };
+    const g = this.fall ?? this.drop;
+    if (g) {
+      g.t += dt;
+      if (g.t > 2.6 && !this.dead) {
+        this.dead = { reason: this.drop ? 'snap' : 'thrown' };
         this.deaths++;
         if (document.pointerLockElement === this.canvas) document.exitPointerLock();
         this.emitHud(true);
@@ -1014,6 +1019,26 @@ export class LiftScene {
       case 'thrown':
         this.startFall(e.axis, e.dir);
         break;
+      case 'fray': {
+        // трос трещит: лопнула прядь у проушины — звон, искры, рывок
+        const p = this.hookWorld();
+        this.audio.bang(p, 0.25 + 0.35 * e.wear);
+        this.burst(this.sparks, p, 25 + Math.round(30 * e.wear));
+        this.shake = Math.max(this.shake, 0.5 + 0.4 * e.wear);
+        this.flicker = Math.max(this.flicker, 0.5);
+        break;
+      }
+      case 'snap': {
+        const p = this.hookWorld();
+        this.audio.bang(p, 1);
+        this.burst(this.sparks, p, 90);
+        this.burst(this.dust, p, 60);
+        this.shake = 1;
+        this.flicker = 1;
+        this.drop = { t: 0, y0: this.state.y };
+        this.audio.thrown(this.state.y + this.roll.down * FM + 4);
+        break;
+      }
     }
     this.emitHud(true);
   }
@@ -1094,6 +1119,18 @@ export class LiftScene {
     ps.manualEmitCount = (ps.manualEmitCount > 0 ? ps.manualEmitCount : 0) + n;
   }
 
+  /** Проушина троса над кабиной, мир сцены. */
+  private hookWorld(): { x: number; y: number; z: number } {
+    return { x: this.cage?.position.x ?? 0, y: this.state.y + this.pivotY, z: this.cage?.position.z ?? 0 };
+  }
+
+  /** Сколько клетка пролетела после обрыва троса, м: свободное падение до дна шахты (нижний этаж − 0.5 м). */
+  private dropY(): number {
+    const d = this.drop;
+    if (!d) return 0;
+    return Math.min(d.y0 + this.roll.down * FM + 0.5, 0.5 * 9.81 * d.t * d.t);
+  }
+
   private startFall(axis: LiftAxis, dir: 1 | -1) {
     const e = this.edgeWorld(axis, dir);
     const from = this.camera.globalPosition.clone();
@@ -1135,13 +1172,16 @@ export class LiftScene {
     const sway = sw ? sw.phi * 0.1 : 0;
     const shake = this.shake * this.shake * 0.04;
     const jx = shake * (hash01(Math.floor(t * 40), 1) - 0.5), jz = shake * (hash01(Math.floor(t * 40), 2) - 0.5);
-    this.cage.position.set((sw?.axis === 'x' ? this.sideSign.x * sway : 0) + jx, s.y + jz * 0.5, (sw?.axis === 'z' ? this.sideSign.z * sway : 0) + jz);
+    // трос оборвался — кабина падает, тросы остаются висеть, где была проушина
+    const dy = this.dropY();
+    this.cage.position.set((sw?.axis === 'x' ? this.sideSign.x * sway : 0) + jx, s.y - dy + jz * 0.5, (sw?.axis === 'z' ? this.sideSign.z * sway : 0) + jz);
     this.cage.rotationQuaternion!.copyFrom(tilt);
     // противовес — навстречу кабине; тросы — от проушины и противовеса к барабану
     const top = this.roll.floors * FM + 4.6;
     // в покое (ассет) грузы внизу шахты, кабина — на этаже 0 нижнего куска; кабина наверху — грузы внизу
     this.cw.position.y = (this.roll.floors - this.roll.down) * FM - s.y;
     const hook = Vector3.TransformCoordinates(new Vector3(0, this.pivotY, 0), this.cage.computeWorldMatrix(true));
+    hook.y += dy;
     this.cables.forEach((c, i) => {
       const x = (c.metadata as { x: number }).x;
       const y0 = i < 2 ? hook.y : this.cw.position.y + 1.9;
@@ -1158,12 +1198,14 @@ export class LiftScene {
         // точка на наклонённой площадке: (x, пол, z) кабины → мир
         const local = new Vector3(this.pos.x - this.cage.position.x, 0.05, this.pos.z - this.cage.position.z);
         const w = local.rotateByQuaternionToRef(tilt, new Vector3());
-        p.set(this.cage.position.x + w.x, s.y + w.y, this.cage.position.z + w.z);
+        p.set(this.cage.position.x + w.x, s.y - dy + w.y, this.cage.position.z + w.z);
         Quaternion.SlerpToRef(this.rig.rotationQuaternion!, tilt, 0.5, this.rig.rotationQuaternion!);
       } else Quaternion.SlerpToRef(this.rig.rotationQuaternion!, Quaternion.Identity(), 0.2, this.rig.rotationQuaternion!);
       this.rig.position.copyFrom(p);
       this.camera.position.set(jx * 0.5, this.eyeY + this.bob, jz * 0.5);
       this.camera.rotation.x = clamp(this.camera.rotation.x, -1.45, 1.45);
+      // падение с оборванным тросом: удар о дно — темнота
+      if (this.drop) this.scene.imageProcessingConfiguration.exposure = 1.3 * Math.max(0, 1 - Math.max(0, this.drop.t - 0.9) / 1.4);
     }
     // свет: лампочка кабины (мерцает, гаснет в рывках), трубки шахты у ближайших этажей, логово, фонарик
     const d = clamp(this.spec.darkness, 0, 1);
@@ -1219,7 +1261,7 @@ export class LiftScene {
     const s = this.state;
     const sw = s.swing;
     let prompt: string | null = null;
-    if (this.ready && !this.dead && !this.fall) {
+    if (this.ready && !this.dead && !this.fall && !this.drop) {
       if (this.nearLairDoor()) prompt = 'E — открыть дверь';
       else if (this.inCage) {
         if (s.phase === 'jammed') prompt = 'кнопки не отвечают';
