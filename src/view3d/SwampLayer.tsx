@@ -22,7 +22,8 @@ export interface SwampRequest {
   onExit(kind: 'back' | 'new'): void;
 }
 
-export function SwampLayer(props: { viewer: BlockoutViewer | null; req: SwampRequest; onClose?(): void }) {
+/** play — «Запустить без отладки» (src/play/): без «отладки», после «КОНЕЦ» — «Новая игра» и «Главное меню». */
+export function SwampLayer(props: { viewer: BlockoutViewer | null; req: SwampRequest; onClose?(): void; play?: { onMenu(): void } }) {
   const { viewer, req } = props;
   const [hud, setHud] = useState<SwampHud | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -88,18 +89,20 @@ export function SwampLayer(props: { viewer: BlockoutViewer | null; req: SwampReq
   };
   return (
     <div className="v3-loc">
-      <div className="float v3-loc-tools">
-        <label className="check" title="Фаза сцены">
-          <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
-          отладка
-        </label>
-        {req.mode === 'room' && (
-          <button className="btn sm" onClick={() => props.onClose?.()} title="Выйти из локации (только для просмотра комнаты)">
-            выйти
-          </button>
-        )}
-      </div>
-      {debug && h && (
+      {!props.play && (
+        <div className="float v3-loc-tools">
+          <label className="check" title="Фаза сцены">
+            <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
+            отладка
+          </label>
+          {req.mode === 'room' && (
+            <button className="btn sm" onClick={() => props.onClose?.()} title="Выйти из локации (только для просмотра комнаты)">
+              выйти
+            </button>
+          )}
+        </div>
+      )}
+      {debug && h && !props.play && (
         <div className="float v3-loc-debug mono">
           <div>
             {req.title} · {h.phase === 'walk' ? 'зал' : h.phase === 'end' ? `финал · ${h.end}` : 'выход'}
@@ -136,7 +139,17 @@ export function SwampLayer(props: { viewer: BlockoutViewer | null; req: SwampReq
           {h!.titles.lines.map((l) => (
             <p key={l}>{l}</p>
           ))}
-          {done && (
+          {done && props.play && (
+            <div className="v3-end-btns">
+              <button className="btn" onClick={() => { release(); exitRef.current('new'); }} title="Начать игру заново — с хрущёвки">
+                Новая игра
+              </button>
+              <button className="btn" onClick={() => { release(); props.play?.onMenu(); }}>
+                Главное меню
+              </button>
+            </div>
+          )}
+          {done && !props.play && (
             <div className="v3-end-btns">
               <button className="btn" onClick={() => { release(); exitRef.current('new'); }} title="Сбросить мир этого сида и начать с начала">
                 Новая игра

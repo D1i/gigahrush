@@ -48,12 +48,16 @@ export interface RunConnector extends RunSegment {
   dug?: number;
   /** лестница (RunInstance.stair): пол у метки выше низа комнаты на dz, м; нет поля — 0 */
   dz?: number;
+  /** высота проёма метки, м от пола проёма (TAG_OPEN_H, src/data/roomBuilder.ts): перемычка — от неё до потолка; нет
+   *  поля — doorHeightM. Куски портального рендера (src/blockout/stairs.ts liftPiece) */
+  openH?: number;
 }
 
 /** Лестница экземпляра (src/model/stairs.ts): марши и площадки в мировых клетках [x0, x1) × [y0, y1); up — куда идти
  *  вверх; высоты пола — над низом комнаты (RunInstance.z), м. */
 export interface RunStair {
-  flights: { x0: number; y0: number; x1: number; y1: number; up: Side; z0: number; z1: number }[];
+  /** style — StairFlight.style ('escalator' — видимые ступени и перила рисует модуль метро) */
+  flights: { x0: number; y0: number; x1: number; y1: number; up: Side; z0: number; z1: number; style?: 'escalator' }[];
   pads: { x0: number; y0: number; x1: number; y1: number; z: number }[];
 }
 
@@ -79,6 +83,14 @@ export interface RunInstance {
   z?: number;
   /** лестница с перепадом высоты (ступени, площадки, перила) — src/blockout/stairs.ts */
   stair?: RunStair;
+  /** своя высота потолка, м от пола комнаты (Room.ceilM; у зала с лестницей — над подъёмом): стены, потолок, перемычки,
+   *  пропы «потолок» — до неё; нет поля — wallHeightM. Куски портального рендера (src/blockout/stairs.ts liftPiece) */
+  ceilM?: number;
+  /** метро: сорвавшиеся дорожки эскалатора — номера маршей (WorldOp 'esc'); их марши убраны из stair.flights (нет
+   *  пандуса и опоры), обломки рисует src/view3d/metroScene.ts. Нет поля — все целы */
+  escBroken?: number[];
+  /** метро: все марши до поломки (индекс — номер дорожки) — есть только вместе с escBroken */
+  escLanes?: RunStair['flights'];
   bbox: { x0: number; y0: number; x1: number; y1: number };
   /** сжатые ряды клеток "y:x1-x2,x3" в мировых клетках */
   cells: string[];
@@ -363,19 +375,30 @@ export interface PropBox {
   /** отметка, на которой стоит предмет, м (площадка лестницы; подвесной — «пол» под высоким потолком); нет поля — пол
    *  комнаты */
   z?: number;
+  /** укрытие, под которое можно пролезть (кровать, стол на ножках — PROP_COVER в core.ts); нет поля — сплошной до пола.
+   *  Коллайдер такого предмета — плита от clear до h (src/blockout/babylon.ts), у меша коллайдера metadata.cover */
+  cover?: PropCoverKind;
+  /** просвет укрытия над полом предмета, м (низ плиты коллайдера): кровать 0.30 — пролезть лёжа, стол 0.62 — на
+   *  четвереньках; задан вместе с cover */
+  clear?: number;
 }
+
+/** Вид укрытия: под кроватью — только лёжа, под столом — на четвереньках (src/view3d/posture.ts). */
+export type PropCoverKind = 'bed' | 'table';
 
 /** Лестница куска (src/blockout/stairs.ts): план, м; высоты — абсолютные (низ комнаты + лестница), м. */
 export interface StairGeo {
   inst: string;
   /** низ комнаты, м */
   base: number;
-  /** марши: прямоугольник, куда идти вверх, высота низа и верха, ступеней */
-  flights: { rect: Rect; up: Side; z0: number; z1: number; steps: number }[];
+  /** марши: прямоугольник, куда идти вверх, высота низа и верха, ступеней; style 'escalator' — видимых ступеней нет
+   *  (их рисует модуль метро), пандус-коллайдер и опора — как у лестницы */
+  flights: { rect: Rect; up: Side; z0: number; z1: number; steps: number; style?: 'escalator' }[];
   /** площадки: прямоугольник и высота пола */
   pads: { rect: Rect; z: number }[];
-  /** перила у обрывов (бок марша, край площадки): ломаная по плану с высотой пола [x, y, z] и низ обрыва, м */
-  rails: { pts: [number, number, number][]; low: number }[];
+  /** перила у обрывов (бок марша, край площадки): ломаная по плану с высотой пола [x, y, z] и низ обрыва, м; hidden —
+   *  перила бока эскалатора: только коллайдер (балюстраду рисует модуль метро) */
+  rails: { pts: [number, number, number][]; low: number; hidden?: true }[];
 }
 
 export interface RoomInfo3D {

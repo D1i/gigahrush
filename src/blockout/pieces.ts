@@ -128,9 +128,11 @@ export function pieceOf(model: BlockoutModel, id: string): BlockoutModel {
   };
 }
 
-/** Кусок комнаты: pieceOf(neighborhoodModel(...)), поднятый на высоту комнаты (лестницы: stairs.ts liftPiece). */
+/** Кусок комнаты: pieceOf(neighborhoodModel(...)), поднятый на высоту комнаты (лестницы, свой потолок, высокие
+ *  проёмы: stairs.ts liftPiece; соседи — для общего верха проёма). */
 export function buildPiece(run: RunExport, id: string, opts?: Partial<BlockoutOptions>, openCut = false): BlockoutModel {
-  return liftPiece(pieceOf(neighborhoodModel(run, id, opts, openCut), id), (run.instances ?? []).find((i) => i.id === id));
+  const of = (x: string) => (run.instances ?? []).find((i) => i.id === x);
+  return liftPiece(pieceOf(neighborhoodModel(run, id, opts, openCut), id), of(id), of);
 }
 
 /** Пол комнаты в куске для определения «где стоит игрок»: её пол + её половины проёмов. Граница с

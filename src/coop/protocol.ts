@@ -1,8 +1,9 @@
 // Протокол кооп-лобби (docs/COOP.md): сообщения клиент ↔ relay-сервер (tools/coop-server.mjs), JSON по WebSocket.
 import type { WalkOptions, WorldOp } from '../view3d/walk';
 
-/** Версия протокола — та же, что COOP_PROTO сервера. */
-export const COOP_PROTO = 1;
+/** Версия протокола — та же, что COOP_PROTO сервера (tools/coop-server.mjs: hello с другой — ошибка version).
+ *  2 — операции мира drop/pick (предметы на полу), суффикс отпечатка мира, PlayerState.torch. */
+export const COOP_PROTO = 2;
 
 /** Мир лобби: сид и настройки прогулки создателя (проект — отдельно, по хэшу). */
 export interface LobbyMeta {
@@ -30,6 +31,8 @@ export interface PlayerState {
   buried?: boolean;
   /** держит горящий фонарь (биом «Общага»: свет у аватара, защитное поле вокруг p) */
   lamp?: 1;
+  /** в руке горящий фонарик (хотбар «Прогулки», src/view3d/inventory.ts): у аватара — фонарь и луч по взгляду */
+  torch?: 1;
   /** погиб (утащила рука и т. п.) — аватар не показывается, до возрождения */
   dead?: 1;
 }
@@ -41,6 +44,8 @@ export interface PlayerInfo {
   id: string;
   name: string;
   color: string;
+  /** место в лобби (0…3, наименьшее свободное при входе; сервер постарше — нет): цвет шинели аватара */
+  slot?: number;
   state: PlayerState | null;
 }
 

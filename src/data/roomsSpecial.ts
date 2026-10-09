@@ -4,6 +4,7 @@ import type { Room, RoomElite } from '../model/types';
 import { newStairwell } from '../locations/stairwell';
 import { LIFT_DOOR_STRAIGHT_M, LIFT_FLOOR_M, LIFT_SHAFT_X, LIFT_SHAFT_Z, newLift } from '../locations/lift';
 import { newLair } from '../locations/lair';
+import { newHatch, newSnowDoor, SNOWDOOR_CONN } from '../locations/storyDoors';
 import { room } from './roomBuilder';
 
 /** Хвататель: за петлёй — «закрома» и тайники тех, кто не дошёл. Опасность высокая (+20 / +35). */
@@ -116,6 +117,103 @@ function bossLair(): Room {
   return r;
 }
 
+// ───────────────────── переходы сюжета (src/game/story.ts) ─────────────────────
+// Ставятся только переходом мира сюжета (WorldSettings.story): вес роста 0, в «Прогулке» сами не растут. Вид перехода
+// по биому — storyVia: сарай — люк, погреб и общага — дверь в снег (вариант — по тегам биома, biomeMul).
+
+/** Id пресетов переходов сюжета: люк в погреб (сарай), дверь в снег погреба и общаги. */
+export const HATCH_ID = 'barn_hatch';
+export const SNOWDOOR_CELLAR_ID = 'cellar_snowdoor';
+export const SNOWDOOR_OBSHAGA_ID = 'obsh_snowdoor';
+
+/** Метка двери в снег: id — SNOWDOOR_CONN (вид ищет дверь по нему), остальное — как построил RoomBuilder. */
+function snowDoorConn(r: Room, k: number): Room {
+  r.connectors[k] = { ...r.connectors[k], id: SNOWDOOR_CONN };
+  return r;
+}
+
+/**
+ * «Люк в погреб» — переход сюжета из сарая: закуток 3.0 × 3.0 м в досках, один проход 'barn' 1.5 м (юг); посреди пола —
+ * крышка люка 1.0 × 1.0 м (p_cellar_hatch) ровно в центре комнаты (вид находит люк по центру), у стены — приставная
+ * лестница, под потолком — гирлянда (света в сарае больше нет). E у люка — открыть и спуститься (затемнение):
+ * StreamWorld.descend → погреб (следующий шаг сюжета) на HatchSpec.floorsDown этажей ниже.
+ */
+function cellarHatch(): Room {
+  const b = room(HATCH_ID, 'Люк в погреб', {
+    // первый тег — группа «сарай» (отделка — доски сарая; в биом сарая — по тегу); «спец», «люк» — метки локации
+    tags: ['сарай', 'спец', 'люк'],
+    gen: { weight: 0, min: 0, max: 1 },
+    elite: [],
+    note:
+      'Переход сюжета (сарай → погреб): закуток 3.0×3.0 м, посреди пола — крышка люка 1×1 м, рядом приставная лестница, ' +
+      'под потолком гирлянда. E у люка — открыть и спуститься в погреб. Вес 0: сам не растёт, его ставит переход мира ' +
+      'сюжета (WorldSettings.story). Правила — src/game/story.ts.',
+  })
+    .rect(0, 0, 3, 3)
+    .open('S', 0.75, 'barn', 'Проход (юг)')
+    .put('p_cellar_hatch', 1.5, 1.5)
+    .wall('p_barn_ladder', 'E', 1.25);
+  for (let k = 0; k < 3; k++) b.wall('p_barn_garland', 'N', k);
+  const r = b.build();
+  r.location = newHatch();
+  return r;
+}
+
+/**
+ * «Дверь в снег» погреба — переход сюжета из погреба (пока — подвал): тупик хода 2.0 × 3.0 м в кирпиче, вход — ход
+ * 'basement' 1.0 м (юг), у дальнего конца в левой стене — низкая дощатая дверь 0.9 м (метка SNOWDOOR_CONN, глухая: за
+ * ней снег; не напротив входа — без анфилады), у стен — стеллаж с банками и ящик, лампочка под потолком. E у двери — за ней снег, обвал засыпает; откопаться
+ * (SnowDoorSpec.digs нажатий) — StreamWorld.descend → снежные тоннели.
+ */
+function cellarSnowDoor(): Room {
+  const r = room(SNOWDOOR_CELLAR_ID, 'Дверь в снег (погреб)', {
+    // первый тег — группа «подвал» (отделка и биом погреба-заглушки); «погреб» — закрытые двери погреба (doors.ts)
+    tags: ['подвал', 'погреб', 'спец', 'дверь-в-снег'],
+    gen: { weight: 0, min: 0, max: 1 },
+    elite: [],
+    note:
+      'Переход сюжета (погреб → снежные тоннели): тупик хода 2.0×3.0 м, у торца — низкая дверь погреба. Открыл — за ' +
+      'ней снег, обвал засыпает; откопался — снежные тоннели. Вес 0: ставит только переход мира сюжета. Правила — ' +
+      'src/game/story.ts.',
+  })
+    .rect(0, 0, 2, 3)
+    .open('S', 0.5, 'basement', 'Ход (юг)')
+    .open('W', 0.4, 'corridor>service', 'Дверь в снег')
+    .wall('p_bsm_shelf_jars', 'E', 1.2)
+    .wall('p_bsm_crate', 'N', 1.2)
+    .put('p_bsm_bulb', 1.0, 1.5)
+    .build();
+  r.location = newSnowDoor();
+  return snowDoorConn(r, 1);
+}
+
+/**
+ * «Дверь в снег» общаги — переход сюжета из общаги: тупик коридора 2.0 × 3.0 м в кафеле, вход — коридор 'obshaga' во всю
+ * ширину (юг), у дальнего конца в левой стене — дверь 0.9 м (метка SNOWDOOR_CONN, глухая; 'obshaga>room' — закрытое
+ * полотно двери общаги, как у запертых комнат), в торце батарея, огнетушитель, плафон. E у двери — за ней снежные обвалы (дальше — снежные тоннели).
+ */
+function obshagaSnowDoor(): Room {
+  const r = room(SNOWDOOR_OBSHAGA_ID, 'Дверь в снег (общага)', {
+    // «общага» — группа, «коридор» — отделка (кафель), «только-биом» — растёт лишь в общаге (biomeMul)
+    tags: ['общага', 'коридор', 'спец', 'дверь-в-снег', 'только-биом'],
+    gen: { weight: 0, min: 0, max: 1 },
+    elite: [],
+    note:
+      'Переход сюжета (общага → снежные обвалы): тупик коридора 2.0×3.0 м, у торца — запертая дверь. Открыл — за ней ' +
+      'снег, обвал засыпает; откопался — снежные тоннели. Вес 0: ставит только переход мира сюжета. Правила — ' +
+      'src/game/story.ts.',
+  })
+    .rect(0, 0, 2, 3)
+    .open('S', 0, 'obshaga', 'Коридор (юг)')
+    .open('W', 0.6, 'obshaga>room', 'Дверь в снег')
+    .wall('p_obsh_radiator', 'N', 0.6)
+    .wall('p_obsh_fire_ext', 'E', 1.4)
+    .put('p_obsh_plafond', 1.0, 1.5)
+    .build();
+  r.location = newSnowDoor();
+  return snowDoorConn(r, 1);
+}
+
 /** Все спец-комнаты пресетов (свежие объекты при каждом вызове). */
 export function buildSpecialRooms(): Room[] {
   return [
@@ -123,5 +221,8 @@ export function buildSpecialRooms(): Room[] {
     liftRoom(LIFT_RUSTY_ID, 'Ржавый лифт А — клетка', 'cage'),
     liftRoom(LIFT_CARRIAGE_ID, 'Ржавый лифт Б — каретка', 'carriage'),
     bossLair(),
+    cellarHatch(),
+    cellarSnowDoor(),
+    obshagaSnowDoor(),
   ];
 }

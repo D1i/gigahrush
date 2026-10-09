@@ -445,6 +445,9 @@ try {
     await page.waitForTimeout(2000);
     const e0 = await where(page);
     ok('D ворота — комната этажами ниже, другой биом, поза стоя', e0.biome !== 'snow' && (e0.floor ?? 0) < 0 && e0.ell > 0.6, JSON.stringify({ room: e0.roomId, biome: e0.biome, floor: e0.floor, ell: e0.ell, fog: e0.fog }));
+    await page.waitForTimeout(1500);
+    const e1 = await page.evaluate(() => ({ pose: window.__rf3d.posture.pose, eye: +window.__rf3d.posture.eye.toFixed(2), roll: +window.__rf3d.fps.rotation.z.toFixed(3) }));
+    ok('D за воротами — встал во весь рост, камера не наклонена', e1.pose === 'stand' && e1.eye > 1.4 && Math.abs(e1.roll) < 1e-3, JSON.stringify(e1));
     await page.screenshot({ path: out + 'snow-12-after.png' });
   }
 

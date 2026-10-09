@@ -16,6 +16,7 @@ import type {
   DoorSlot,
   Opening,
   PropBox,
+  PropCoverKind,
   Rect,
   RoomInfo3D,
   RunConnector,
@@ -1081,6 +1082,9 @@ export function buildBlockoutModel(run: RunExport, opts?: Partial<BlockoutOption
           missing.add(propId);
           return;
         }
+        const h = propHeightM(p.tags ?? [], p.name ?? '');
+        // кровать / стол на ножках: коллайдер — плита над просветом (низкая болванка без плиты — сплошная, как была)
+        const cv = propCover(propId);
         propsOut.push({
           inst: inst.id,
           source,
@@ -1091,9 +1095,10 @@ export function buildBlockoutModel(run: RunExport, opts?: Partial<BlockoutOption
           rot,
           w: p.w,
           d: p.h,
-          h: propHeightM(p.tags ?? [], p.name ?? ''),
+          h,
           color: p.color,
           tags: [...(p.tags ?? [])],
+          ...(cv && h - cv.clear >= COVER_MIN_SLAB_M ? { cover: cv.cover, clear: cv.clear } : {}),
         });
       };
       for (const d of inst.decor ?? []) add('decor', d.propId, d.x, d.y, d.rot, `декор ${inst.id}/${d.id}`);
@@ -1822,4 +1827,40 @@ export function propHeightM(tags: string[], name: string): number {
     }
   }
   return 0.8;
+}
+
+// ───────────────────────── укрытия: под кроватью и под столом ─────────────────────────
+//
+// Игрок от первого лица (src/view3d/posture.ts) пролезает под предметы: на четвереньках эллипсоид занимает
+// пол + 0.18…0.59 м, лёжа (сам ложится под низким укрытием) — пол + 0.05…0.25 м; стоя (0…1.7) и присев (0.2…1.1)
+// упирается. Поэтому коллайдер укрытия — не бокс от пола, а плита от просвета clear до верха h (babylon.ts), у меша
+// коллайдера metadata.cover / metadata.clear — по ним поза и находит укрытие.
+
+/** Просвет под кроватью, м: низ сетки (у железной кровати общаги ~0.33, свес одеяла до 0.27) — пролезть только лёжа. */
+export const BED_CLEAR_M = 0.3;
+/** Просвет под столом, м: низ царги (у казённого стола общаги царга 0.58…0.67) — пролезть на четвереньках. */
+export const TABLE_CLEAR_M = 0.62;
+/** Тоньше плиты укрытия не бывает: если болванка ниже clear + 4 см — предмет сплошной, без просвета. */
+const COVER_MIN_SLAB_M = 0.04;
+
+/**
+ * Под чем можно пролезть: id предмета → вид укрытия и просвет, м. Только на ножках и не меньше ~0.6 м по обеим
+ * сторонам: кровати (односпальная, двуспальная, железная общаги, раскладушка — рама на ножках) и столы (кухонный,
+ * круглый, казённый). Сплошные до пола — не укрытия: тахта, диван, матрас, тумбовые столы (письменный,
+ * канцелярский, вахтёра), стол-книжка сложенный, верстаки с ящиками; шахматный столик мал (0.6 × 0.6).
+ * Новая кровать или стол на ножках — допишите id сюда.
+ */
+export const PROP_COVER: Readonly<Record<string, { cover: PropCoverKind; clear: number }>> = {
+  p_bed1: { cover: 'bed', clear: BED_CLEAR_M },
+  p_bed2: { cover: 'bed', clear: BED_CLEAR_M },
+  p_cot: { cover: 'bed', clear: BED_CLEAR_M },
+  p_obsh_bed: { cover: 'bed', clear: BED_CLEAR_M },
+  p_table_kitchen: { cover: 'table', clear: TABLE_CLEAR_M },
+  p_table_round: { cover: 'table', clear: TABLE_CLEAR_M },
+  p_obsh_table: { cover: 'table', clear: TABLE_CLEAR_M },
+};
+
+/** Укрытие предмета по id (PROP_COVER) или null — сплошной до пола. */
+export function propCover(propId: string): { cover: PropCoverKind; clear: number } | null {
+  return Object.prototype.hasOwnProperty.call(PROP_COVER, propId) ? PROP_COVER[propId] : null;
 }

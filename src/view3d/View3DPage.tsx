@@ -23,7 +23,15 @@ import { SwampLayer, type SwampRequest } from './SwampLayer';
 import { HangarLayer, type HangarRequest } from './HangarLayer';
 import { SnowWalk, type SnowHud } from './snowWalk';
 import { ObshagaWalk, type ObshagaHud } from './obshagaWalk';
+import { MetroWalk, type MetroHud } from './metroWalk';
+import { StoryWalk, type StoryHud } from './storyWalk';
+import { storyStep } from '../game/story';
+import { SNOWDOOR_CONN } from '../locations/snowDoor';
+import { Inventory, type InventoryHud } from './inventory';
+import { HotbarHud } from './HotbarHud';
+import { NOTE_FLAT } from './posture';
 import { collapseSite } from '../locations/snowCollapse';
+import { KEROLAMP_ITEM } from '../locations/obshaga';
 import { LairDecor } from './lairDecor';
 import { BiomeMood } from './biomeMood';
 import { lairSign } from '../locations/lair';
@@ -116,15 +124,31 @@ function coreError(e: unknown): { title: string; text: string } {
   return { title: 'Не удалось построить болванку', text: msg };
 }
 
-export default function View3DPage() {
+/**
+ * «Запустить без отладки» (src/play/PlayPage.tsx): только игра — «Прогулка» по миру walk (в лобби — мир лобби) на весь
+ * экран, без отладочных панелей; мышь отпущена (Esc) — пауза. Отладочные настройки прогулки (readWalk) не трогает.
+ */
+export interface PlayMode {
+  /** мир одиночной игры (сюжет — WalkOptions.story); новый объект с другим сидом — мир пересоздаётся */
+  walk: WalkOptions;
+  /** «Главное меню» (пауза, после «КОНЕЦ»): страница сама решает, выходить ли из лобби */
+  onMenu: () => void;
+  /** «Новая игра» после «КОНЕЦ» (одиночная): новый мир (новый сид) → новый walk */
+  onNewGame: () => void;
+}
+
+export default function View3DPage(props: { play?: PlayMode } = {}) {
+  const play = props.play ?? null;
   const p = useProject();
   const ui = useUI();
-  const [source, setSourceS] = useState<Source>(memo.source);
+  // игра без отладки — всегда «Прогулка» (memo.source и отладочные настройки не меняются)
+  const [source, setSourceS] = useState<Source>(play ? 'walk' : memo.source);
   const [file, setFileS] = useState(memo.file);
   const [fileErr, setFileErr] = useState<string | null>(null);
   const [roomSel, setRoomSel] = useState<string>(ui.roomId ?? p.rooms[0]?.id ?? '');
-  const [opts, setOptsS] = useState<BlockoutOptions>(readOpts);
-  const [view, setViewS] = useState(readView);
+  // игра без отладки — болванка и вид по умолчанию (отладочные настройки вкладки «3D» не действуют)
+  const [opts, setOptsS] = useState<BlockoutOptions>(() => (play ? { ...DEFAULT_BLOCKOUT, doors: true } : readOpts()));
+  const [view, setViewS] = useState<ViewSettings>(() => (play ? { finishes: true, fog: false } : readView()));
   const setView = (patch: Partial<ViewSettings>) => {
     const next = { ...view, ...patch };
     setViewS(next);
@@ -162,6 +186,7 @@ export default function View3DPage() {
 
   const setSource = (s: Source) => {
     setLoc(null);
+    if (play) return; // игра без отладки — только «Прогулка»
     memo.source = s;
     setSourceS(s);
     writeWalk({ ...readWalk(), on: s === 'walk' });
@@ -175,7 +200,7 @@ export default function View3DPage() {
   }, []);
 
   // ── прогулка: бесконечный мир (src/gen4d/stream.ts) ──
-  const [walkOpts, setWalkOptsS] = useState<WalkOptions>(() => readWalk());
+  const [walkOpts, setWalkOptsS] = useState<WalkOptions>(() => play?.walk ?? readWalk());
   const [walkSeedDraft, setWalkSeedDraft] = useState(walkOpts.seed);
   /** что запущено: сид + номер перезапуска (сброс сохранения → тот же сид заново) */
   const [walkRun, setWalkRun] = useState({ seed: walkOpts.seed, n: 0 });
@@ -191,7 +216,17 @@ export default function View3DPage() {
   /** общага: подсказка у двери / лампы, волочение, смерть, звук (src/view3d/obshagaWalk.ts) */
   const [obshHud, setObshHud] = useState<ObshagaHud | null>(null);
   const obshRef = useRef<ObshagaWalk | null>(null);
+  // метро: эскалаторы (src/view3d/metroWalk.ts)
+  const [metroHud, setMetroHud] = useState<MetroHud | null>(null);
+  const metroRef = useRef<MetroWalk | null>(null);
+  /** сюжет: люк в погреб, дверь в снег — подсказка, затемнение, белая пелена (src/view3d/storyWalk.ts) */
+  const [storyHud, setStoryHud] = useState<StoryHud | null>(null);
+  /** мир прогулки — сюжетный (WalkSession.story): срыв на лестнице / в лифте — в общагу, без отладки в сценах */
+  const [walkStory, setWalkStory] = useState(false);
   const walkRef = useRef<WalkSession | null>(null);
+  /** руки: хотбар, фонарик, предметы на полу (src/view3d/inventory.ts) */
+  const [invHud, setInvHud] = useState<InventoryHud | null>(null);
+  const invRef = useRef<Inventory | null>(null);
   const setWalkOpt = <K extends keyof WalkOptions>(k: K, v: WalkOptions[K]) => {
     const next = { ...walkOpts, [k]: v };
     setWalkOptsS(next);
@@ -212,6 +247,12 @@ export default function View3DPage() {
       notify('В лобби мир общий — «Новая игра» после выхода из лобби', 'info');
       return;
     }
+    if (play) {
+      // игра без отладки: новый мир (новый сид) даёт страница — новый play.walk (эффект ниже). Стирать мир этого же сида
+      // здесь нельзя: уходящая сессия при dispose сохранит его снова
+      play.onNewGame();
+      return;
+    }
     const s = walkRun.seed;
     WalkSession.reset(s, (p.world?.biomes ?? []).map((b) => b.id));
     const next = { ...walkOpts, seed: s, biome: null };
@@ -221,6 +262,44 @@ export default function View3DPage() {
   };
   const newGameRef = useRef(newGame);
   newGameRef.current = newGame;
+  // ── игра без отладки (play): новый мир от страницы, пауза ──
+  const playWalk = play?.walk ?? null;
+  useEffect(() => {
+    if (!playWalk || playWalk === walkOpts) return;
+    setWalkOptsS(playWalk);
+    setWalkRun((r) => ({ seed: playWalk.seed, n: r.n + 1 }));
+  }, [playWalk]);
+  /** меню паузы открыто кнопкой «Меню» / Esc поверх спец-локации (без неё пауза — пока мышь отпущена) */
+  const [pauseOpen, setPauseOpen] = useState(false);
+  /** игрок уже входил в игру (захватывал мышь): первая «пауза» — экран входа */
+  const [played, setPlayed] = useState(false);
+  useEffect(() => {
+    if (!locked) return;
+    setPlayed(true);
+    setPauseOpen(false);
+  }, [locked]);
+  useEffect(() => {
+    if (!play) return;
+    // Esc, которым браузер отпускает мышь, странице не приходит — этот только при отпущенной мыши
+    const k = (e: KeyboardEvent) => {
+      if (e.code === 'Escape' && !document.pointerLockElement && locRef.current) setPauseOpen((o) => !o);
+    };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [!!play]);
+  /** «Продолжить»: захватить мышь снова (сцена спец-локации захватывает её сама — кликом по ней) */
+  const playResume = () => {
+    setPauseOpen(false);
+    const v = viewer.current;
+    if (!v || v.hasOverlay) return;
+    v.engine.getRenderingCanvas()?.focus();
+    v.engine.enterPointerlock();
+  };
+  const playMenu = () => {
+    setPauseOpen(false);
+    if (document.pointerLockElement) document.exitPointerLock();
+    play?.onMenu();
+  };
   /** Режим квартир: биом, в котором начинается мир прогулки (у каждого — свой мир сида и своё сохранение). */
   const walkStartBiome = walkBiome(p, walkOpts) ?? (p.world ? startBiomeOf(p.world)?.id ?? null : null);
   const switchBiome = (id: string) => {
@@ -316,7 +395,8 @@ export default function View3DPage() {
   const [foldView, setFoldViewS] = useState<FoldOrbitView>(memo.foldView);
   const [detector, setDetectorS] = useState(memo.detector);
   const [foldRender, setFoldRenderS] = useState<FoldRender>(memo.render);
-  const [flash, setFlash] = useState<{ seq: number; text: string; color: string } | null>(null);
+  /** вспышка-надпись; big — название шага сюжета при входе в новый биом (крупнее и дольше) */
+  const [flash, setFlash] = useState<{ seq: number; text: string; color: string; big?: boolean } | null>(null);
   /** поза от первого лица (C) */
   const [pose, setPose] = useState<'stand' | 'crouch' | 'crawl'>('stand');
   /** клик по комнате в облёте; в виде «видимое множество» — пересобрать вокруг неё */
@@ -337,7 +417,7 @@ export default function View3DPage() {
           setPose(pose);
           const text = note ?? (pose === 'crawl' ? 'на четвереньках' : pose === 'crouch' ? 'скрючившись' : 'стоя');
           const seq = Date.now();
-          setFlash({ seq, text, color: note ? '#e0563f' : '#cfd8e6' });
+          setFlash({ seq, text, color: note && note !== NOTE_FLAT ? '#e0563f' : '#cfd8e6' });
           setTimeout(() => setFlash((f) => (f?.seq === seq ? null : f)), 1200);
         },
         onPropsReady: () => setPropsVer((x) => x + 1),
@@ -367,6 +447,32 @@ export default function View3DPage() {
       if (import.meta.env.DEV) delete (window as any).__rf3d;
     };
   }, []);
+
+  // бег (Shift, src/view3d/sprint.ts) — только в «Прогулке»; шкала выносливости — прямо в DOM после кадра, без setState
+  const staminaRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const v = viewer.current;
+    if (!v) return;
+    v.sprint.enabled = source === 'walk';
+    let shown = '';
+    let shownEl: HTMLDivElement | null = null;
+    const o = v.scene.onAfterRenderObservable.add(() => {
+      const el = staminaRef.current;
+      if (!el) return;
+      if (el !== shownEl) (shownEl = el), (shown = ''); // шкалу смонтировали заново — переписать всё
+      const s = v.sprint.state;
+      const w = Math.round(s.v * 200) / 200;
+      const key = `${w}|${s.v < 0.999 || s.sprinting ? 1 : 0}|${s.exhausted ? 1 : 0}`;
+      if (key === shown) return;
+      shown = key;
+      el.classList.toggle('on', s.v < 0.999 || s.sprinting);
+      el.classList.toggle('tired', s.exhausted);
+      (el.firstElementChild as HTMLElement | null)?.style.setProperty('transform', `scaleX(${w})`);
+    });
+    return () => {
+      v.scene.onAfterRenderObservable.remove(o);
+    };
+  }, [source]);
 
   // перестройка сцены при смене модели; камеру вписываем заново только при смене источника
   const fitKey = useRef('');
@@ -511,10 +617,16 @@ export default function View3DPage() {
     const obsh = new ObshagaWalk(v.scene, v.fps, {
       rx: () => session?.rx ?? null,
       driver: () => d,
-      key: () => session?.key ?? null,
       live: () => !v.hasOverlay && v.mode === 'fps',
       // лампа взята — операция мира (кооп: кто первый — того и лампа)
       takeLamp: async (inst, spot) => !!(await session?.request({ k: 'lamp', inst, spot })),
+      // лампа — предмет хотбара (src/view3d/inventory.ts): в руке — выбрана; взятая со спота — в хотбар и в руку
+      lampHeld: () => !!invRef.current?.lampHeld,
+      handsFree: () => (invRef.current?.free ?? 0) > 0,
+      giveLamp: () => void invRef.current?.receive({ item: KEROLAMP_ITEM }),
+      qaLamp: (on) => void invRef.current?.qaHold(KEROLAMP_ITEM, on),
+      // лампы на полу (предметы мира) — поле лампы
+      drops: () => session?.drops() ?? [],
       light: (mul, tint) => mood.light(mul, tint),
       flash: (text, color, ms = 1300) => {
         const seq = Date.now();
@@ -522,13 +634,63 @@ export default function View3DPage() {
         setTimeout(() => setFlash((f) => (f?.seq === seq ? null : f)), ms);
       },
       onHud: setObshHud,
-      busy: () => !!door || !!presence?.nearBuried,
+      busy: () => !!door || !!presence?.nearBuried || transit.busy,
       propModel: (id) => v.props.get(id),
       co,
       presence: () => presence,
     }, walkRun.seed, v.posture);
     obshRef.current = obsh;
     if (import.meta.env.DEV) (window as any).__rfObshaga = obsh.qa(); // для QA-скриптов
+    // метро: эскалаторы везут и изредка срываются, холодный свет и туман метро (src/view3d/metroWalk.ts) — после общаги:
+    // она каждый кадр обнуляет крен позы, тряска метро пишется позже
+    const metro = new MetroWalk(v.scene, v.fps, {
+      rx: () => session?.rx ?? null,
+      driver: () => d,
+      live: () => !v.hasOverlay && v.mode === 'fps',
+      // обрыв дорожки — операция мира (кооп: у всех; повтор — null)
+      breakEsc: async (inst, lane) => !!(await session?.request({ k: 'esc', inst, lane })),
+      light: (mul, tint) => mood.light(mul, tint),
+      flash: (text, color, ms = 1300) => {
+        const seq = Date.now();
+        setFlash({ seq, text, color });
+        setTimeout(() => setFlash((f) => (f?.seq === seq ? null : f)), ms);
+      },
+      onHud: setMetroHud,
+      busy: () => !!door || !!presence?.nearBuried || transit.busy,
+      co,
+    }, walkRun.seed, v.posture);
+    metroRef.current = metro;
+    if (import.meta.env.DEV) (window as any).__rfMetro = metro.qa(); // для QA-скриптов
+    // сюжет: люк в погреб, дверь в снег (src/view3d/storyWalk.ts) — после снега и общаги: её кадр перекрывает их позу
+    const instOf = (id: string) => {
+      const s = session;
+      if (!s) return null;
+      if (roomIdx.rx !== s.rx) roomIdx = { rx: s.rx, by: new Map(s.rx.instances.map((i) => [i.id, i])) };
+      return roomIdx.by.get(id) ?? null;
+    };
+    const transit = new StoryWalk(v.scene, v.fps, {
+      room: () => {
+        const dd = d;
+        const id = dd ? (dd.portal?.current ?? dd.current.center) : null;
+        const inst = id ? instOf(id) : null;
+        return id && inst ? { id, inst } : null;
+      },
+      inst: instOf,
+      cellM: () => session?.rx.cellM ?? 0.1,
+      props: () => session?.rx.props ?? [],
+      kindOf: (id) => {
+        const L = session?.world.locationOf(id);
+        return L?.kind === 'hatch' ? { kind: 'hatch' } : L?.kind === 'snowdoor' ? { kind: 'snowdoor', digs: L.roll.digs } : null;
+      },
+      doorSlot: (inst, conn) => d?.doorAt(inst, conn) ?? null,
+      openDoor: (slot) => !!d?.doors?.open(slot, { ready: () => true }),
+      portal: () => d?.portal ?? null,
+      descend: (id) => storyDescend(id),
+      busy: () => !!door || !!presence?.nearBuried || !!invRef.current?.aimed,
+      live: () => !v.hasOverlay && v.mode === 'fps',
+      onHud: setStoryHud,
+    }, v.posture);
+    if (import.meta.env.DEV) (window as any).__rfStory = transit.qa(); // для QA-скриптов
     /** Подтаявший снег пробит — сцена ангара (падение); ворота цеха — world.descend (этажи ниже: завод или другой биом). */
     const enterHangar = (id: string) => {
       const s = session;
@@ -604,6 +766,8 @@ export default function View3DPage() {
         title: inst?.roomName || 'Подъезд',
         mode: 'walk',
         onExit: (kind) => exitLoc(kind, id, from),
+        // сюжет: Хвататель утащил — очнулся в общаге
+        onFall: s.story ? () => void exitFall(id, from) : undefined,
       });
     };
     /** Лифт: с этажа 0 (вошли с площадки) или с этажа floor у коридора side (вернулись из комнаты за выходом). */
@@ -628,6 +792,8 @@ export default function View3DPage() {
         title: inst?.roomName || 'Лифт',
         mode: 'walk',
         onExit: (kind, f, isLair) => exitLift(kind, f, isLair, id, from),
+        // сюжет: выбросило в шахту / оборвался трос — очнулся в общаге
+        onFall: s.story ? () => void exitFall(id, from) : undefined,
       });
     };
     const exitLift = async (kind: 'entry' | LiftSide, floor: number, isLair: boolean, id: string, from: string | null) => {
@@ -661,12 +827,67 @@ export default function View3DPage() {
         liftCool = performance.now() + 1500;
         const fl = s.world.run().instances.find((i) => i.id === target)?.floor ?? 0;
         const text = `этаж ${fmtFloor(fl)} · ${SIDE_RU[kind]}${isLair ? ' · логово' : ''}`;
-        setFlash({ seq: Date.now(), text, color: isLair ? '#e0563f' : '#e8b04b' });
-        setTimeout(() => setFlash((f) => (f?.text === text ? null : f)), 1900);
+        // сюжет: лифт вывел в другой биом — вспышка его названия (liftTimer), а не этажа
+        if (!storyBiomeChange(s, id, target)) {
+          setFlash({ seq: Date.now(), text, color: isLair ? '#e0563f' : '#e8b04b' });
+          setTimeout(() => setFlash((f) => (f?.text === text ? null : f)), 1900);
+        }
         // логово — темнота и табличка, как при шаге в комнату
         if (s.world.locationOf(target)?.kind === 'lair') enterLoc(target);
       };
       go(0);
+    };
+    // ── сюжет (src/game/story.ts): срыв в общагу, люк и дверь в снег; при входе в новый биом — его название ──
+    let storyBiome: string | null = null;
+    const biomeOf = (s: WalkSession, id: string) => s.world.clusterAt(id)?.biome?.id ?? null;
+    /** сюжет и переход из from в to сменил биом (вспышка — название шага сюжета в liftTimer, а не этаж) */
+    const storyBiomeChange = (s: WalkSession, from: string, to: string) => s.story && biomeOf(s, from) !== biomeOf(s, to);
+    const bigFlash = (text: string) => {
+      const seq = Date.now();
+      setFlash({ seq, text, color: '#efe3c8', big: true });
+      setTimeout(() => setFlash((f) => (f?.seq === seq ? null : f)), 3400);
+    };
+    /** Переход привёл в комнату target (операция мира вернулась): дождаться её в прогоне драйвера и перейти в неё. */
+    const arriveAt = (s: WalkSession, dd: FoldDriver, target: string): Promise<boolean> =>
+      new Promise((res) => {
+        const go = (k: number) => {
+          if (!alive) return res(false);
+          if (!s.rx.instances.some((i) => i.id === target)) {
+            if (k < 50) setTimeout(() => go(k + 1), 20);
+            else res(false);
+            return;
+          }
+          dd.goTo(target);
+          res(true);
+        };
+        go(0);
+      });
+    /** Сюжет: люк в погреб, дверь в снег — операция мира descend (кооп — через лобби) → комната-выход следующего биома;
+     *  посадка — как после спуска лестницы. false — не вышло (сценарий проявится на месте). */
+    const storyDescend = async (id: string): Promise<boolean> => {
+      const s = session, dd = d;
+      if (!s || !dd || !alive) return false;
+      const exitId = await s.request({ k: 'descend', id });
+      if (!alive) return false;
+      if (!exitId) {
+        notify('Переход никуда не вывел: мир не смог поставить комнату (см. консоль)', 'error');
+        return false;
+      }
+      return arriveAt(s, dd, exitId);
+    };
+    /** Сюжет: срыв — Хвататель утащил с лестницы, из лифта выбросило: операция мира fall → комната прихода в общаге. */
+    const exitFall = async (id: string, from: string | null) => {
+      const s = session, dd = d;
+      setLoc(null);
+      if (!s || !dd || !alive) return;
+      const exitId = await s.request({ k: 'fall', id });
+      if (!alive) return;
+      if (!exitId) {
+        notify('Срыв никуда не вывел: мир не смог поставить комнату общаги (см. консоль)', 'error');
+        dd.placeAtDoor(from ?? neighbor(id) ?? id, id);
+        return;
+      }
+      void arriveAt(s, dd, exitId);
     };
     // режим квартир: закрытый выход квартиры рядом (ближе 1.3 м к его двери-панели) — подсказка «E — открыть»
     let door: { inst: string; connector: string } | null = null;
@@ -675,8 +896,9 @@ export default function View3DPage() {
       let best: { inst: string; connector: string } | null = null;
       let bd = 1.3;
       const c = v.fps.position;
-      for (const k of s.rx.instances.find((i) => i.id === room)?.connectors ?? []) {
-        if (!k.exit) continue;
+      // идёт сценарий сюжета — E его; дверь в снег — не выход квартиры (её открывает сценарий, ./storyWalk.ts)
+      for (const k of transit.active ? [] : (s.rx.instances.find((i) => i.id === room)?.connectors ?? [])) {
+        if (!k.exit || k.id === SNOWDOOR_CONN) continue;
         const de = dd.deadEndAt(room, k.id);
         if (!de || Math.abs(c.y - v.posture.eye - 0.05 - de.center.y) > 1.5) continue;
         const dist = Math.hypot(c.x - de.center.x, c.z - de.center.z);
@@ -692,7 +914,7 @@ export default function View3DPage() {
     };
     const onDoorKey = (e: KeyboardEvent) => {
       const s = session;
-      if (e.code !== 'KeyE' || !s || !door || v.hasOverlay || v.mode !== 'fps' || presence?.nearBuried) return;
+      if (e.code !== 'KeyE' || !s || !door || v.hasOverlay || v.mode !== 'fps' || presence?.nearBuried || transit.active) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
       const { inst, connector } = door;
@@ -735,6 +957,13 @@ export default function View3DPage() {
           setWalkHere(here);
           setWalkWet(s.world.wetAt(room));
           mood.set(here?.biome?.dark ?? 0);
+          // сюжет: вошёл в другой биом (переход, срыв, дверь общаги на улицу; и в начале игры) — название шага сюжета
+          const bid = here?.biome?.id ?? null;
+          if (s.story && bid && bid !== storyBiome) {
+            const st = storyStep(bid);
+            if (st) bigFlash(st.title);
+          }
+          if (bid) storyBiome = bid;
         }
       }
       if (performance.now() < liftCool) return;
@@ -777,6 +1006,8 @@ export default function View3DPage() {
           return;
         }
         dd.goTo(target);
+        // сюжет: спуск привёл в другой биом (лестница → подвал, ворота ангара → завод) — вспышка названия (liftTimer)
+        if (storyBiomeChange(s, id, target)) return;
         const fl = s.world.run().instances.find((i) => i.id === target)?.floor ?? 0;
         const text = `этаж ${fmtFloor(fl)}`;
         setFlash({ seq: Date.now(), text, color: '#e8b04b' });
@@ -798,6 +1029,7 @@ export default function View3DPage() {
       const player = co ? co.spawnPoint() : s.loadPlayer();
       setWalkRx(s.rx);
       setWalkStatus(s.status());
+      setWalkStory(s.story);
       v.setMode('fps');
       setModeS('fps');
       d = new FoldDriver(
@@ -817,7 +1049,7 @@ export default function View3DPage() {
             enterLoc(id);
           },
         },
-        { center: player?.room ?? null, fpsReady: !!player, orbitView: { kind: 'tower' }, detector: memo.detector, render: 'portal' },
+        { center: player?.room ?? null, fpsReady: !!player, orbitView: { kind: 'tower' }, detector: !play && memo.detector, render: 'portal' },
         true,
       );
       const dd = d;
@@ -841,7 +1073,7 @@ export default function View3DPage() {
       }
       if (co) {
         // другие игроки: аватары, своё положение для них, «рядом — медленнее»
-        presence = new CoopPresence(v, co, () => d, () => locRef.current?.kind ?? null, () => snow.collapse.phase === 'buried', { lamp: () => obsh.holding && !obsh.dead, dead: () => obsh.dead });
+        presence = new CoopPresence(v, co, () => d, () => locRef.current?.kind ?? null, () => snow.collapse.phase === 'buried', { lamp: () => obsh.holding && !obsh.dead, dead: () => obsh.dead || metro.dead, torch: () => !!invRef.current?.torchOn });
         co.onAct.add(onAct);
         co.beforeOp.add(beforeOp);
         co.afterOp.add(afterOp);
@@ -922,6 +1154,14 @@ export default function View3DPage() {
       obshRef.current = null;
       setObshHud(null);
       if (import.meta.env.DEV) delete (window as any).__rfObshaga;
+      metro.dispose();
+      metroRef.current = null;
+      setMetroHud(null);
+      if (import.meta.env.DEV) delete (window as any).__rfMetro;
+      transit.dispose();
+      setStoryHud(null);
+      setWalkStory(false);
+      if (import.meta.env.DEV) delete (window as any).__rfStory;
       savePlayer();
       clearInterval(coopTimer);
       setCoopSlow(false);
@@ -948,16 +1188,61 @@ export default function View3DPage() {
     };
   }, [source, walkRun, effOpts, view.finishes, coopOn, coopWalk]);
 
+  // руки «Прогулки» (src/view3d/inventory.ts): хотбар, фонарик, выбросить / подобрать — после эффекта прогулки (его сессия
+  // и драйвер уже стоят), пересоздаются вместе с ним; мир меняется только операциями сессии (кооп — через лобби)
+  useEffect(() => {
+    const v = viewer.current, s = walkRef.current, dd = driver.current;
+    if (!v || source !== 'walk' || !s || !dd) return;
+    let pvs: { rx: RunExport; c: string; set: Set<string> } | null = null;
+    const inv = new Inventory(v, {
+      key: s.key,
+      playerId: coopWalk ? (coop?.me.id ?? null) : null,
+      portal: () => dd.portal ?? null,
+      room: () => dd.portal?.current ?? dd.current.center ?? null,
+      // набор (PVS): предмет виден, пока его комната в наборе
+      roomShown: (inst) => {
+        const c = dd.current.center;
+        if (!c) return true;
+        if (pvs?.rx !== dd.run || pvs.c !== c) pvs = { rx: dd.run, c, set: dd.setOf(c) };
+        return pvs.set.has(inst);
+      },
+      drops: () => s.drops(),
+      request: (op) => s.request(op),
+      saveWorld: () => s.saveNow(),
+      // общага, метро: погиб — лампы в руке не видно
+      handsDown: () => !!obshRef.current?.dead || !!metroRef.current?.dead,
+      flash: (text, color = '#cfd8e6') => {
+        const seq = Date.now();
+        setFlash({ seq, text, color });
+        setTimeout(() => setFlash((f) => (f?.seq === seq ? null : f)), 1200);
+      },
+      onHud: setInvHud,
+    });
+    invRef.current = inv;
+    if (import.meta.env.DEV) (window as any).__rfInv = inv.qa(); // для QA-скриптов
+    return () => {
+      inv.dispose();
+      invRef.current = null;
+      setInvHud(null);
+      if (import.meta.env.DEV) delete (window as any).__rfInv;
+    };
+  }, [source, walkRun, effOpts, view.finishes, coopOn, coopWalk]);
+
   // общага: утащили — отпустить мышь (кнопка «Ещё раз»)
   useEffect(() => {
     if (obshHud?.dead && document.pointerLockElement) document.exitPointerLock();
   }, [obshHud?.dead]);
+  // метро: эскалатор сорвался — отпустить мышь (кнопка «Ещё раз»)
+  useEffect(() => {
+    if (metroHud?.dead && document.pointerLockElement) document.exitPointerLock();
+  }, [metroHud?.dead]);
 
   // вспышка «W 2 → 3» при переходе через порог со сдвигом
   const crossSeq = fs?.cross?.seq ?? 0;
   useEffect(() => {
     const c = fs?.cross;
-    if (!c || c.fromW === c.toW) return;
+    // игра без отладки: складки 4D игроку не показываются
+    if (!c || c.fromW === c.toW || play) return;
     setFlash({ seq: c.seq, text: `W ${sgn(c.fromW)} → ${sgn(c.toW)}`, color: layerColor(c.toW) });
     const t = setTimeout(() => setFlash((f) => (f?.seq === c.seq ? null : f)), 1700);
     return () => clearTimeout(t);
@@ -1133,8 +1418,9 @@ export default function View3DPage() {
     runLocSkip.current = null;
     const inst = data.instances.find((i) => i.id === runRoom);
     const spec = parseLocation(inst?.location);
-    // логово — без сцены; ангар — сцена открывается только пробитым снегом («Прогулка»)
-    if (!inst || !spec || spec.kind === 'lair' || spec.kind === 'hangar') return;
+    // логово — без сцены; ангар — сцена открывается только пробитым снегом («Прогулка»); люк и дверь в снег (сюжет) —
+    // без своей сцены, сценарий — в «Прогулке» (./storyWalk.ts)
+    if (!inst || !spec || spec.kind === 'lair' || spec.kind === 'hangar' || spec.kind === 'hatch' || spec.kind === 'snowdoor') return;
     const n = roomAttempts.current.get(inst.id) ?? 0;
     roomAttempts.current.set(inst.id, n + 1);
     const base = { key: `run:${inst.id}:${Date.now()}`, seedKey: locationSeedKey(data.seed, inst.id), attempt: n, title: inst.roomName, mode: 'walk' as const };
@@ -1160,6 +1446,10 @@ export default function View3DPage() {
     const room = selRoom;
     const spec = room?.location;
     if (!room || !spec || spec.kind === 'lair') return;
+    if (spec.kind === 'hatch' || spec.kind === 'snowdoor') {
+      notify(spec.kind === 'hatch' ? 'Люк в погреб — переход сюжета: открывается в «Прогулке» (E у люка)' : 'Дверь в снег — переход сюжета: открывается в «Прогулке» (E у двери)', 'info');
+      return;
+    }
     const n = roomAttempts.current.get(room.id) ?? 0;
     roomAttempts.current.set(room.id, n + 1);
     if (spec.kind === 'swamp') {
@@ -1295,7 +1585,9 @@ export default function View3DPage() {
   const shownW = fold && shown ? wOfInst(shown.inst) : null;
 
   return (
-    <div className="cols3">
+    <div className={play ? 'v3-play' : 'cols3'}>
+      {/* игра без отладки (play): ни панелей, ни отладочного HUD — только холст и игровой HUD */}
+      {!play && (
       <aside className="side">
         <CoopSection co={coop} onOpen={() => setCoopModal(true)} />
         <Section title="Источник">
@@ -1603,22 +1895,28 @@ export default function View3DPage() {
             <b>Облёт:</b> ЛКМ — вращать, ПКМ / Ctrl+ЛКМ — сдвиг, колесо — масштаб, клик по полу — подпись комнаты.
             <br />
             <b>От первого лица:</b> клик — захват мыши, WASD / стрелки — ходьба, C — на четвереньки / встать, Esc — отпустить мышь. Коллизии и гравитация, глаза на 1.6 м (на четвереньках — 0.5 м).
+            <br />
+            <b>Прогулка:</b> Shift + W — бег (стоя). Выносливость — шкала внизу: тает на бегу (~7 с), выдохся — бега нет, пока не отдышишься; на месте отдых быстрее.
+            <br />
+            <b>Руки (прогулка):</b> хотбар внизу — 1–5 / колесо — предмет в руке, F — фонарь вкл/выкл, G — выбросить перед собой, E — подобрать с пола (подсвеченный). Хотбар сохраняется с миром, брошенное лежит, где бросили.
           </div>
         </Section>
       </aside>
+      )}
 
       <div className="stage v3-stage" ref={stageRef}>
         <canvas ref={canvasRef} tabIndex={0} />
         {loc &&
           (loc.kind === 'lift' ? (
-            <LiftLayer viewer={viewer.current} req={loc} onClose={closeLoc} />
+            <LiftLayer viewer={viewer.current} req={loc} onClose={closeLoc} story={source === 'walk' && (walkStory || !!play)} />
           ) : loc.kind === 'hangar' ? (
-            <HangarLayer viewer={viewer.current} req={loc} onClose={closeLoc} />
+            <HangarLayer viewer={viewer.current} req={loc} onClose={closeLoc} story={source === 'walk' && (walkStory || !!play)} />
           ) : loc.kind === 'swamp' ? (
-            <SwampLayer viewer={viewer.current} req={loc} onClose={closeLoc} />
+            <SwampLayer viewer={viewer.current} req={loc} onClose={closeLoc} play={play ? { onMenu: playMenu } : undefined} />
           ) : (
-            <StairwellLayer viewer={viewer.current} req={loc} onClose={closeLoc} />
+            <StairwellLayer viewer={viewer.current} req={loc} onClose={closeLoc} story={source === 'walk' && (walkStory || !!play)} />
           ))}
+        {!play && (
         <div className="float toolbar v3-tools" style={loc ? { display: 'none' } : undefined}>
           <Btn sm on={mode === 'orbit'} onClick={() => setMode('orbit')} title="Облёт: вид сверху под углом, потолки скрыты">
             Облёт
@@ -1669,7 +1967,8 @@ export default function View3DPage() {
             </>
           )}
         </div>
-        {mode === 'fps' && shown && !loc && (
+        )}
+        {mode === 'fps' && shown && !loc && !play && (
           <div className={'float v3-here' + (fold ? ' fold' : '')}>
             {shown.name} <span className="muted">· {tierOf(shown.tier)?.name ?? 'базовая'}</span>
             {shownW !== null && (
@@ -1699,8 +1998,9 @@ export default function View3DPage() {
         )}
         {source === 'walk' && mode === 'fps' && walkStatus && !loc && (
           <div className="float hud v3-walkhud">
-            <span>комнат {walkStatus.rooms}</span>
-            {shown && (
+            {/* игра без отладки: из статистики — только биом (место), влажность завода, общага, связь и ошибка сохранения */}
+            {!play && <span>комнат {walkStatus.rooms}</span>}
+            {shown && !play && (
               <>
                 <span title="Этаж: 0 — этаж старта; ниже — после спуска по спец-локации">этаж {fmtFloor(floorOf(shown.inst))}</span>
                 <span style={{ color: layerColor(wOfInst(shown.inst)) }}>W {sgn(wOfInst(shown.inst))}</span>
@@ -1710,60 +2010,115 @@ export default function View3DPage() {
             {walkHere?.biome ? (
               <span style={{ color: walkHere.biome.color }} title={walkHere.gate ? 'площадка-переход: любая её дверь — в другой биом' : walkHere.rich ? 'богатая квартира: элитность выше' : 'биом квартиры'}>
                 {walkHere.biome.name}
-                {walkHere.rich ? ' ★' : ''}
-                {walkHere.gate ? ' · переход' : ''}
+                {walkHere.rich && !play ? ' ★' : ''}
+                {walkHere.gate && !play ? ' · переход' : ''}
               </span>
             ) : (
-              <span>тупиков {walkStatus.dead}</span>
+              !play && <span>тупиков {walkStatus.dead}</span>
             )}
             {walkWet && (
               <span title="Влажность куска цеха: иди туда, где влажнее — там болото (финал). Ступени: сухо, сыро, течь, топь">
-                {WET_TAGS[walkWet.level]} {Math.round(walkWet.w * 100)}%{walkWet.dir > 0 ? ' ↑' : ' ↓'}
+                {WET_TAGS[walkWet.level]}{play ? '' : ` ${Math.round(walkWet.w * 100)}%`}{walkWet.dir > 0 ? ' ↑' : ' ↓'}
               </span>
             )}
             {obshHud?.on && (
               <>
                 {obshHud.lamp && <span style={{ color: '#e8b050' }} title="Керосиновая лампа в руке: рука не подойдёт ближе 3 м ни к тебе, ни к тем, кто рядом">лампа</span>}
                 {obshHud.dark && <span className="v3-err" title="Свет отключили: из дверей лезет рука — смотри на неё">темно</span>}
+                {obshHud.hp != null && (
+                  <span className="v3-obsh-hp" title="Здоровье: под кроватью рука не схватит, но бьёт пальцем. Без тычков 4 с — заживает">
+                    <i style={{ width: `${obshHud.hp}%` }} />
+                  </span>
+                )}
                 <button className="btn sm v3-obsh-sound" onClick={() => obshRef.current?.setSound(!obshHud.sound)} title="Звук общаги (WebAudio). Esc — отпустить мышь, чтобы нажать">
                   звук: {obshHud.sound ? 'вкл' : 'выкл'}
                 </button>
               </>
             )}
+            {metroHud?.on && (
+              <>
+                {metroHud.alarm && metroHud.alarm !== 'broken' && <span className="v3-err" title="Эскалатор срывается: перелезь через балюстраду (E) или успей доехать до низа">эскалатор!</span>}
+                <button className="btn sm v3-obsh-sound" onClick={() => metroRef.current?.setSound(!metroHud.sound)} title="Звук метро (WebAudio). Esc — отпустить мышь, чтобы нажать">
+                  звук: {metroHud.sound ? 'вкл' : 'выкл'}
+                </button>
+              </>
+            )}
             {coopOn ? (
-              <span className={coop.status === 'online' ? 'muted' : 'v3-err'} title="мир лобби хранится на сервере">
-                онлайн · {COOP_STATUS[coop.status]}
-              </span>
+              (!play || coop.status !== 'online') && (
+                <span className={coop.status === 'online' ? 'muted' : 'v3-err'} title="мир лобби хранится на сервере">
+                  онлайн · {COOP_STATUS[coop.status]}
+                </span>
+              )
             ) : (
-              <span className={walkStatus.error ? 'v3-err' : 'muted'} title={walkStatus.error ?? 'автосохранение мира в localStorage'}>
-                {walkStatus.error ? '⚠ не сохранено' : walkStatus.saved ? `✓ сохранено ${new Date(walkStatus.saved.at).toLocaleTimeString()}` : '…'}
-              </span>
+              (!play || walkStatus.error) && (
+                <span className={walkStatus.error ? 'v3-err' : 'muted'} title={walkStatus.error ?? 'автосохранение мира в localStorage'}>
+                  {walkStatus.error ? '⚠ не сохранено' : walkStatus.saved ? `✓ сохранено ${new Date(walkStatus.saved.at).toLocaleTimeString()}` : '…'}
+                </span>
+              )
             )}
           </div>
         )}
-        {source === 'walk' && mode === 'fps' && doorAt && !coopDig && !loc && <div className="float hud v3-lift-prompt">E — открыть дверь</div>}
-        {source === 'walk' && mode === 'fps' && coopDig && !loc && <div className="float hud v3-lift-prompt">E — откапывать: {coopDig}</div>}
+        {source === 'walk' && mode === 'fps' && doorAt && !coopDig && !loc && !invHud?.prompt && <div className="float hud v3-lift-prompt">E — открыть дверь</div>}
+        {source === 'walk' && mode === 'fps' && coopDig && !loc && !invHud?.prompt && <div className="float hud v3-lift-prompt">E — откапывать: {coopDig}</div>}
         {source === 'walk' && mode === 'fps' && coopOn && coopWalk && !loc && <CoopHud co={coop} slow={coopSlow} />}
         {source === 'walk' && mode === 'fps' && !loc && snowHud?.buried != null && <div className="v3-snow-buried" style={{ opacity: 0.94 - 0.55 * snowHud.buried }} />}
         {source === 'walk' && mode === 'fps' && !loc && snowHud?.crack != null && <div className="v3-snow-crack" style={{ opacity: 0.25 + 0.5 * snowHud.crack }} />}
-        {source === 'walk' && mode === 'fps' && !loc && snowHud?.prompt && <div className="float hud v3-lift-prompt">{snowHud.prompt}</div>}
-        {source === 'walk' && mode === 'fps' && !loc && obshHud?.prompt && !doorAt && !coopDig && <div className="float hud v3-lift-prompt">{obshHud.prompt}</div>}
+        {source === 'walk' && mode === 'fps' && !loc && snowHud?.prompt && !invHud?.prompt && <div className="float hud v3-lift-prompt">{snowHud.prompt}</div>}
+        {source === 'walk' && mode === 'fps' && !loc && obshHud?.prompt && !doorAt && !coopDig && !invHud?.prompt && !storyHud?.prompt && !storyHud?.active && <div className="float hud v3-lift-prompt">{obshHud.prompt}</div>}
+        {/* метро (src/view3d/metroWalk.ts): срыв эскалатора — «E — перелезть», затемнение при падении */}
+        {source === 'walk' && mode === 'fps' && !loc && metroHud?.prompt && !doorAt && !coopDig && !storyHud?.prompt && <div className="float hud v3-lift-prompt">{metroHud.prompt}</div>}
+        {source === 'walk' && mode === 'fps' && !loc && metroHud?.hint && !metroHud.dead && !obshHud?.hint && <div className="float hud v3-obsh-hint">{metroHud.hint}</div>}
+        {source === 'walk' && mode === 'fps' && !loc && !!metroHud?.black && <div className="v3-obsh-black" style={{ opacity: metroHud.black }} />}
+        {/* сюжет (src/view3d/storyWalk.ts): люк — затемнение; дверь в снег — треск, белая пелена, «E — выкапываться» */}
+        {source === 'walk' && mode === 'fps' && !loc && storyHud?.crack != null && <div className="v3-snow-crack" style={{ opacity: 0.25 + 0.5 * storyHud.crack }} />}
+        {source === 'walk' && mode === 'fps' && !loc && storyHud?.white != null && <div className="v3-snow-buried" style={{ opacity: storyHud.white }} />}
+        {source === 'walk' && mode === 'fps' && !loc && storyHud?.black != null && <div className="v3-story-black" style={{ opacity: storyHud.black }} />}
+        {source === 'walk' && mode === 'fps' && !loc && storyHud?.prompt && (storyHud.white != null || (!doorAt && !coopDig && !invHud?.prompt)) && <div className="float hud v3-lift-prompt v3-story-prompt">{storyHud.prompt}</div>}
         {source === 'walk' && mode === 'fps' && !loc && obshHud?.hint && !obshHud.dead && <div className="float hud v3-obsh-hint">{obshHud.hint}</div>}
         {source === 'walk' && mode === 'fps' && !loc && obshHud?.drag != null && <div className="v3-obsh-drag" style={{ opacity: 0.5 + 0.5 * obshHud.drag }} />}
         {source === 'walk' && mode === 'fps' && !loc && !!obshHud?.black && <div className="v3-obsh-black" style={{ opacity: obshHud.black }} />}
+        {source === 'walk' && mode === 'fps' && !loc && obshHud?.hp != null && !obshHud.dead && <div key={obshHud.hit} className="v3-obsh-hurt" />}
         {source === 'walk' && mode === 'fps' && !loc && obshHud?.dead && (
           <div className="v3-loc-dead v3-obsh-dead">
             <div>
-              <h2>Тебя утащили за дверь</h2>
-              <p className="hint">Рука ползёт, только пока её не видно. Смотри на неё — замрёт; керосиновая лампа держит её на 3 м.</p>
+              {obshHud.cause === 'poke' ? (
+                <>
+                  <h2>Рука достала тебя под кроватью</h2>
+                  <p className="hint">Под кроватью она не схватит, но бьёт пальцем — долго не пролежишь. Вылезай, глядя на неё: под взглядом она замирает.</p>
+                </>
+              ) : (
+                <>
+                  <h2>Тебя утащили за дверь</h2>
+                  <p className="hint">Рука ползёт, только пока её не видно. Смотри на неё — замрёт; керосиновая лампа держит её на 3 м.</p>
+                </>
+              )}
               <button className="btn primary" onClick={() => obshRef.current?.retry()}>
                 Ещё раз
               </button>
             </div>
           </div>
         )}
+        {source === 'walk' && mode === 'fps' && !loc && metroHud?.dead && !obshHud?.dead && (
+          <div className="v3-loc-dead v3-obsh-dead">
+            <div>
+              <h2>Эскалатор сорвался</h2>
+              <p className="hint">Лента дёрнулась и встала — потом побежала вниз и оборвалась в приямок. Перелезай через балюстраду на соседнюю дорожку (E) или успей доехать до низа.</p>
+              <button className="btn primary" onClick={() => metroRef.current?.retry()}>
+                Ещё раз
+              </button>
+            </div>
+          </div>
+        )}
+        {source === 'walk' && mode === 'fps' && !loc && (
+          <div className="v3-stamina" ref={staminaRef}>
+            <div className="v3-stamina-fill" />
+          </div>
+        )}
+        {/* руки: хотбар внизу по центру; «E — подобрать» — в том же месте, что прочие «E — …» (и вместо них: E — его) */}
+        {source === 'walk' && mode === 'fps' && !loc && invHud && <HotbarHud hud={invHud} />}
+        {source === 'walk' && mode === 'fps' && !loc && invHud?.prompt && <div className="float hud v3-lift-prompt">{invHud.prompt}</div>}
         {flash && mode === 'fps' && !loc && (
-          <div key={flash.seq} className="v3-flash" style={{ color: flash.color }}>
+          <div key={flash.seq} className={'v3-flash' + (flash.big ? ' v3-flash-story' : '')} style={{ color: flash.color }}>
             {flash.text}
           </div>
         )}
@@ -1778,32 +2133,61 @@ export default function View3DPage() {
             </div>
           )}
         </div>
-        <div className="float hud v3-hud" style={loc ? { display: 'none' } : undefined}>
+        {/* игра без отладки: клавиши — в меню паузы */}
+        <div className="float hud v3-hud" style={loc || play ? { display: 'none' } : undefined}>
           {fs?.label && <span>{fs.label}</span>}
           {mode === 'orbit' ? (
             <span>ЛКМ — вращать · ПКМ — сдвиг · колесо — масштаб · клик по полу — комната</span>
           ) : locked ? (
-            <span>
-              <b>WASD</b> — ходьба · мышь — обзор · <b>C</b> — {pose === 'crawl' ? 'встать' : 'на четвереньки'} · <b>Esc</b> — отпустить мышь
-            </span>
+            <>
+              <span>
+                <b>WASD</b> — ходьба{source === 'walk' && <> · <b>Shift</b> — бег</>} · мышь — обзор · <b>C</b> — {pose === 'crawl' ? 'встать' : 'на четвереньки'} · <b>Esc</b> — отпустить мышь
+              </span>
+              {source === 'walk' && (
+                <span>
+                  <b>1–5</b> / колесо — предмет · <b>F</b> — фонарь · <b>G</b> — выбросить · <b>E</b> — подобрать
+                </span>
+              )}
+            </>
           ) : (
             <span>
               <b>Клик</b> по сцене — захватить мышь · WASD — ходьба · C — на четвереньки
             </span>
           )}
         </div>
-        <div className="float hud v3-perf" ref={perfRef} />
+        {!play && <div className="float hud v3-perf" ref={perfRef} />}
         {msg && (
           <div className={'v3-msg' + (msg.kind === 'info' ? ' info' : '')}>
             <div>
               <h3>{msg.title}</h3>
               {msg.text && <pre>{msg.text}</pre>}
               {msg.action}
+              {play && (
+                <button className="btn" onClick={playMenu}>
+                  {coopOn ? 'Выйти из лобби в меню' : 'Главное меню'}
+                </button>
+              )}
             </div>
           </div>
         )}
+        {/* игра без отладки: пауза — мышь отпущена (Esc); поверх спец-локации — кнопкой «Меню» или Esc */}
+        {play && loc && !locked && !pauseOpen && (
+          <button className="v3-play-menu" onClick={() => setPauseOpen(true)} title="Пауза, главное меню (Esc)">
+            Меню
+          </button>
+        )}
+        {play && !msg && (pauseOpen || (!locked && !loc && mode === 'fps' && !obshHud?.dead && !metroHud?.dead)) && (
+          <PlayPause
+            where={walkHere?.biome?.name ?? null}
+            first={!played}
+            co={coopOn ? coop : null}
+            onResume={playResume}
+            onMenu={playMenu}
+          />
+        )}
       </div>
 
+      {!play && (
       <aside className="side right">
         <Section title={fold && shownModels.length > 1 ? `Модель · ${shownModels.length} частей` : 'Модель'}>
           {shownModels.length ? (
@@ -1982,7 +2366,8 @@ export default function View3DPage() {
           <div className="hint">Подключение к своему Babylon-проекту — docs/BLOCKOUT-BABYLON.md, пример — examples/babylon-demo/.</div>
         </Section>
       </aside>
-      {coopModal && (
+      )}
+      {coopModal && !play && (
         <CoopModal
           co={coop}
           walk={{ ...walkOpts, seed: walkRun.seed }}
@@ -2011,6 +2396,68 @@ function Stat(props: { k: string; v: number | string }) {
     <div className="stat">
       <span className="v">{props.v}</span>
       <span className="k">{props.k}</span>
+    </div>
+  );
+}
+
+/** Клавиши игры — в меню паузы (игра без отладки). */
+const PLAY_KEYS: [string, string][] = [
+  ['WASD', 'идти'],
+  ['мышь', 'смотреть'],
+  ['Shift', 'бежать'],
+  ['C', 'на четвереньки / встать'],
+  ['E', 'открыть, взять'],
+  ['F', 'фонарь'],
+  ['1–5 · колесо', 'что в руке'],
+  ['G', 'выбросить'],
+  ['Esc', 'пауза'],
+];
+
+/**
+ * Пауза игры без отладки (src/play/): мышь отпущена — мир идёт дальше (в лобби — тем более), меню поверх. Первый раз —
+ * экран входа. В лобби — его код (друзьям) и выход из лобби вместо «Главного меню».
+ */
+function PlayPause(props: { where: string | null; first: boolean; co: CoopSession | null; onResume: () => void; onMenu: () => void }) {
+  const { co } = props;
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify('Код лобби скопирован', 'ok');
+    } catch {
+      notify('Не удалось скопировать — выделите код вручную', 'warn');
+    }
+  };
+  return (
+    <div className="v3-pause">
+      <div className="v3-pause-card">
+        {props.where && <div className="v3-pause-where">{props.where}</div>}
+        <h2>{props.first ? 'Гигахрущ' : 'Пауза'}</h2>
+        <div className="v3-pause-btns">
+          <button className="v3-pause-btn go" onClick={props.onResume} autoFocus>
+            {props.first ? 'Войти' : 'Продолжить'}
+          </button>
+          <button className="v3-pause-btn" onClick={props.onMenu} title={co ? 'Выйти из лобби: мир лобби останется у остальных' : 'Игра сохранена — «Продолжить» в меню вернёт сюда'}>
+            {co ? 'Выйти из лобби в меню' : 'Главное меню'}
+          </button>
+        </div>
+        {co && (
+          <div className="v3-pause-lobby">
+            <span>лобби · игроков {co.players.size + 1}</span>
+            <input className="mono" readOnly value={co.lobby} onFocus={(e) => e.currentTarget.select()} />
+            <button className="v3-pause-btn sm" onClick={() => void copy(co.lobby)}>
+              копировать код
+            </button>
+          </div>
+        )}
+        <dl className="v3-pause-keys">
+          {PLAY_KEYS.map(([k, v]) => (
+            <div key={k}>
+              <dt>{k}</dt>
+              <dd>{v}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
     </div>
   );
 }

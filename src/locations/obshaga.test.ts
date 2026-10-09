@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import src from './obshaga.ts?raw';
 import {
-  armLength, blackoutCycle, createBlackout, createDoor, createHand, createObshagaDirector, doorCloseAfter, doorOpenness,
+  armLength, blackoutCycle, createBlackout, createDoor, createHand, createObshagaDirector, doorCloseAfter, doorOpenness, expandRect,
   forceBlackout, forceObshagaBlackout, GRAB_R, handView, isProtected, LANTERN_LIGHT_R, LANTERN_R, lightLevel, lightsOn,
-  OBSHAGA, obshagaRule, obshagaView, openDoor, openDoorById, pickSpawn, respawnDelay, spawnDelay, stepBlackout, stepDirector,
-  stepDoor, stepDoors, stepHand, withdrawHand,
+  OBSHAGA, obshagaRule, obshagaView, openDoor, openDoorById, pickSpawn, POKE_R, POKE_STAND, pokeReach, rectGap, respawnDelay, spawnDelay, stepBlackout,
+  stepDirector, stepDoor, stepDoors, stepHand, withdrawHand,
   type BlackoutEvent, type BlackoutState, type DoorEvent, type HandEvent, type HandInput, type HandPlayer, type HandState,
-  type ObshagaEvent, type ObshagaInput, type ObshagaState, type Pt, type SpawnCandidate,
+  type ObshagaEvent, type ObshagaInput, type ObshagaState, type Pt, type Rect, type SpawnCandidate,
 } from './obshaga';
 
 /** Шаг и скорость — двоичные дроби: пути кончика точны (0.5 · 4 / 64 = 1/32 м за шаг). */
@@ -20,7 +20,9 @@ const FAR: Pt = { x: 30, y: 0, room: 'c' };
 const d2 = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y);
 const inp = (o: Partial<HandInput> = {}): HandInput => ({ lightsOn: false, seen: false, goal: null, players: [], lanterns: [], playerSpeed: V, ...o });
 const player = (id: string, x: number, y = 0, prot = false): HandPlayer => ({ id, p: { x, y, room: 'c' }, protected: prot, sees: false });
-const HAND_TYPES = new Set(['emerged', 'retreat', 'stalk', 'withdrawn', 'grab', 'drag', 'killed', 'released', 'vanish']);
+/** Игрок под кроватью (лёг ползком под низкое укрытие). */
+const under = (id: string, x: number, y = 0, room = 'c'): HandPlayer => ({ id, p: { x, y, room }, protected: false, sees: false, sheltered: true });
+const HAND_TYPES = new Set(['emerged', 'retreat', 'stalk', 'withdrawn', 'grab', 'drag', 'killed', 'released', 'vanish', 'poke']);
 const allHandEvents: HandEvent[] = [];
 
 /** Шаг руки с записью событий (все — в общий журнал для проверки «ни одного звука»). */
@@ -55,6 +57,18 @@ describe('«Общага»: модуль без движка', () => {
     expect(OBSHAGA.handSpeedK).toBe(0.5);
     expect(OBSHAGA.retreatK).toBeGreaterThan(1);
     expect(obshagaRule()).toContain(`${LANTERN_R} м`);
+  });
+
+  it('под кроватью: тычок раз в 1.4 с по 6 из 100 — без передышки убивают за 20–25 с; заживает только без тычков', () => {
+    const n = Math.ceil(OBSHAGA.hp / OBSHAGA.pokeDmg);
+    const kill = (OBSHAGA.pokeHitU + n - 1) * OBSHAGA.pokePeriodS;
+    expect(kill).toBeGreaterThanOrEqual(20);
+    expect(kill).toBeLessThanOrEqual(25);
+    expect(OBSHAGA.hpRegenDelayS).toBeGreaterThan(OBSHAGA.pokePeriodS);
+    // палец достаёт дальше хватки, но не из-за края поля лампы
+    expect(POKE_R).toBeGreaterThan(GRAB_R);
+    expect(POKE_R).toBeLessThan(LANTERN_R);
+    expect(obshagaRule()).toContain('кроват');
   });
 });
 
@@ -499,6 +513,214 @@ describe('«Общага»: рука', () => {
     expect(ev).toEqual([{ type: 'released', victim: 'p1' }, { type: 'retreat' }]);
     expect(h.victim).toBeNull();
     expect(h.phase).toBe('retreating');
+  });
+
+  /** Шаги руки T секунд с записью событий и их времени. */
+  const runFor = (h: HandState, T: number, o: Partial<HandInput> | ((t: number) => Partial<HandInput>)) => {
+    const out: { t: number; e: HandEvent }[] = [];
+    for (let k = 0, t = 0; t < T - 1e-9; k++, t = k * DT) for (const e of hstep(h, typeof o === 'function' ? o(t) : o)) out.push({ t: t + DT, e });
+    return out;
+  };
+  const pokesOf = <T extends { e: HandEvent }>(ev: T[]) => ev.filter((x) => x.e.type === 'poke');
+
+  it('под кроватью не хватает: подползает на POKE_R и тычет пальцем раз в pokePeriodS (удар — pokeHitU цикла)', () => {
+    const h = emerged();
+    const players = [under('p1', 6)];
+    const ev = runFor(h, 10, { goal: { x: 6, y: 0, room: 'c' }, players });
+    expect(ev.some((x) => x.e.type === 'grab')).toBe(false);
+    expect(ev.every((x) => x.e.type === 'poke')).toBe(true);
+    // дальше POKE_R не ползёт (останов — в пределах шага кисти)
+    const d = d2(h.tip, players[0].p);
+    expect(d).toBeLessThanOrEqual(POKE_R);
+    expect(d).toBeGreaterThan(POKE_R - 0.5 * V * DT - 1e-9);
+    expect(h.phase).toBe('stalking');
+    // дошла за (6 − 1.8) / 2 м/с = 2.1 с; первый удар — через pokeHitU цикла, дальше — ровно раз в период
+    const pk = pokesOf(ev);
+    expect(pk.length).toBe(6);
+    expect(pk.every((x) => x.e.type === 'poke' && x.e.victim === 'p1')).toBe(true);
+    expect(pk[0].t).toBeCloseTo((6 - POKE_R) / (0.5 * V) + OBSHAGA.pokeHitU * OBSHAGA.pokePeriodS, 1);
+    for (let i = 1; i < pk.length; i++) expect(pk[i].t - pk[i - 1].t).toBeCloseTo(OBSHAGA.pokePeriodS, 1);
+    // вид: кого, куда, фаза
+    const v = handView(h);
+    expect(v.poke).toBe('p1');
+    expect(v.pokeAt).toEqual(players[0].p);
+    expect(v.poke01).toBeGreaterThanOrEqual(0);
+    expect(v.poke01).toBeLessThan(1);
+    // большой шаг — несколько тычков за раз, столько же, сколько мелкими шагами
+    const copy = JSON.parse(JSON.stringify(h)) as HandState;
+    const big = stepHand(h, 5, inp({ goal: { x: 6, y: 0, room: 'c' }, players }));
+    const fine = runFor(copy, 5, { goal: { x: 6, y: 0, room: 'c' }, players });
+    expect(big.length).toBeGreaterThanOrEqual(3);
+    expect(big.length).toBe(pokesOf(fine).length);
+    expect(h.pokeT).toBeCloseTo(copy.pokeT, 6);
+  });
+
+  it('палец, что уже достаёт, бьёт и под взглядом; ползти под взглядом — нет; замершую вне досягаемости — не бьёт', () => {
+    const h = emerged();
+    const players = [under('p1', 6)];
+    runFor(h, 3, { goal: { x: 6, y: 0, room: 'c' }, players });
+    expect(h.poke).toBe('p1');
+    const tip = { ...h.tip };
+    const seen = runFor(h, 5, { goal: { x: 6, y: 0, room: 'c' }, players, seen: true });
+    expect(pokesOf(seen).length).toBeGreaterThanOrEqual(3);
+    expect(seen.every((x) => x.e.type === 'poke')).toBe(true);
+    expect(h.tip).toEqual(tip);
+    expect(h.frozen).toBe(true);
+    expect(handView(h).frozen).toBe(true);
+    expect(handView(h).poke).toBe('p1');
+    // замерла в 4 м — под кроватью в 4 м не достаёт; залез под кровать в 1.5 м от неё — достаёт и под взглядом
+    const h2 = emerged('h2');
+    const far = runFor(h2, 4, { goal: { x: 4, y: 0, room: 'c' }, players: [under('p2', 4)], seen: true });
+    expect(far).toEqual([]);
+    expect(handView(h2).poke).toBeNull();
+    const near = runFor(h2, 2, { goal: { x: 1.5, y: 0, room: 'c' }, players: [under('p2', 1.5)], seen: true });
+    expect(pokesOf(near).length).toBe(1);
+    expect(h2.tip).toEqual(MOUTH);
+  });
+
+  it('вылез из-под кровати: в GRAB_R и невидимая — хватает сразу; дальше — подползает и хватает; под взглядом — нет', () => {
+    // залез под кровать вплотную к кисти — тычет, не хватает; вылез — хватка в том же шаге
+    const h = emerged();
+    for (const x of runFor(h, 3, { goal: { x: 0.8, y: 0, room: 'c' }, players: [under('p1', 0.8)] })) expect(x.e.type).toBe('poke');
+    expect(h.phase).toBe('stalking');
+    expect(hstep(h, { goal: { x: 0.8, y: 0, room: 'c' }, players: [player('p1', 0.8)] })).toEqual([{ type: 'grab', victim: 'p1' }]);
+    expect(h.phase).toBe('grabbing');
+    expect(handView(h).poke).toBeNull();
+    // вылез в 1.8 м: под взглядом — ни тычка, ни хватки; отвернулся — подползла до GRAB_R и схватила
+    const h2 = emerged('h2');
+    runFor(h2, 3, { goal: { x: 6, y: 0, room: 'c' }, players: [under('p1', 6)] });
+    expect(h2.poke).toBe('p1');
+    const out = [player('p1', 6)];
+    expect(runFor(h2, 2, { goal: { x: 6, y: 0, room: 'c' }, players: out, seen: true })).toEqual([]);
+    expect(h2.poke).toBeNull();
+    let g: HandEvent[] = [];
+    let tg = 0;
+    for (let k = 0; k < 64 && !g.length; k++) {
+      g = hstep(h2, { goal: { x: 6, y: 0, room: 'c' }, players: out });
+      tg = (k + 1) * DT;
+    }
+    expect(g).toEqual([{ type: 'grab', victim: 'p1' }]);
+    expect(tg).toBeCloseTo((POKE_R - GRAB_R) / (0.5 * V), 1);
+    // под кроватью — хватает открытого напарника рядом, а не тычет
+    const h3 = emerged('h3');
+    runFor(h3, 3, { goal: { x: 6, y: 0, room: 'c' }, players: [under('p1', 6)] });
+    const mate = hstep(h3, { goal: { x: 6, y: 0, room: 'c' }, players: [under('p1', 6), player('p2', h3.tip.x + 1, 0.3)] });
+    expect(mate).toEqual([{ type: 'grab', victim: 'p2' }]);
+  });
+
+  it('поле лампы и под кроватью защищает: не тычет; сквозь стену (другая комната) — не тычет, ползёт дальше по пути', () => {
+    // лампа рядом с кроватью: рука упёрлась в поле в 1.5 м от игрока — и не бьёт
+    const h = emerged();
+    const lamp = { x: 7.5, y: 0 };
+    expect(runFor(h, 10, { goal: { x: 6, y: 0, room: 'c' }, players: [under('p1', 6)], lanterns: [lamp] })).toEqual([]);
+    expect(h.tip.x).toBeCloseTo(4.5, 4);
+    expect(h.blocked).toBe(true);
+    expect(handView(h).poke).toBeNull();
+    // сам с лампой (механике её не передали) и под кроватью — тоже нет
+    const h2 = emerged('h2');
+    const lampMan = { ...under('p1', 3), protected: true };
+    expect(runFor(h2, 5, { goal: { x: 3, y: 0, room: 'c' }, players: [lampMan] })).toEqual([]);
+    // под кроватью за стеной (комната r9): рука ползёт до цели в коридоре, не тыча; вползла в комнату — тычет
+    const h3 = emerged('h3');
+    const behind = [under('p1', 6, 0.9, 'r9')];
+    expect(runFor(h3, 4, { goal: { x: 6, y: 0, room: 'c' }, players: behind })).toEqual([]);
+    expect(h3.tip).toMatchObject({ x: 6, y: 0, room: 'c' });
+    const inRoom = runFor(h3, 2, { goal: { x: 6, y: 0.3, room: 'r9' }, players: behind });
+    expect(h3.tip.room).toBe('r9');
+    expect(pokesOf(inRoom).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('рамка кровати: зазор по худшей оси, «ближе m» — внутри расширенной на m', () => {
+    const r: Rect = { x0: 0, y0: 0, x1: 2, y1: 1 };
+    expect(rectGap({ x: 1, y: 0.5 }, r)).toBe(0);
+    expect(rectGap({ x: -0.5, y: 0.5 }, r)).toBeCloseTo(0.5, 9);
+    expect(rectGap({ x: 3, y: 2.5 }, r)).toBeCloseTo(1.5, 9);
+    expect(expandRect(r, 0.3)).toEqual({ x0: -0.3, y0: -0.3, x1: 2.3, y1: 1.3 });
+    expect(POKE_STAND).toBe(OBSHAGA.pokeStandM);
+    // досягаемость под кровать от её края — на ширину кровати (0.8 м)
+    expect(POKE_R - POKE_STAND).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('кровать известна: кончик не заходит ближе pokeStandM к рамке (упор на границе); игрок глубже досягаемости — не тычет', () => {
+    // кровать вдоль коридора торцом к руке (x 6…7.9), игрок под ней в 1.2 м от торца
+    const bed: Rect = { x0: 6, y0: -0.4, x1: 7.9, y1: 0.4 };
+    const deep = { ...under('p1', 7.2), cover: bed };
+    const h = emerged();
+    expect(runFor(h, 10, { goal: deep.p, players: [deep] })).toEqual([]);
+    expect(h.tip.x).toBeCloseTo(6 - POKE_STAND, 5);
+    expect(h.tip.x).toBeLessThanOrEqual(6 - POKE_STAND);
+    expect(h.blocked).toBe(false);
+    expect(handView(h).bed).toEqual(bed);
+    expect(handView(h).poke).toBeNull();
+    // кровать неизвестна — как раньше: подползла на POKE_R и тычет (кисть легла бы на кровать)
+    const h2 = emerged('h2');
+    expect(pokesOf(runFor(h2, 10, { goal: deep.p, players: [under('p1', 7.2)] })).length).toBeGreaterThan(3);
+    expect(h2.tip.x).toBeGreaterThan(6 - POKE_STAND + 0.2);
+    expect(handView(h2).bed).toBeNull();
+    // у края кровати (0.3 м вглубь) — тычет, дойдя до POKE_R, снаружи зоны
+    const h3 = emerged('h3');
+    const edge = { ...under('p1', 6.3), cover: bed };
+    expect(pokesOf(runFor(h3, 10, { goal: edge.p, players: [edge] })).length).toBeGreaterThan(3);
+    expect(rectGap(h3.tip, bed)).toBeGreaterThanOrEqual(POKE_STAND);
+    expect(d2(h3.tip, edge.p)).toBeLessThanOrEqual(POKE_R);
+    // далеко от кровати — «рядом» нет
+    const h4 = emerged('h4');
+    hstep(h4, { goal: null, players: [{ ...under('p1', 20.2), cover: { x0: 20, y0: -0.4, x1: 21.9, y1: 0.4 } }] });
+    expect(handView(h4).bed).toBeNull();
+  });
+
+  it('залез под кровать рядом с кистью (кончик в зоне): не тычет, глубже не ползёт, наружу — да; вышла — тычет', () => {
+    const h = emerged();
+    const bed: Rect = { x0: 0.5, y0: -0.4, x1: 2.4, y1: 0.4 };
+    const pl = { ...under('p1', 1.0), cover: bed };
+    // к игроку — ни шагу (глубже в зону), ни тычка
+    expect(runFor(h, 2, { goal: pl.p, players: [pl] })).toEqual([]);
+    expect(h.tip).toEqual(MOUTH);
+    // наружу (навигация ведёт прочь от кровати) — ползёт; вышла из зоны — тычет, а к цели доползает, только пока палец
+    // достаёт (не дальше POKE_R от игрока)
+    const ev = runFor(h, 6, { goal: { x: -4, y: 0, room: 'c' }, players: [pl] });
+    expect(pokesOf(ev).length).toBeGreaterThanOrEqual(2);
+    expect(pokesOf(ev)[0].t).toBeLessThan((POKE_STAND - 0.5 + 0.1) / (0.5 * V) + OBSHAGA.pokeHitU * OBSHAGA.pokePeriodS);
+    expect(rectGap(h.tip, bed)).toBeGreaterThanOrEqual(POKE_STAND - 1e-9);
+    expect(h.tip.x).toBeCloseTo(1.0 - POKE_R, 1);
+    expect(d2(h.tip, pl.p)).toBeLessThanOrEqual(POKE_R);
+  });
+
+  it('кровать известна: тыча, доползает до цели навигации (бок кровати), пока палец достаёт; под взглядом — стоит', () => {
+    // кровать поперёк хода (x 6…6.8), игрок 0.3 вглубь; цель навигации — в pokeStandM + 0.08 от бока
+    const bed: Rect = { x0: 6, y0: -1, x1: 6.8, y1: 0.9 };
+    const pl = { ...under('p1', 6.3), cover: bed };
+    const goal = { x: 6 - POKE_STAND - 0.08, y: 0, room: 'c' };
+    const h = emerged();
+    // доползла до POKE_R — тычет; видят — стоит, тычет
+    runFor(h, 2.15, { goal, players: [pl] });
+    expect(h.poke).toBe('p1');
+    const tip = { ...h.tip };
+    expect(tip.x).toBeLessThan(goal.x - 0.2);
+    expect(pokesOf(runFor(h, 1.5, { goal, players: [pl], seen: true })).length).toBe(1);
+    expect(h.tip).toEqual(tip);
+    // не видят — тыча, доползает до цели и стоит там
+    const ev = runFor(h, 3, { goal, players: [pl] });
+    expect(pokesOf(ev).length).toBeGreaterThanOrEqual(2);
+    expect(ev.every((x) => x.e.type === 'poke')).toBe(true);
+    expect(h.tip.x).toBeCloseTo(goal.x, 6);
+    expect(h.poke).toBe('p1');
+  });
+
+  it('выпад пальца: 0 у края кровати, замах назад, удар (1) — в pokeHitU, потом медленно отходит; непрерывно по кругу', () => {
+    expect(pokeReach(0)).toBeCloseTo(0, 9);
+    expect(pokeReach(OBSHAGA.pokeHitU)).toBe(1);
+    expect(pokeReach(OBSHAGA.pokeHitU - 0.2)).toBeLessThan(0);
+    expect(pokeReach(0.9999)).toBeCloseTo(0, 3);
+    expect(pokeReach(NaN)).toBe(0);
+    let prev = pokeReach(0);
+    for (let u = 0.001; u < 2; u += 0.001) {
+      const r = pokeReach(u);
+      expect(Math.abs(r - prev)).toBeLessThan(0.05);
+      expect(r).toBeGreaterThanOrEqual(-0.2 - 1e-9);
+      expect(r).toBeLessThanOrEqual(1);
+      prev = r;
+    }
   });
 
   it('рука беззвучна: ни одного звукового события за все прогоны', () => {

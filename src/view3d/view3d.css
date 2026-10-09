@@ -165,3 +165,70 @@
   font-size: 13px; line-height: 1.45; color: #d8c9a8; animation: v3-dead 0.8s ease-out;
 }
 .v3-walkhud .v3-obsh-sound { pointer-events: auto; padding: 0 7px; height: 18px; font-size: 11px; line-height: 16px; }
+/* общага: здоровье (тычки из-под кровати) — полоска в HUD, пока не зажило; тычок — красная вспышка по краям */
+.v3-walkhud .v3-obsh-hp { align-self: center; width: 64px; height: 7px; border: 1px solid #7a2a22; border-radius: 2px; background: #1a0705; overflow: hidden; }
+.v3-obsh-hp > i { display: block; height: 100%; background: #c0392b; transition: width 0.25s; }
+.v3-obsh-hurt {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse at 50% 50%, rgba(0, 0, 0, 0) 35%, rgba(120, 6, 4, 0.6) 80%, rgba(40, 0, 0, 0.85) 100%);
+  animation: v3-obsh-hurt 0.7s ease-out;
+  z-index: 4;
+}
+@keyframes v3-obsh-hurt { from { opacity: 0.95; } to { opacity: 0; } }
+
+/* бег (Shift, src/view3d/sprint.ts): шкала выносливости над хотбаром; ширину (scaleX) и классы пишет кадр, не React.
+   Полная и не бежит — прячется; выдохся (.tired) — красная и медленно пульсирует */
+.v3-stamina {
+  position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%); z-index: 4; pointer-events: none;
+  width: 200px; height: 4px; border-radius: 2px; overflow: hidden;
+  background: #0d0e10b0; box-shadow: 0 0 0 1px #ffffff14, 0 1px 6px #0008;
+  opacity: 0; transition: opacity 0.8s ease-out;
+}
+.v3-stamina.on { opacity: 0.92; transition-duration: 0.15s; }
+.v3-stamina-fill { height: 100%; background: var(--accent); transform-origin: left center; transform: scaleX(1); }
+.v3-stamina.tired { box-shadow: 0 0 0 1px #d8604a66, 0 0 10px #d8604a55; }
+.v3-stamina.tired .v3-stamina-fill { background: var(--danger); animation: v3-stamina-tired 1.1s ease-in-out infinite; }
+@keyframes v3-stamina-tired { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+/* руки «Прогулки» (src/view3d/inventory.ts, HotbarHud.tsx): хотбар внизу по центру, над ним — шкала бега (78px), имя
+   предмета в руке (90px), подсказка «E — …» (112px), подсказка общаги (148px) — друг на друга не ложатся. Подсказки
+   управления слева и счётчик кадров справа уже половины холста минус хотбар — не залезают под него */
+.v3-hotbar { left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 4px; padding: 4px; pointer-events: none; z-index: 4; background: #121316d8; }
+.v3-slot {
+  position: relative; width: 46px; height: 46px; border: 1px solid var(--line); border-radius: 4px;
+  background: #0b0c0e9c; display: flex; align-items: center; justify-content: center;
+}
+.v3-slot.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent), 0 0 10px #e8b04b38; background: #1d1a12c4; }
+.v3-slot-n { position: absolute; left: 4px; top: 2px; font-family: var(--mono); font-size: 9px; line-height: 1; color: var(--muted); }
+.v3-slot.sel .v3-slot-n { color: var(--accent); }
+.v3-glyph { display: block; filter: drop-shadow(0 1px 1px #000c); }
+.v3-slot.lit .v3-glyph { filter: drop-shadow(0 0 4px #ffb84a70) drop-shadow(0 1px 1px #000c); }
+.v3-slot-on { position: absolute; right: 4px; top: 4px; width: 5px; height: 5px; border-radius: 50%; background: #ffc35a; box-shadow: 0 0 5px 1px #ffb84a99; }
+.v3-glyph-box {
+  min-width: 26px; height: 20px; padding: 0 3px; border-radius: 3px; border: 1px solid #0009; box-shadow: inset 0 0 0 1px #ffffff22;
+  font-family: var(--mono); font-size: 9px; line-height: 18px; text-align: center; color: #111; font-weight: 600;
+}
+.v3-held {
+  position: absolute; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 4; pointer-events: none; white-space: nowrap;
+  font-family: var(--font-c); font-size: 13px; letter-spacing: 0.05em; color: var(--text); text-shadow: 0 1px 3px #000, 0 0 10px #000c;
+  animation: v3-held 2.4s ease-out forwards;
+}
+@keyframes v3-held { 0% { opacity: 0; } 8% { opacity: 1; } 65% { opacity: 1; } 100% { opacity: 0; } }
+.v3-stage > .v3-lift-prompt { bottom: 112px; }
+.v3-stage > .v3-obsh-hint { bottom: 148px; }
+.v3-stage:has(> .v3-hotbar) > .v3-hud, .v3-stage:has(> .v3-hotbar) > .v3-perf { max-width: calc(50% - 150px); }
+
+/* сюжет (src/view3d/storyWalk.ts): люк в погреб — затемнение; засыпало снегом — подсказка поверх белой пелены;
+   новый биом сюжета — название шага крупно и дольше; срыв на лестнице / в лифте — темнота, «очнулся в общаге» */
+.v3-story-black { position: absolute; inset: 0; pointer-events: none; background: #000; z-index: 5; }
+.v3-stage > .v3-story-prompt { z-index: 6; }
+.v3-flash.v3-flash-story {
+  top: 30%; font-family: var(--font-c); font-weight: 500; font-size: 36px; letter-spacing: 0.12em; padding: 8px 26px;
+  border-color: #efe3c855; text-shadow: 0 0 18px #000, 0 0 8px currentColor; animation-duration: 3.4s;
+}
+.v3-loc-dead.v3-story-fall { background: #000; animation-duration: 2s; }
+.v3-loc-dead.v3-story-fall h2 { color: #8d8478; }
+.v3-loc-dead.v3-story-fall .hint { color: #6d655a; font-style: italic; }

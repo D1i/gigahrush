@@ -6,6 +6,7 @@ import type { RunFinish } from '../blockout/types';
 import { encodeRows, normDeg, transformSeg } from './geom';
 import { cloneLocation } from '../locations/stairwell';
 import { connDz, worldStair } from '../model/stairs';
+import { TAG_OPEN_H } from '../data/roomBuilder';
 
 export interface InstanceWorld {
   inst: Instance;
@@ -117,6 +118,8 @@ export function exportRunJSON(p: Project, run: Run, opts: ExportOptions = {}): u
       /** высота низа комнаты, м (за лестницами, src/model/stairs.ts) и лестница в мировых клетках — только если есть */
       ...(w.inst.z ? { z: w.inst.z } : {}),
       ...(room?.stair ? { stair: worldStair(room.stair, w.inst.rot, w.inst.dx, w.inst.dy) } : {}),
+      // своя высота потолка (залы метро, Room.ceilM) — только если задана
+      ...(room?.ceilM && room.ceilM > 0 ? { ceilM: room.ceilM } : {}),
       bbox: w.bbox,
       cells: encodeRows(w.cells),
       doors: w.doors.map((d) => ({ id: d.id, cx: d.cx, cy: d.cy, side: d.side, len: d.len, line: segmentLine(d) })),
@@ -126,6 +129,8 @@ export function exportRunJSON(p: Project, run: Run, opts: ExportOptions = {}): u
         linkedTo: linkBy.get(`${w.inst.id}/${k.id}`) ?? null,
         // пол у метки выше низа комнаты (лестница), м
         ...(room?.stair && connDz(room, ci) ? { dz: connDz(room, ci) } : {}),
+        // высота проёма по метке (TAG_OPEN_H: высокие проходы метро), м — только если задана
+        ...(TAG_OPEN_H[k.tag] > 0 ? { openH: TAG_OPEN_H[k.tag] } : {}),
       })),
       decor: w.decor.map((d) => ({ id: d.id, propId: d.propId, x: d.x, y: d.y, rot: d.rot })),
       spots: w.spots.map((s) => {

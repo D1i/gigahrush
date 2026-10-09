@@ -1,0 +1,21 @@
+/* погреб (src/view3d/cellarWalk.ts, cellarHud.ts): засыпало землёй — почти чёрный экран; треск крепей — виньетка;
+   пыль после обвала — бурая пелена; подсказки — как у остальных локаций (v3-lift-prompt), «боком» — выше */
+.v3-cel { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+.v3-cel > .v3-cel-buried {
+  position: absolute; inset: 0;
+  background: radial-gradient(circle at 50% 58%, rgba(28, 19, 12, 0.92) 0%, rgba(6, 4, 3, 1) 68%);
+}
+.v3-cel > .v3-cel-crack {
+  position: absolute; inset: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0) 42%, rgba(16, 10, 6, 0.88) 100%);
+}
+.v3-cel > .v3-cel-dust {
+  position: absolute; inset: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(74, 58, 42, 0.55) 0%, rgba(40, 30, 22, 0.85) 100%);
+}
+.v3-cel > .v3-cel-prompt { left: 50%; bottom: 112px; transform: translateX(-50%); font-size: 13px; letter-spacing: 0.02em; z-index: 6; }
+.v3-cel > .v3-cel-hint {
+  left: 50%; bottom: 150px; transform: translateX(-50%); max-width: 520px; text-align: center;
+  font-size: 13px; line-height: 1.45; color: #d8c4a0; z-index: 6; animation: v3-cel-in 0.4s ease-out;
+}
+@keyframes v3-cel-in { from { opacity: 0; } to { opacity: 1; } }

@@ -1,6 +1,7 @@
 // «Общага» в коопе (docs/COOP.md §2.5): хост ведёт режиссёра (src/locations/obshaga.ts) и ~10 раз в секунду рассылает
 // его срез событием fx 'obsh' (≤ 2 КБ JSON, иначе сервер отбросит): свет, двери в ходу, рука (след упрощён до ≤ 40
-// точек, сантиметры), события для жертвы. Клиенты рисуют по срезу; свет между рассылками досчитывают сами.
+// точек, сантиметры; тычок под кровать — кого, куда, фаза цикла; кровать рядом — рамка), события для жертвы (grab /
+// released / killed / poke). Клиенты рисуют по срезу; свет и фазу тычка между рассылками досчитывают сами.
 // Без движка — для тестов.
 import { handView, lightLevel, type BlackoutPhase, type BlackoutState, type HandPhase, type HandView, type ObshagaState, type Pt } from '../locations/obshaga';
 
@@ -21,7 +22,7 @@ export interface ObshWire {
   h: WireHand | null;
   /** дверь руки */
   hd: string | null;
-  /** события с прошлой рассылки: [вид, жертва] — grab / released / killed */
+  /** события с прошлой рассылки: [вид, жертва] — grab / released / killed / poke (тычок: урон жертве) */
   ev?: [string, string][];
 }
 
@@ -40,6 +41,10 @@ export interface WireHand {
   bl: 0 | 1;
   va: number;
   len: number;
+  /** тычет под кровать (нет — не тычет): жертва, точка x, y (см), индекс комнаты в r (−1 — без комнаты), фаза цикла (сотые) */
+  pk?: [string, number, number, number, number];
+  /** кровать рядом (HandView.bed): рамка x0, y0, x1, y1, см; нет — нет */
+  bd?: [number, number, number, number];
 }
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -102,10 +107,21 @@ function wireHand(v: HandView, maxPts: number): WireHand {
     if (i === undefined) idx.set(room, (i = rooms.push(room) - 1));
     p.push(Math.round(q.x * 100), Math.round(q.y * 100), i);
   }
-  return {
+  const w: WireHand = {
     ph: v.phase, r: rooms, p, hd: r2(v.heading), v: v.victim, dp: r2(v.dragProgress), em: r2(v.emerge01),
     f: v.frozen ? 1 : 0, bl: v.blocked ? 1 : 0, va: r2(v.variant), len: r2(v.length),
   };
+  if (v.poke && v.pokeAt) {
+    const room = v.pokeAt.room;
+    let ri = -1;
+    if (room !== undefined) {
+      ri = idx.get(room) ?? -1;
+      if (ri < 0) idx.set(room, (ri = rooms.push(room) - 1));
+    }
+    w.pk = [v.poke, Math.round(v.pokeAt.x * 100), Math.round(v.pokeAt.y * 100), ri, r2(v.poke01)];
+  }
+  if (v.bed) w.bd = [Math.round(v.bed.x0 * 100), Math.round(v.bed.y0 * 100), Math.round(v.bed.x1 * 100), Math.round(v.bed.y1 * 100)];
+  return w;
 }
 
 /** Срез режиссёра (≤ BUDGET байт JSON: лишнее — меньше точек руки, затем двери, затем события). */
@@ -161,9 +177,20 @@ export function fromWire(w: ObshWire): ObshRemote | null {
       const room = h.r?.[h.p[i + 2]];
       trail.push(room ? { x: h.p[i] / 100, y: h.p[i + 1] / 100, room } : { x: h.p[i] / 100, y: h.p[i + 1] / 100 });
     }
+    // тычок под кровать
+    const pk = Array.isArray(h.pk) && h.pk.length >= 5 && typeof h.pk[0] === 'string' ? h.pk : null;
+    let pokeAt: Pt | null = null;
+    if (pk) {
+      const room = pk[3] >= 0 ? h.r?.[pk[3]] : undefined;
+      const x = (Number(pk[1]) || 0) / 100, y = (Number(pk[2]) || 0) / 100;
+      pokeAt = room ? { x, y, room } : { x, y };
+    }
     hand = {
       phase: h.ph, visible: true, tip: { ...trail[trail.length - 1] }, heading: Number(h.hd) || 0, trail, length: Number(h.len) || 0,
       victim: h.v ?? null, dragProgress: Number(h.dp) || 0, emerge01: Number(h.em) || 0, frozen: !!h.f, blocked: !!h.bl, variant: Number(h.va) || 0,
+      poke: pk ? pk[0] : null, pokeAt, poke01: pk ? Math.min(1, Math.max(0, Number(pk[4]) || 0)) : 0,
+      bed: Array.isArray(h.bd) && h.bd.length === 4 && h.bd.every((v) => Number.isFinite(v))
+        ? { x0: h.bd[0] / 100, y0: h.bd[1] / 100, x1: h.bd[2] / 100, y1: h.bd[3] / 100 } : null,
     };
   }
   const doors: Record<string, number> = {};

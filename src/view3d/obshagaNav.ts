@@ -5,8 +5,15 @@
 // Координаты — план прогона, метры (x вправо, y вниз), как у Pt механики. Карта руки — одна: граф без швов бесконечного
 // хода (Link.wrap — за швом план сдвинут) и без лестничных залов (марш меняет высоту пола — рука в них не заходит; игрок
 // за лестницей — вне карты руки), только комнаты общаги. В пределах карты (до CHART_HOPS дверей) план непрерывен.
+//
+// Кровати: мебель комнат (декор и выпавшее на спотах — те же болванки, что строит src/blockout/core.ts: центр предмета
+// в мировых клетках × cellM, бокс w × d повёрнут на rot) — рамками по осям в NavRoom.props / beds. Игрок под кроватью
+// (NavPlayer.cover — её рамка, bedAt) — цель руки не он, а свободный бок кровати (bedGoal: снаружи на pokeStandM, не
+// за стеной и не в мебели, ближе к игроку), путь в комнате огибает запретную зону кончика (рамку, расширенную на
+// pokeStandM) по её углам и подходит к боку по нормали — кисть смотрит на кровать.
+import { propCover, propHeightM } from '../blockout/core';
 import type { RunExport, RunInstance, Side } from '../blockout/types';
-import { isProtected, type Pt, type SpawnCandidate } from '../locations/obshaga';
+import { expandRect, isProtected, POKE_STAND, type Pt, type Rect, type SpawnCandidate } from '../locations/obshaga';
 
 /** Метки дверей комнат общаги со стороны коридора (полотна здесь нет) и со стороны комнаты (полотно здесь). */
 export const OBSH_SIDE_TAGS: ReadonlySet<string> = new Set(['obshaga>room', 'obshaga>common', 'hall>vahter']);
@@ -47,6 +54,20 @@ export interface NavRoom {
   x1: number;
   y1: number;
   edges: NavEdge[];
+  /** мебель комнаты (декор и выпавшее на спотах), рамки на плане */
+  props: NavProp[];
+  /** кровати (укрытие 'bed' — PROP_COVER) — рамки на плане, те же объекты, что rect в props */
+  beds: Rect[];
+}
+
+/** Предмет мебели на плане: рамка по осям повёрнутого бокса w × d болванки (src/blockout/core.ts, PropBox). */
+export interface NavProp {
+  propId: string;
+  rect: Rect;
+  /** высота болванки, м (propHeightM: настенное, подвесное и плоское — 0.01) */
+  h: number;
+  /** под чем можно пролезть (PROP_COVER): кровать, стол на ножках; null — сплошной */
+  cover: 'bed' | 'table' | null;
 }
 
 /** Дверь комнаты общаги (самозакрывающаяся): id — «inst/connector» полотна (как ключ BabylonBlockout.doorLeaves). */
@@ -115,6 +136,39 @@ export function sideNormal(side: Side): [number, number] {
   return SIDE_N[side] ?? [0, 1];
 }
 
+const r6 = (v: number) => Math.round(v * 1e6) / 1e6;
+const propIndex = new WeakMap<RunExport, Map<string, RunExport['props'][number]>>();
+
+/**
+ * Мебель экземпляра на плане — как болванки src/blockout/core.ts (PropBox): декор и выпавшее на спотах (поворот —
+ * contentRot или rot спота + rot предмета), центр — мировые клетки × cellM, бокс w × d (prop.w, prop.h) повёрнут на rot
+ * (по часовой на плане) — рамкой по осям; нет в rx.props — пропуск (как у ядра).
+ */
+function roomProps(rx: RunExport, i: RunInstance, c: number): { props: NavProp[]; beds: Rect[] } {
+  let by = propIndex.get(rx);
+  if (!by) propIndex.set(rx, (by = new Map((rx.props ?? []).map((p) => [p.id, p] as const))));
+  const props: NavProp[] = [];
+  const beds: Rect[] = [];
+  const add = (propId: string, x: number, y: number, rot: number) => {
+    const p = by!.get(propId);
+    if (!p) return;
+    const a = ((Number(rot) || 0) * Math.PI) / 180;
+    const ca = Math.abs(Math.cos(a)), sa = Math.abs(Math.sin(a));
+    const hw = r6((ca * p.w + sa * p.h) / 2), hd = r6((sa * p.w + ca * p.h) / 2);
+    const cx = r6(x * c), cy = r6(y * c);
+    const rect = { x0: r6(cx - hw), y0: r6(cy - hd), x1: r6(cx + hw), y1: r6(cy + hd) };
+    const cover = propCover(propId)?.cover ?? null;
+    props.push({ propId, rect, h: propHeightM(p.tags ?? [], p.name ?? ''), cover });
+    if (cover === 'bed') beds.push(rect);
+  };
+  for (const d of i.decor ?? []) add(d.propId, d.x, d.y, d.rot);
+  for (const s of i.spots ?? []) {
+    if (s.content?.kind !== 'prop') continue;
+    add(s.content.id, s.x, s.y, s.contentRot ?? (((s.rot + (s.content.rot ?? 0)) % 360) + 360) % 360);
+  }
+  return { props, beds };
+}
+
 const navCache = new WeakMap<RunExport, ObshNav>();
 
 /** Навигация по прогону (кэш по объекту прогона: мир вырос — новый прогон, новая навигация). */
@@ -147,6 +201,7 @@ export function buildNav(rx: RunExport): ObshNav {
       x1: b.x1 * c,
       y1: b.y1 * c,
       edges: [],
+      ...roomProps(rx, i, c),
     });
   }
   for (const l of rx.links ?? []) {
@@ -365,6 +420,215 @@ export function roomAt(nav: ObshNav, p: Pt, floor?: (id: string) => readonly { x
   return r.id;
 }
 
+// ───────────────────────── кровати: укрытие и подход руки ─────────────────────────
+
+type FloorFn = (id: string) => readonly { x0: number; y0: number; x1: number; y1: number }[] | null;
+
+/** Цель руки у кровати — снаружи зоны кончика (рамка + pokeStandM) ещё на столько, м: упор механики не мешает дойти. */
+export const BED_GOAL_PAD = 0.08;
+/** Путь огибает зону кончика (рамка + pokeStandM + ZONE_PAD); углы обхода — ещё дальше на CORNER_PAD (> REACH_M:
+ *  пропущенный в REACH_M угол не срезается сквозь зону). */
+const ZONE_PAD = 0.04;
+const CORNER_PAD = REACH_M + 0.06;
+/** Подход к боку кровати по нормали — с такого расстояния, м (рендер поворачивает кисть по последним 1.2 м следа:
+ *  пришла по нормали — смотрит на кровать); не влезает — короче (шаг 5 см, не короче 0.3). */
+export const BED_APPROACH_M = 1.2;
+
+/**
+ * Кровать (рамка), под которой точка p: в комнате p.room или у соседей по проёмам, точка в рамке с запасом pad, м;
+ * несколько — та, где точка глубже. null — нет (или комната неизвестна).
+ */
+export function bedAt(nav: ObshNav, p: Pt, pad = 0.1): Rect | null {
+  const r = p.room ? nav.rooms.get(p.room) : undefined;
+  if (!r) return null;
+  let best: Rect | null = null;
+  let depth = -Infinity;
+  for (const id of [r.id, ...r.edges.map((e) => e.to)]) {
+    for (const b of nav.rooms.get(id)?.beds ?? []) {
+      const d = Math.min(p.x - b.x0, b.x1 - p.x, p.y - b.y0, b.y1 - p.y);
+      if (d > -pad && d > depth) (best = b), (depth = d);
+    }
+  }
+  return best;
+}
+
+/**
+ * Кооп: напарник под кроватью — его глаз над полом (PlayerState.eye) ниже maxEye (лёжа, не на четвереньках) И точка в
+ * рамке кровати (bedAt с запасом pad): рамка; иначе (лёжа рядом с кроватью, на четвереньках, глаз неизвестен) — null.
+ */
+export function remoteCover(nav: ObshNav, p: Pt, eye: number | null | undefined, maxEye: number, pad = 0.1): Rect | null {
+  return typeof eye === 'number' && eye < maxEye ? bedAt(nav, p, pad) : null;
+}
+
+/** Точка на полу комнаты room (кусок портального рендера — его прямоугольники, иначе рамка экземпляра) не ближе pad к краю. */
+function onFloor(nav: ObshNav, room: string, x: number, y: number, pad: number, floor?: FloorFn): boolean {
+  const f = floor?.(room);
+  if (f && f.length) return f.some((q) => x > q.x0 + pad && x < q.x1 - pad && y > q.y0 + pad && y < q.y1 - pad);
+  const r = nav.rooms.get(room);
+  return !!r && x > r.x0 + pad && x < r.x1 - pad && y > r.y0 + pad && y < r.y1 - pad;
+}
+
+/** Бок кровати: нормаль наружу и ось вдоль. */
+const BED_SIDES: { n: [number, number]; along: 'x' | 'y' }[] = [
+  { n: [0, -1], along: 'x' },
+  { n: [0, 1], along: 'x' },
+  { n: [-1, 0], along: 'y' },
+  { n: [1, 0], along: 'y' },
+];
+
+/** Подход руки к кровати: цель кончика у бока (снаружи зоны), точка подхода по нормали (null — места нет), нормаль. */
+export interface BedApproach {
+  goal: Pt;
+  approach: Pt | null;
+  nx: number;
+  ny: number;
+}
+
+/**
+ * Свободный бок кровати bed (комната room) для тычка игрока player: у каждого бока цель — проекция игрока на бок (не
+ * ближе 0.25 м к углам) снаружи на pokeStandM + BED_GOAL_PAD. Бок годится, если цель и полоса до неё (± 0.3 м) — на полу
+ * комнаты (не за стеной); мебель в полосе (кроме самой кровати, настенного и подвесного) и цель в мебели — штраф.
+ * Лучший — ближе к игроку с учётом штрафа. Точка подхода — ещё на BED_APPROACH_M дальше по нормали (короче, если не
+ * на полу; мебель её не держит — кисть всё равно шире прохода; совсем нет места — null). Ни один бок не годится — null.
+ */
+export function bedGoal(nav: ObshNav, room: string, bed: Rect, player: Pt, floor?: FloorFn): BedApproach | null {
+  const r = nav.rooms.get(room);
+  if (!r) return null;
+  const out = POKE_STAND + BED_GOAL_PAD;
+  let best: BedApproach | null = null;
+  let bestCost = Infinity;
+  for (const s of BED_SIDES) {
+    const [nx, ny] = s.n;
+    const lo = s.along === 'x' ? bed.x0 : bed.y0, hi = s.along === 'x' ? bed.x1 : bed.y1;
+    const inset = Math.min(0.25, (hi - lo) / 2);
+    const t = Math.min(hi - inset, Math.max(lo + inset, s.along === 'x' ? player.x : player.y));
+    // точка на боку и вдоль бока (единичный вектор)
+    const bx = s.along === 'x' ? t : nx < 0 ? bed.x0 : bed.x1;
+    const by = s.along === 'y' ? t : ny < 0 ? bed.y0 : bed.y1;
+    const ax = s.along === 'x' ? 1 : 0, ay = s.along === 'y' ? 1 : 0;
+    const at = (d: number, l: number) => ({ x: bx + nx * d + ax * l, y: by + ny * d + ay * l });
+    // полоса до цели — на полу комнаты
+    let ok = true;
+    for (const [d, l] of [[out, 0], [out, 0.3], [out, -0.3], [out / 2, 0.3], [out / 2, -0.3]]) {
+      const q = at(d, l);
+      if (!onFloor(nav, room, q.x, q.y, 0.12, floor)) ok = false;
+    }
+    if (!ok) continue;
+    // мебель в полосе (доля площади) и в самой цели
+    const strip = {
+      x0: Math.min(bx + nx * 0.02, bx + nx * out) - ax * 0.35, x1: Math.max(bx + nx * 0.02, bx + nx * out) + ax * 0.35,
+      y0: Math.min(by + ny * 0.02, by + ny * out) - ay * 0.35, y1: Math.max(by + ny * 0.02, by + ny * out) + ay * 0.35,
+    };
+    const area = (strip.x1 - strip.x0) * (strip.y1 - strip.y0);
+    const goal = at(out, 0);
+    let pen = 0;
+    for (const p of r.props) {
+      if (p.rect === bed || p.h < 0.1) continue;
+      const q = p.rect;
+      const ox = Math.min(q.x1, strip.x1) - Math.max(q.x0, strip.x0), oy = Math.min(q.y1, strip.y1) - Math.max(q.y0, strip.y0);
+      if (ox > 0 && oy > 0) pen += (2 * ox * oy) / area;
+      if (goal.x > q.x0 && goal.x < q.x1 && goal.y > q.y0 && goal.y < q.y1) pen += 1;
+    }
+    const cost = Math.hypot(goal.x - player.x, goal.y - player.y) + pen;
+    if (cost < bestCost - 1e-9) {
+      bestCost = cost;
+      let approach: Pt | null = null;
+      for (let a = BED_APPROACH_M; a > 0.3 - 1e-9; a -= 0.05) {
+        const q = at(out + a, 0);
+        if (onFloor(nav, room, q.x, q.y, 0.12, floor)) {
+          approach = { x: q.x, y: q.y, room };
+          break;
+        }
+      }
+      best = { goal: { x: goal.x, y: goal.y, room }, approach, nx, ny };
+    }
+  }
+  return best;
+}
+
+/** Отрезок ab заходит внутрь (открытой) рамки z. */
+function crosses(a: { x: number; y: number }, b: { x: number; y: number }, z: Rect): boolean {
+  let t0 = 0, t1 = 1;
+  for (const [o, u, lo, hi] of [[a.x, b.x - a.x, z.x0, z.x1], [a.y, b.y - a.y, z.y0, z.y1]] as const) {
+    if (Math.abs(u) < 1e-12) {
+      if (o <= lo || o >= hi) return false;
+      continue;
+    }
+    const p = (lo - o) / u, q = (hi - o) / u;
+    t0 = Math.max(t0, Math.min(p, q));
+    t1 = Math.min(t1, Math.max(p, q));
+  }
+  return t1 - t0 > 1e-9;
+}
+
+/**
+ * Путь в комнате от a к цели у кровати: изнутри зоны кончика (рамка кровати + pokeStandM + ZONE_PAD) — сначала наружу
+ * по нормали ближайшей грани (на пол комнаты, если можно); затем в обход зоны по её углам (кратчайший, углы — на полу,
+ * если так можно) к точке подхода и по нормали к цели; уже на линии подхода — прямо к цели. Без самой точки a.
+ */
+export function bedRoute(nav: ObshNav, room: string, a: Pt, bed: Rect, ba: BedApproach, floor?: FloorFn): Pt[] {
+  const z = expandRect(bed, POKE_STAND + ZONE_PAD);
+  const out: Pt[] = [];
+  let from: { x: number; y: number } = a;
+  const P = (x: number, y: number): Pt => ({ x, y, room });
+  if (from.x > z.x0 && from.x < z.x1 && from.y > z.y0 && from.y < z.y1) {
+    // наружу по ближайшей грани (до края зоны + CORNER_PAD: пропущенная в REACH_M точка уже снаружи)
+    const exits = [P(z.x0 - CORNER_PAD, from.y), P(z.x1 + CORNER_PAD, from.y), P(from.x, z.y0 - CORNER_PAD), P(from.x, z.y1 + CORNER_PAD)]
+      .map((q) => ({ q, d: Math.hypot(q.x - from.x, q.y - from.y), ok: onFloor(nav, room, q.x, q.y, 0.05, floor) }))
+      .sort((u, v) => (u.ok !== v.ok ? (u.ok ? -1 : 1) : u.d - v.d));
+    from = exits[0].q;
+    out.push(exits[0].q);
+  }
+  const g = ba.goal, ap = ba.approach;
+  // на линии подхода (между точкой подхода и целью, ± 0.3 м поперёк) — прямо к цели
+  if (ap) {
+    const along = (from.x - g.x) * ba.nx + (from.y - g.y) * ba.ny;
+    const across = Math.abs((from.x - g.x) * ba.ny - (from.y - g.y) * ba.nx);
+    const len = Math.hypot(ap.x - g.x, ap.y - g.y);
+    if (along > -0.02 && along < len + 0.02 && across < 0.3) {
+      out.push(P(g.x, g.y));
+      return out;
+    }
+  }
+  const to = ap ?? g;
+  if (crosses(from, to, z)) {
+    // углы зоны с запасом; видимость — отрезок не заходит в зону; Дейкстра по 6 узлам
+    const c = CORNER_PAD;
+    const all = [P(z.x0 - c, z.y0 - c), P(z.x1 + c, z.y0 - c), P(z.x1 + c, z.y1 + c), P(z.x0 - c, z.y1 + c)];
+    const onF = all.filter((q) => onFloor(nav, room, q.x, q.y, 0.05, floor));
+    const path = cornerPath(from, to, onF, z) ?? cornerPath(from, to, all, z);
+    if (path) out.push(...path);
+  }
+  if (ap) out.push(P(ap.x, ap.y));
+  out.push(P(g.x, g.y));
+  return out;
+}
+
+/** Кратчайший путь from → to через углы (без концов), отрезки не заходят в зону z; null — нет. */
+function cornerPath(from: { x: number; y: number }, to: Pt, corners: Pt[], z: Rect): Pt[] | null {
+  const nodes = [from, ...corners, to];
+  const n = nodes.length;
+  const dist = nodes.map(() => Infinity);
+  const prev = nodes.map(() => -1);
+  const done = nodes.map(() => false);
+  dist[0] = 0;
+  for (;;) {
+    let k = -1;
+    for (let i = 0; i < n; i++) if (!done[i] && dist[i] < Infinity && (k < 0 || dist[i] < dist[k])) k = i;
+    if (k < 0 || k === n - 1) break;
+    done[k] = true;
+    for (let j = 1; j < n; j++) {
+      if (done[j] || crosses(nodes[k], nodes[j], z)) continue;
+      const d = dist[k] + Math.hypot(nodes[j].x - nodes[k].x, nodes[j].y - nodes[k].y);
+      if (d < dist[j]) (dist[j] = d), (prev[j] = k);
+    }
+  }
+  if (!(dist[n - 1] < Infinity)) return null;
+  const path: Pt[] = [];
+  for (let i = prev[n - 1]; i > 0; i = prev[i]) path.unshift({ ...(nodes[i] as Pt) });
+  return path;
+}
+
 // ───────────────────────── рука: цель и двери появления ─────────────────────────
 
 export interface NavPlayer {
@@ -375,13 +639,29 @@ export interface NavPlayer {
   /** куда смотрит (план, единичный вектор) — для «сзади или сбоку»; нет — неизвестно */
   fx?: number;
   fy?: number;
+  /** лежит под этой кроватью (рамка, bedAt): цель руки — свободный бок кровати (bedGoal), путь — в обход (bedRoute) */
+  cover?: Rect;
+}
+
+/**
+ * Точки пути к игроку под кроватью (pl.cover): проёмы по комнатам path, затем в его комнате — bedRoute от последнего
+ * проёма (или от кончика) к свободному боку кровати (bedGoal); свободного бока нет — прямо к игроку (упор механики
+ * держит кончик снаружи зоны).
+ */
+export function bedWaypoints(nav: ObshNav, path: readonly string[], tip: Pt, pl: NavPlayer, floor?: FloorFn): Pt[] {
+  const wps = waypoints(nav, path, pl.p);
+  const room = path[path.length - 1];
+  const ba = pl.cover ? bedGoal(nav, room, pl.cover, pl.p, floor) : null;
+  if (!pl.cover || !ba) return wps;
+  wps.pop();
+  return [...wps, ...bedRoute(nav, room, wps.length ? wps[wps.length - 1] : tip, pl.cover, ba, floor)];
 }
 
 /**
  * Цель кончика руки: ближайший по пути незащищённый игрок (не с лампой и не в поле ламп) в карте allowed; таких нет —
  * ближайший защищённый (рука ползёт к нему до края поля: видна в свете лампы, замирает, от лампы уползает). goal —
  * следующая точка пути (видна из кончика по прямой: комнаты выпуклые), null — стоять (никого нет в карте); dist — путь
- * до цели, м; open — цель не защищена.
+ * до цели, м; open — цель не защищена. Игрок под кроватью (cover) — путь к свободному боку кровати (bedWaypoints).
  */
 export function handGoal(
   nav: ObshNav, tip: Pt, players: readonly NavPlayer[], lanterns: readonly Pt[], allowed: { has(id: string): boolean },
@@ -396,7 +676,7 @@ export function handGoal(
     if (!pl.p.room) continue;
     const path = roomPath(nav, from, pl.p.room, allowed);
     if (!path) continue;
-    const wps = waypoints(nav, path, pl.p);
+    const wps = pl.cover ? bedWaypoints(nav, path, tip, pl, floor) : waypoints(nav, path, pl.p);
     const d = polyLength(tip, wps);
     const isOpen = !pl.protected && !isProtected(pl.p, lanterns);
     const best = isOpen ? open : prot;

@@ -457,9 +457,75 @@ export function buildSnowMesh(spec: SnowPieceSpec, step = SNOW_STEP, noise = tru
     ext[d.side] = pad + step;
     lim[d.side] = pad;
   }
-  const gx0 = Math.floor((spec.x0 - ext.W) / step + 1e-6), gx1 = Math.ceil((spec.x1 + ext.E) / step - 1e-6);
-  const gy0 = Math.floor((spec.y0 - ext.N) / step + 1e-6), gy1 = Math.ceil((spec.y1 + ext.S) / step - 1e-6);
-  const gz0 = Math.floor(F.zMin / step), gz1 = Math.ceil(F.zMax / step);
+  return surfaceNets(
+    {
+      f: F.f,
+      x0: spec.x0 - ext.W,
+      y0: spec.y0 - ext.N,
+      x1: spec.x1 + ext.E,
+      y1: spec.y1 + ext.S,
+      z0: F.zMin,
+      z1: F.zMax,
+      cx0: spec.x0 - lim.W,
+      cy0: spec.y0 - lim.N,
+      cx1: spec.x1 + lim.E,
+      cy1: spec.y1 + lim.S,
+      floorY: spec.floorY,
+      uvM: 0.6,
+      // снег 0.85…0.95 (палитра набора), впадины темнее, свод светлее — «свечение сквозь снег»
+      color(x, y, z, gx, gy, gz, at, out, o) {
+        // затенение впадин: насколько глубоко в воздух уходит поле вдоль нормали
+        const probe = -at(x + gx * 0.12, y + gy * 0.12, z + gz * 0.12);
+        const ao = Math.min(1, Math.max(0.45, 0.45 + probe / 0.12 * 0.55));
+        const up = Math.min(1, Math.max(0, (z - 0.15) / 0.8));
+        const tone = 0.86 + 0.06 * vnoise(x * 1.7, y * 1.7, z * 1.7, spec.seed + 101);
+        const c = tone * ao;
+        out[o] = c * (0.96 + 0.04 * up);
+        out[o + 1] = c * (0.97 + 0.03 * up);
+        out[o + 2] = c;
+        out[o + 3] = 1;
+      },
+    },
+    step,
+    noise,
+  );
+}
+
+/** Полость для surfaceNets: поле, решётка, прямоугольник прижима у проёмов, цвет вершин. */
+export interface NetsSpec {
+  /** SDF (план, метры; z — над полом этажа): < 0 воздух; noise = false — без рельефа (грубый проход, коллайдер) */
+  f(x: number, y: number, z: number, noise: boolean): number;
+  /** габарит решётки, м: узлы — от floor(x0 / step) до ceil(x1 / step) (по высоте — z0…z1) */
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  z0: number;
+  z1: number;
+  /** прямоугольник плана: вершины за ним прижимаются к нему (плоскости проёмов), грани целиком за ним отбрасываются */
+  cx0: number;
+  cy0: number;
+  cx1: number;
+  cy1: number;
+  /** Babylon Y = floorY + z */
+  floorY: number;
+  /** UV — проекция по главной оси нормали: метров на повтор */
+  uvM: number;
+  /** цвет вершины (x, y, z плана; нормаль к воздуху gx, gy, gz; at — поле по решётке) → out[o … o + 3] */
+  color(x: number, y: number, z: number, gx: number, gy: number, gz: number, at: (x: number, y: number, z: number) => number, out: Float32Array, o: number): void;
+}
+
+/**
+ * Surface nets по полю s.f на мировой решётке шага step (общее у снежных ходов и погреба): по вершине на ячейку со
+ * сменой знака, по четырёхугольнику на ребро со сменой знака; вершины за прямоугольником прижима — на его край (у
+ * соседей по проёму кольцо вершин на плоскости проёма совпадает, если поле у плоскости одинаково и не зависит от
+ * расстояния до неё). Нормали — градиент поля по решётке.
+ */
+export function surfaceNets(s: NetsSpec, step: number, noise: boolean): SnowMeshData {
+  const F = s;
+  const gx0 = Math.floor(s.x0 / step + 1e-6), gx1 = Math.ceil(s.x1 / step - 1e-6);
+  const gy0 = Math.floor(s.y0 / step + 1e-6), gy1 = Math.ceil(s.y1 / step - 1e-6);
+  const gz0 = Math.floor(s.z0 / step), gz1 = Math.ceil(s.z1 / step);
   const nx = gx1 - gx0 + 1, ny = gy1 - gy0 + 1, nz = gz1 - gz0 + 1;
   const val = new Float32Array(nx * ny * nz);
   const I = (i: number, j: number, k: number) => (k * ny + j) * nx + i;
@@ -504,8 +570,8 @@ export function buildSnowMesh(spec: SnowPieceSpec, step = SNOW_STEP, noise = tru
   const cid = new Int32Array((nx - 1) * (ny - 1) * (nz - 1)).fill(-1);
   const C = (i: number, j: number, k: number) => (k * (ny - 1) + j) * (nx - 1) + i;
   const pos: number[] = [];
-  const clampX = (x: number) => Math.min(spec.x1 + lim.E, Math.max(spec.x0 - lim.W, x));
-  const clampY = (y: number) => Math.min(spec.y1 + lim.S, Math.max(spec.y0 - lim.N, y));
+  const clampX = (x: number) => Math.min(s.cx1, Math.max(s.cx0, x));
+  const clampY = (y: number) => Math.min(s.cy1, Math.max(s.cy0, y));
   const beyond: boolean[] = [];
   const EDGES: [number, number][] = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
   const corner = new Float32Array(8);
@@ -566,7 +632,7 @@ export function buildSnowMesh(spec: SnowPieceSpec, step = SNOW_STEP, noise = tru
       }
     }
   }
-  // нормали (к воздуху) и цвета: снег 0.85…0.95 (палитра набора), впадины темнее, свод светлее — «свечение сквозь снег»
+  // нормали (к воздуху), цвета (s.color) и UV
   const n = pos.length / 3;
   const positions = new Float32Array(n * 3), normals = new Float32Array(n * 3), colors = new Float32Array(n * 4), uvs = new Float32Array(n * 2);
   // градиент — по решётке (у соседей по проёму значения на плоскости и за ней одинаковы — одинаковы и нормали шва)
@@ -583,33 +649,24 @@ export function buildSnowMesh(spec: SnowPieceSpec, step = SNOW_STEP, noise = tru
     gz = -gz / gl;
     // Babylon: X = x, Y = z (+ пол этажа), Z = −y
     positions[v * 3] = x;
-    positions[v * 3 + 1] = z + spec.floorY;
+    positions[v * 3 + 1] = z + s.floorY;
     positions[v * 3 + 2] = -y;
     normals[v * 3] = gx;
     normals[v * 3 + 1] = gz;
     normals[v * 3 + 2] = -gy;
-    // затенение впадин: насколько глубоко в воздух уходит поле вдоль нормали
-    const probe = -at(x + gx * 0.12, y + gy * 0.12, z + gz * 0.12);
-    const ao = Math.min(1, Math.max(0.45, 0.45 + probe / 0.12 * 0.55));
-    const up = Math.min(1, Math.max(0, (z - 0.15) / 0.8));
-    const tone = 0.86 + 0.06 * vnoise(x * 1.7, y * 1.7, z * 1.7, spec.seed + 101);
-    const c = tone * ao;
-    colors[v * 4] = c * (0.96 + 0.04 * up);
-    colors[v * 4 + 1] = c * (0.97 + 0.03 * up);
-    colors[v * 4 + 2] = c;
-    colors[v * 4 + 3] = 1;
-    // UV: проекция по главной оси нормали (рельеф шумный — швы проекции не видны), 0.6 м на повтор
+    s.color(x, y, z, gx, gy, gz, at, colors, v * 4);
+    // UV: проекция по главной оси нормали (рельеф шумный — швы проекции не видны), uvM м на повтор
     const ax = Math.abs(gx), ay = Math.abs(gy), az = Math.abs(gz);
-    const s = 1 / 0.6;
+    const k = 1 / s.uvM;
     if (az >= ax && az >= ay) {
-      uvs[v * 2] = x * s;
-      uvs[v * 2 + 1] = y * s;
+      uvs[v * 2] = x * k;
+      uvs[v * 2 + 1] = y * k;
     } else if (ax >= ay) {
-      uvs[v * 2] = y * s;
-      uvs[v * 2 + 1] = z * s;
+      uvs[v * 2] = y * k;
+      uvs[v * 2 + 1] = z * k;
     } else {
-      uvs[v * 2] = x * s;
-      uvs[v * 2 + 1] = z * s;
+      uvs[v * 2] = x * k;
+      uvs[v * 2 + 1] = z * k;
     }
   }
   return { positions, normals, colors, uvs, indices: Uint32Array.from(idx) };

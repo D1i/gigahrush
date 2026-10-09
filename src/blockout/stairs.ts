@@ -9,7 +9,7 @@
 // идёт невидимый пандус-коллайдер и опора игрока (src/view3d/stairWalk.ts). Ступени видимые, но без коллизий.
 //
 // Координаты: план (x вправо, y вниз), z вверх; меши — Babylon (X = x, Y = z, Z = −y), как в babylon.ts.
-import type { BlockoutModel, DeadEnd, DoorSlot, PropBox, Rect, RunInstance, Side, Solid, StairGeo, Surface, WallFace } from './types';
+import type { BlockoutModel, DeadEnd, DoorSlot, PropBox, Rect, RunConnector, RunInstance, Side, Solid, StairGeo, Surface, WallFace } from './types';
 
 /** Перила: высота поручня над полом, отступ от края внутрь, шаг стоек, м. */
 const RAIL_H = 0.9;
@@ -87,27 +87,98 @@ export function stairFloorAt(geos: readonly StairGeo[] | undefined, x: number, y
 /**
  * Кусок комнаты на своей высоте: всё — на z экземпляра выше; у комнаты с лестницей — стены и потолок выше на перепад,
  * проёмы меток с dz — на dz выше (под половиной проёма — стена), двери и тупики этих меток — на своей отметке,
- * предметы — на полу площадки под ними, лестница (StairGeo) с перилами у обрывов. Вход не мутируется; без высоты и
- * лестницы — тот же объект.
+ * предметы — на полу площадки под ними, лестница (StairGeo) с перилами у обрывов. Своя высота потолка (RunInstance.ceilM)
+ * — стены, потолок и подвесные предметы ещё выше (на ceilM − wallHeightM). Высота проёма по метке (RunConnector.openH,
+ * TAG_OPEN_H): верх проёма — по метке, не выше потолков обеих комнат (сосед — other); перемычка своей половины — от верха
+ * проёма до своего потолка, проём не ниже потолка — перемычки нет, половину закрывает плита потолка. Вход не мутируется;
+ * без высоты, лестницы, своего потолка и высоких проёмов — тот же объект.
  */
-export function liftPiece(piece: BlockoutModel, inst: RunInstance | undefined): BlockoutModel {
+export function liftPiece(piece: BlockoutModel, inst: RunInstance | undefined, other?: (id: string) => RunInstance | undefined): BlockoutModel {
   if (!inst) return piece;
   const B = num(inst.z);
   const R = stairRiseOf(inst);
-  if (!B && !R) return piece;
+  const wallH = num(piece.options?.wallHeightM) > 0 ? num(piece.options?.wallHeightM) : 2.5;
+  const doorH = Math.min(piece.options?.doorHeightM ?? wallH, wallH);
+  /** высота потолка экземпляра над его низом (без подъёма лестницы), м */
+  const ceilOf = (i: RunInstance) => (num(i.ceilM) > 0 ? num(i.ceilM) : wallH);
+  // подъём потолка сверх стен болванки (своя высота комнаты)
+  const X = r6(ceilOf(inst) - wallH);
+  const tall = (inst.connectors ?? []).some((k) => num(k.openH) > 0);
+  if (!B && !R && !X && !tall) return piece;
   const id = inst.id;
   const c = piece.cellM > 0 ? piece.cellM : 0.1;
   const slab = Math.max(0, piece.options?.slabM ?? 0);
   const dzOf = new Map((inst.connectors ?? []).map((k) => [k.id, num(k.dz)] as const));
-  // проёмы комнаты и высота пола у её метки
-  const ops = piece.openings.map((o) => ({ rect: o.rect, dz: dzOf.get((o.a.inst === id ? o.a : o.b).connector) ?? 0 }));
-  const dzAt = (r: Rect): number => ops.find((o) => overlap(o.rect, r))?.dz ?? 0;
-  const dzAtLine = (l: [number, number, number, number]): number => {
-    const x = (l[0] + l[2]) / 2, y = (l[1] + l[3]) / 2, e = 1e-3;
-    return ops.find((o) => x > o.rect.x0 - e && x < o.rect.x1 + e && y > o.rect.y0 - e && y < o.rect.y1 + e)?.dz ?? 0;
+  const conns = new Map((inst.connectors ?? []).map((k) => [k.id, k] as const));
+  /** потолок комнаты, абс. м */
+  const CA = B + R + ceilOf(inst);
+  const openOf = (k: RunConnector | undefined) => (k && num(k.openH) > 0 ? num(k.openH) : doorH);
+  /** верх проёма метки своей стороны, м от пола проёма: по метке, не выше своего потолка */
+  const ownTop = (k: RunConnector | undefined) => Math.min(openOf(k), CA - B - num(k?.dz));
+  /** проём не обычный: высокая метка или свой потолок */
+  const ownCustom = (k: RunConnector | undefined) => num(k?.openH) > 0 || num(inst.ceilM) > 0;
+  // проёмы комнаты: подъём пола у метки, верх проёма (м от его пола) — по меткам и потолкам обеих сторон
+  type Hole = { rect: Rect; dz: number; top: number; custom: boolean; conn: string };
+  const ops: Hole[] = piece.openings.map((o) => {
+    const mine = o.a.inst === id ? o.a : o.b, them = o.a.inst === id ? o.b : o.a;
+    const k = conns.get(mine.connector);
+    const dz = dzOf.get(mine.connector) ?? 0;
+    let top = ownTop(k), custom = ownCustom(k);
+    const n = them.inst !== id ? other?.(them.inst) : undefined;
+    if (n) {
+      const kn = (n.connectors ?? []).find((x) => x.id === them.connector);
+      top = Math.min(top, openOf(kn), num(n.z) + stairRiseOf(n) + ceilOf(n) - (B + dz));
+      custom ||= num(kn?.openH) > 0 || num(n.ceilM) > 0;
+    }
+    return { rect: o.rect, dz, top, custom, conn: mine.connector };
+  });
+  /** своя метка у прямоугольника, где проёма нет (проём в темноту нераскрытой двери): вдоль её линии, вплотную */
+  const zone = (r: Rect): RunConnector | undefined => {
+    let best: RunConnector | undefined, bd = Infinity;
+    for (const k of inst.connectors ?? []) {
+      const [x1, y1, x2, y2] = k.line.map((v) => v * c);
+      const horiz = k.side === 'N' || k.side === 'S';
+      const along = horiz
+        ? Math.min(Math.max(x1, x2), r.x1) - Math.max(Math.min(x1, x2), r.x0)
+        : Math.min(Math.max(y1, y2), r.y1) - Math.max(Math.min(y1, y2), r.y0);
+      if (along <= 1e-6) continue;
+      const d = horiz ? Math.max(0, r.y0 - y1, y1 - r.y1) : Math.max(0, r.x0 - x1, x1 - r.x1);
+      if (d < bd) {
+        bd = d;
+        best = k;
+      }
+    }
+    return bd <= 0.3 ? best : undefined;
   };
-  const solids: Solid[] = piece.solids.map((s) =>
-    s.kind === 'lintel' ? { ...s, z0: r6(s.z0 + dzAt(s.rect) + B), z1: r6(s.z1 + R + B) } : { ...s, z0: r6(s.z0 + B), z1: r6(s.z1 + R + B) });
+  /** проём у прямоугольника; null — обычный (подъём dzAt, верх doorHeightM — как раньше) */
+  const holeAt = (r: Rect): Hole | null => {
+    const o = ops.find((h) => overlap(h.rect, r));
+    if (o) return o;
+    const k = zone(r);
+    return k && ownCustom(k) ? { rect: r, dz: num(k.dz), top: ownTop(k), custom: true, conn: k.id } : null;
+  };
+  const dzAt = (r: Rect): number => ops.find((o) => overlap(o.rect, r))?.dz ?? 0;
+  const holeAtLine = (l: [number, number, number, number]): Hole | null => {
+    const x = (l[0] + l[2]) / 2, y = (l[1] + l[3]) / 2, e = 1e-3;
+    const o = ops.find((h) => x > h.rect.x0 - e && x < h.rect.x1 + e && y > h.rect.y0 - e && y < h.rect.y1 + e);
+    if (o) return o;
+    return holeAt({ x0: Math.min(l[0], l[2]) - e, y0: Math.min(l[1], l[3]) - e, x1: Math.max(l[0], l[2]) + e, y1: Math.max(l[1], l[3]) + e });
+  };
+  /** у половины проёма своя перемычка: верх проёма ниже своего потолка */
+  const lintelUnder = (h: Hole) => h.top < CA - B - h.dz - 1e-6;
+  // половины проёмов без перемычки (проём не ниже потолка) — под плиту потолка
+  const plates: Rect[] = [];
+  const solids: Solid[] = [];
+  for (const s of piece.solids) {
+    if (s.kind !== 'lintel') {
+      solids.push({ ...s, z0: r6(s.z0 + B), z1: r6(s.z1 + R + B + X) });
+      continue;
+    }
+    const h = holeAt(s.rect);
+    if (!h?.custom) solids.push({ ...s, z0: r6(s.z0 + (h?.dz ?? 0) + B), z1: r6(s.z1 + R + B + X) });
+    else if (lintelUnder(h)) solids.push({ ...s, z0: r6(B + h.dz + h.top), z1: r6(s.z1 + R + B + X) });
+    else plates.push({ ...s.rect });
+  }
   // половины проёмов (пол, потолок без перемычек) — по высоте своей метки; под поднятой половиной — стена
   const split = (list: Surface[], up: number): Surface[] =>
     list.flatMap((s) => {
@@ -120,7 +191,20 @@ export function liftPiece(piece: BlockoutModel, inst: RunInstance | undefined): 
       return [...by].map(([dz, rects]) => ({ ...s, rects, z: r6(s.z + dz + B) }));
     });
   const floors = split(piece.floors, 0);
-  const ceilings = split(piece.ceilings, R);
+  // потолок проёма (без перемычек: doorHeightM ≥ wallHeightM) у высокого проёма — перемычка своей половины или плита
+  // своего потолка; у обычного — как раньше
+  const ceilings = split(piece.ceilings.flatMap((s): Surface[] => {
+    if (s.inst !== null) return [s];
+    const rest = s.rects.filter((r) => {
+      const h = holeAt(r);
+      if (!h?.custom) return true;
+      if (lintelUnder(h)) solids.push({ kind: 'lintel', rect: { ...r }, z0: r6(B + h.dz + h.top), z1: r6(CA + slab), inst: id });
+      else plates.push({ ...r });
+      return false;
+    });
+    return rest.length ? [{ ...s, rects: rest }] : [];
+  }), R + X);
+  if (plates.length && piece.options?.ceilings !== false) ceilings.push({ inst: null, owner: id, rects: plates, finish: null, z: r6(CA) });
   for (const f of piece.floors) {
     if (f.inst !== null || f.owner !== id) continue;
     for (const r of f.rects) {
@@ -128,16 +212,28 @@ export function liftPiece(piece: BlockoutModel, inst: RunInstance | undefined): 
       if (dz > 1e-6) solids.push({ kind: 'wall', rect: { ...r }, z0: r6(-slab + B), z1: r6(dz - slab + B), inst: id });
     }
   }
-  const faces: WallFace[] = piece.faces.map((f) =>
-    f.part === 'lintel' ? { ...f, z0: r6(f.z0 + dzAtLine(f.line) + B), z1: r6(f.z1 + R + B) } : { ...f, z0: r6(f.z0 + B), z1: r6(f.z1 + R + B) });
+  const faces: WallFace[] = piece.faces.flatMap((f): WallFace[] => {
+    if (f.part !== 'lintel') return [{ ...f, z0: r6(f.z0 + B), z1: r6(f.z1 + R + B + X) }];
+    const h = holeAtLine(f.line);
+    if (!h?.custom) return [{ ...f, z0: r6(f.z0 + (h?.dz ?? 0) + B), z1: r6(f.z1 + R + B + X) }];
+    return lintelUnder(h) ? [{ ...f, z0: r6(B + h.dz + h.top), z1: r6(f.z1 + R + B + X) }] : [];
+  });
+  // высота дверей и тупиков высоких проёмов: у проёма связи — общий верх, у свободной метки — свой
+  const topOf = new Map<string, number>();
+  for (const h of ops) if (h.custom) topOf.set(h.conn, h.top);
+  for (const k of inst.connectors ?? []) if (!topOf.has(k.id) && ownCustom(k)) topOf.set(k.id, ownTop(k));
   const atConn = <T extends DeadEnd | DoorSlot>(d: T): T => {
     const dz = dzOf.get(d.connector) ?? 0;
-    return dz ? { ...d, z: r6(B + dz) } : d;
+    const t = topOf.get(d.connector);
+    if (!dz && t === undefined) return d;
+    return { ...d, ...(dz ? { z: r6(B + dz) } : {}), ...(t !== undefined ? { heightM: r6(t) } : {}) };
   };
+  const openings = piece.openings.map((o, i) => (ops[i].custom ? { ...o, heightM: r6(ops[i].top) } : o));
   const geo = inst.stair ? stairGeo(inst, piece, c, B) : null;
   const props: PropBox[] = piece.props.map((p) => {
+    // подвесные — под потолком (зал с лестницей — над подъёмом, свой потолок — выше)
+    if (p.tags.includes('потолок')) return R || X ? { ...p, z: r6(B + R + X) } : p;
     if (!R) return p;
-    if (p.tags.includes('потолок')) return { ...p, z: r6(B + R) };
     const z = stairFloorAt(geo ? [geo] : [], p.x, p.y)?.z;
     return z !== undefined && z > B + 1e-6 ? { ...p, z: r6(z) } : p;
   });
@@ -147,6 +243,7 @@ export function liftPiece(piece: BlockoutModel, inst: RunInstance | undefined): 
     floors,
     ceilings,
     faces,
+    openings,
     props,
     deadEnds: piece.deadEnds.map(atConn),
     ...(piece.doors ? { doors: piece.doors.map(atConn) } : {}),
@@ -163,15 +260,20 @@ function stairGeo(inst: RunInstance, piece: BlockoutModel, c: number, B: number)
     // «вверх» — к большей высоте
     const rev = num(f.z1) < num(f.z0);
     const z0 = Math.min(num(f.z0), num(f.z1)), z1 = Math.max(num(f.z0), num(f.z1));
-    return { rect: m(f), up: rev ? flip[f.up] : f.up, z0: r6(z0 + B), z1: r6(z1 + B), steps: Math.max(1, Math.round((z1 - z0) / 0.15)) };
+    return {
+      rect: m(f), up: rev ? flip[f.up] : f.up, z0: r6(z0 + B), z1: r6(z1 + B), steps: Math.max(1, Math.round((z1 - z0) / 0.15)),
+      // эскалатор (метро): ступени и балюстраду рисует модуль биома, здесь — только пандус, опора и коллайдеры перил
+      ...(f.style === 'escalator' ? { style: 'escalator' as const } : {}),
+    };
   });
   const pads = (st.pads ?? []).map((p) => ({ rect: m(p), z: r6(num(p.z) + B) }));
   const geo: StairGeo = { inst: inst.id, base: B, flights, pads, rails: [] };
   const floor = piece.floors.filter((s) => s.inst === inst.id).flatMap((s) => s.rects);
   const surf = (x: number, y: number) => stairFloorAt([geo], x, y)?.z ?? B;
   /** Перила вдоль края: от точки p по единичному d длиной len, наружу n; высота пола края hf(u); открыто, где снаружи —
-   *  пол комнаты ниже края на DROP. Ломаная — по точкам излома hf (kinks) и концам открытых участков. */
-  const edge = (p: [number, number], d: [number, number], n: [number, number], len: number, hf: (u: number) => number, kinks: number[]) => {
+   *  пол комнаты ниже края на DROP. Ломаная — по точкам излома hf (kinks) и концам открытых участков. hidden — только
+   *  коллайдер (бок эскалатора). */
+  const edge = (p: [number, number], d: [number, number], n: [number, number], len: number, hf: (u: number) => number, kinks: number[], hidden = false) => {
     const step = c;
     let run: number[] | null = null;
     let low = Infinity;
@@ -180,7 +282,7 @@ function stairGeo(inst: RunInstance, piece: BlockoutModel, c: number, B: number)
       const u0 = run[0];
       const us = [u0, ...kinks.filter((k) => k > u0 + 1e-6 && k < end - 1e-6), end];
       const pts = us.map((u): [number, number, number] => [r6(p[0] + d[0] * u - n[0] * RAIL_IN), r6(p[1] + d[1] * u - n[1] * RAIL_IN), r6(hf(u))]);
-      if (end - u0 > 0.15) geo.rails.push({ pts, low: r6(low) });
+      if (end - u0 > 0.15) geo.rails.push({ pts, low: r6(low), ...(hidden ? { hidden: true as const } : {}) });
       run = null;
       low = Infinity;
     };
@@ -200,7 +302,7 @@ function stairGeo(inst: RunInstance, piece: BlockoutModel, c: number, B: number)
     const kink = (f.steps - 1) * t;
     for (const [a, out] of [[0, -1], [W, 1]] as const) {
       const p0 = at(f, 0, a), p1 = at(f, 1, a), q = at(f, 0, a + out);
-      edge(p0, [p1[0] - p0[0], p1[1] - p0[1]], [q[0] - p0[0], q[1] - p0[1]], L, hf, [kink]);
+      edge(p0, [p1[0] - p0[0], p1[1] - p0[1]], [q[0] - p0[0], q[1] - p0[1]], L, hf, [kink], f.style === 'escalator');
     }
   }
   for (const pd of pads) {
@@ -302,7 +404,8 @@ const C_METAL = rgb('#2e3033');
 const C_RAIL = rgb('#4a3426');
 
 /** Меши лестниц: видимые ступени и перила (без коллизий), площадки (видимые, с коллизиями), невидимый коллайдер —
- *  пандус по линии носков и стенки перил. */
+ *  пандус по линии носков и стенки перил. У эскалатора (style 'escalator') видимых ступеней и перил по бокам нет —
+ *  их рисует модуль метро; пандус и стенки перил — как у лестницы. */
 export function stairMeshes(geos: readonly StairGeo[]): { visible: StairBatch; pads: StairBatch; collider: StairBatch } {
   const visible = new StairBatch(), pads = new StairBatch(), collider = new StairBatch();
   const B3 = (x: number, y: number, z: number): V3 => [x, z, -y];
@@ -310,8 +413,9 @@ export function stairMeshes(geos: readonly StairGeo[]): { visible: StairBatch; p
     for (const p of g.pads) pads.planBox(p.rect, g.base, p.z, C_PAD, C_RISER);
     for (const f of g.flights) {
       const { L, W, t, r } = axes(f, f.rect.x0, f.rect.y0);
-      // ступени: k-я — от низа комнаты до z0 + k·r, проступь [(k − 1)·t, k·t]
-      for (let k = 1; k <= f.steps; k++) {
+      // ступени: k-я — от низа комнаты до z0 + k·r, проступь [(k − 1)·t, k·t] (у эскалатора — ни одной)
+      const shown = f.style === 'escalator' ? 0 : f.steps;
+      for (let k = 1; k <= shown; k++) {
         const a = at(f, (k - 1) * t, 0), b = at(f, k * t, W);
         const q: Rect = { x0: Math.min(a[0], b[0]), y0: Math.min(a[1], b[1]), x1: Math.max(a[0], b[0]), y1: Math.max(a[1], b[1]) };
         visible.planBox(q, g.base, f.z0 + k * r, C_TREAD, C_RISER);
@@ -343,10 +447,11 @@ export function stairMeshes(geos: readonly StairGeo[]): { visible: StairBatch; p
             [B3(ax - qx * w, ay - qy * w, z1a), B3(bx - qx * w, by - qy * w, z1b), B3(bx + qx * w, by + qy * w, z1b), B3(ax + qx * w, ay + qy * w, z1a)],
             col, col,
           );
-        // поручень и нижняя полоса, стенка-коллайдер
+        // поручень и нижняя полоса, стенка-коллайдер (у эскалатора — только она)
+        bar(0.03, rl.low, rl.low, az + RAIL_COL_H, bz + RAIL_COL_H, collider, C_METAL);
+        if (rl.hidden) continue;
         bar(0.025, az + RAIL_H - 0.05, bz + RAIL_H - 0.05, az + RAIL_H, bz + RAIL_H, visible, C_RAIL);
         bar(0.012, az + 0.08, bz + 0.08, az + 0.11, bz + 0.11, visible, C_METAL);
-        bar(0.03, rl.low, rl.low, az + RAIL_COL_H, bz + RAIL_COL_H, collider, C_METAL);
         // стойки — через POST_STEP (и на концах)
         const n = Math.max(1, Math.round(len / POST_STEP));
         for (let j = k === 0 ? 0 : 1; j <= n; j++) {

@@ -101,10 +101,11 @@ export const growOthers = (info: Info, bi: number): number => {
 };
 
 /** Пул (§4.1 GENERATOR.md). При пределе обзора комнаты, внутри которых обзор длиннее, исключаются
- *  до расчёта ростовых меток (§7.3 GENERATOR.md) — их список в tooLong. */
-export function buildPool(p: Project, match: GeneratorSettings['match'], sightM: number, cellM: number):
+ *  до расчёта ростовых меток (§7.3 GENERATOR.md) — их список в tooLong. limOf — свой предел комнаты, м (0 — без
+ *  предела): бесконечный мир с биомами со своим пределом (Biome.sightM, biomes.ts roomSightLimit); нет — sightM. */
+export function buildPool(p: Project, match: GeneratorSettings['match'], sightM: number, cellM: number, limOf?: (room: Room) => number):
   { infos: (Info | null)[]; pool: Info[]; tooLong: { room: Room; m: number }[] } {
-  const ga = analyzeGrowth(p, { match, sightM });
+  const ga = analyzeGrowth(p, { match, sightM }, limOf);
   const infos = p.rooms.map((room, index): Info | null => {
     if (room.cells.size === 0) return null;
     const effMax = room.unique ? 1 : Math.max(0, Math.floor(room.gen.max));
@@ -122,11 +123,13 @@ export function buildPool(p: Project, match: GeneratorSettings['match'], sightM:
     };
   });
   const tooLong: { room: Room; m: number }[] = [];
-  if (sightM > 0) {
+  if (sightM > 0 || limOf) {
     for (const info of infos) {
       if (!info) continue;
+      const lim = limOf ? limOf(info.room) : sightM;
+      if (!(lim > 0)) continue;
       const m = roomSightM(info.room, cellM);
-      if (m > sightM + 1e-9 && info.inPool) {
+      if (m > lim + 1e-9 && info.inPool) {
         info.inPool = false;
         tooLong.push({ room: info.room, m });
       }

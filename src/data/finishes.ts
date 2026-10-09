@@ -93,6 +93,34 @@ const OBSHAGA_FINISHES: FinishDef[] = [
   { id: 'f_obsh_lino_brown', name: 'Общага: линолеум коричневый крапчатый', surface: 'floor', color: '#6e3f2e', tileW: 1, tileH: 1, tags: ['линолеум', 'общага'], tex: { kind: 'lino_speckle', w: 256, h: 256, opts: { base: '#6e3f2e' } } },
 ];
 
+// metro
+/** Отделки метро (src/data/roomsMetro.ts): залы — белый мрамор с серыми прожилками (плиты 0.6 м, повтор 1.2 м; пилоны
+ *  — тем же: у комнаты одна отделка стен), вестибюли и эскалаторы — серо-зелёный мрамор; пол — бежевый гранит с
+ *  красно-серым узором (плитка 0.6 м, швы-полосы серого гранита, в узлах красные и серые ромбы; повтор 1.2 м — длиннее
+ *  не даёт предел повтора 1.5 м); переходы — кремовый кафель 15×15 с гранитным цоколем 0.3 м (панель 1.5 м, выше тот же
+ *  кафель — ряды сходятся); служебные — зелёная масляная краска над той же панелью; сгоревший зал — мрамор и гранит в
+ *  копоти и пепле. В биоме «Метро» — свои правила по тегу помещения (src/gen4d/biomes.ts), у проекта — правила тегов,
+ *  которых нет у других групп (зал, переход, эскалатор). */
+const METRO_FINISHES: FinishDef[] = [
+  { id: 'f_metro_marble', name: 'Метро: белый мрамор с серыми прожилками', surface: 'wall', color: '#e2e0da', tileW: 1.2, tileH: 1.2, tags: ['мрамор', 'метро'], tex: { kind: 'marble', w: 512, h: 512, opts: { base: '#e8e6e0', accent: '#868b91', n: 2 } } },
+  { id: 'f_metro_marble_dark', name: 'Метро: серо-зелёный мрамор', surface: 'wall', color: '#617066', tileW: 1.2, tileH: 1.2, tags: ['мрамор', 'метро'], tex: { kind: 'marble', w: 512, h: 512, opts: { base: '#5f6f66', accent: '#d3dad0', n: 2 } } },
+  { id: 'f_metro_granite', name: 'Метро: гранитный пол — бежевый, красно-серые ромбы и полосы', surface: 'floor', color: '#bba98e', tileW: 1.2, tileH: 1.2, tags: ['гранит', 'метро'], tex: { kind: 'granite_floor', w: 512, h: 512, opts: { base: '#c9b89d', accent: '#a23b2f', low: '#5d6064', n: 2 } } },
+  {
+    id: 'f_metro_tile_panel', name: 'Метро: кремовый кафель 15×15 с гранитным цоколем, панель 1.5 м', surface: 'wall', color: '#d9cbb0',
+    tileW: 0.6, tileH: 1.5, tags: ['кафель', 'метро'], tex: { kind: 'tile_plinth', w: 384, h: 960, opts: { base: '#ead9b7', accent: '#a89e8a', low: '#45413e', n: 4 } },
+  },
+  {
+    id: 'f_metro_tile', name: 'Метро: кремовый кафель с гранитным цоколем (переходы)', surface: 'wall', color: '#e6d6b6', tileW: 0.6, tileH: 0.6,
+    tags: ['кафель', 'метро', 'двухцветная'], tex: { kind: 'tile', w: 384, h: 384, opts: { base: '#ead9b7', accent: '#a89e8a', n: 4 } }, dado: { finishId: 'f_metro_tile_panel', heightM: 1.5 },
+  },
+  {
+    id: 'f_metro_slu', name: 'Метро: зелёная масляная краска над кафелем (служебные)', surface: 'wall', color: '#5c7c64', tileW: 1, tileH: 1,
+    tags: ['краска', 'метро', 'двухцветная'], tex: { kind: 'paint', w: 256, h: 256, opts: { base: '#5a7b63' } }, dado: { finishId: 'f_metro_tile_panel', heightM: 1.5 },
+  },
+  { id: 'f_metro_soot', name: 'Метро: мрамор в копоти (сгоревший зал)', surface: 'wall', color: '#4a4643', tileW: 1.2, tileH: 1.2, tags: ['мрамор', 'копоть', 'метро'], tex: { kind: 'soot', w: 512, h: 512, opts: { base: '#d9d6cf', accent: '#1b1918', n: 2 } } },
+  { id: 'f_metro_soot_floor', name: 'Метро: гранитный пол в пепле и копоти', surface: 'floor', color: '#6b6258', tileW: 1.2, tileH: 1.2, tags: ['гранит', 'копоть', 'метро'], tex: { kind: 'soot_floor', w: 512, h: 512, opts: { base: '#c2b196', accent: '#1b1918', low: '#5d6064', n: 2 } } },
+];
+
 export const FINISH_DEFS: FinishDef[] = [
   // ── Стены: обои ──
   { id: 'f_wp_damask', name: 'Обои «Дамаск», зелёные', surface: 'wall', color: DAMASK.color, tileW: DAMASK.tileW, tileH: DAMASK.tileH, tags: ['обои', 'жилая'], tex: 'damask' },
@@ -134,6 +162,8 @@ export const FINISH_DEFS: FinishDef[] = [
   ...BASEMENT_FINISHES,
   ...BARN_FINISHES,
   ...OBSHAGA_FINISHES,
+  // metro
+  ...METRO_FINISHES,
 ];
 
 /** Правила по тегу (первому тегу комнаты из групп спавна): варианты стен и пола с весами. */
@@ -171,6 +201,11 @@ const RULES: [string, [string, number][], [string, number][]][] = [
   ['туалет', [['f_two_bath', 1]], [['f_metlakh', 1]]],
   ['душ', [['f_tile_white', 2], ['f_tile_blue', 1]], [['f_tile_floor', 2], ['f_metlakh', 1]]],
   ['прачечная', [['f_two_bath', 2], ['f_obsh_paint_green', 1]], [['f_metlakh', 2], ['f_tile_floor', 1]]],
+  // metro — по тегу помещения (правила 'метро' нет — иначе оно бы победило): теги, которых нет у других групп;
+  // вестибюль, служебные, сгоревший зал в биоме «Метро» — по правилам биома (biomes.ts)
+  ['зал', [['f_metro_marble', 1]], [['f_metro_granite', 1]]],
+  ['переход', [['f_metro_tile', 1]], [['f_metro_granite', 1]]],
+  ['эскалатор', [['f_metro_marble_dark', 1]], [['f_metro_granite', 1]]],
 ];
 
 function texOf(d: FinishDef): string | null {

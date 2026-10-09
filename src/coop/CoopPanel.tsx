@@ -1,7 +1,7 @@
 // Кооп (docs/COOP.md) во вкладке «3D»: раздел «Онлайн» слева (кнопка «Подключить онлайн») и модалка лобби. Главный путь —
 // Steam: мост (tools/steam-bridge.mjs) на этом компьютере, хост — «Создать лобби через Steam», игрок — «Подключиться
 // через Steam» (код лобби — из данных лобби Steam). Без Steam — свой сервер: создать (новый UUID) или подключиться по UUID.
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Btn, Modal, Section } from '../ui/kit';
 import { notify } from '../model/ui';
 import type { Project } from '../model/types';
@@ -190,9 +190,41 @@ function SteamBox(props: { bridge: { base: string; st: SteamBridgeStatus } | nul
   );
 }
 
-/** Модалка лобби: Steam / создать / подключиться по UUID; в лобби — код, игроки, мир. */
+/** Рамка формы лобби: заголовок, тело и кнопки (в лобби — «Выйти из лобби» / «Играть»; вне лобби — null). */
+type LobbyFrame = (title: string, body: ReactNode, footer: ReactNode | null) => ReactNode;
+
+/** Без рамки: заголовок над формой, кнопки под ней (меню «Запустить без отладки» — src/play/PlayPage.tsx). */
+const plainFrame: LobbyFrame = (title, body, footer) => (
+  <div className="coop-form">
+    <div className="coop-form-h">{title}</div>
+    {body}
+    {footer && <div className="coop-form-f">{footer}</div>}
+  </div>
+);
+
+/** Модалка лобби (вкладка «3D»): форма лобби в Modal, «Играть» — закрыть модалку. */
 export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; project: Project; biomeName: string | null; onClose: () => void }) {
+  return (
+    <CoopLobbyForm
+      {...props}
+      onPlay={props.onClose}
+      frame={(title, body, footer) => (
+        <Modal title={title} onClose={props.onClose} width={footer ? 520 : 560} footer={footer ?? undefined}>
+          {body}
+        </Modal>
+      )}
+    />
+  );
+}
+
+/**
+ * Форма лобби: Steam / создать / подключиться по UUID; в лобби — код, игроки, мир. walk — мир нового лобби («Создать
+ * лобби»; сюжет — WalkOptions.story: «Запустить без отладки»). onPlay — «Играть»; frame — рамка (по умолчанию без неё).
+ */
+export function CoopLobbyForm(props: { co: CoopSession | null; walk: WalkOptions; project: Project; biomeName: string | null; onPlay: () => void; frame?: LobbyFrame }) {
   const { co } = props;
+  const frame = props.frame ?? plainFrame;
+  const story = !!props.walk.story;
   const err = co?.status === 'error' ? co.error : null;
   const [prof, setProfS] = useState<CoopProfile>(readProfile);
   const [code, setCode] = useState(prof.lastLobby);
@@ -213,9 +245,9 @@ export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; pr
   const viaSteam = !!bridge && !!co && co.url === bridgeWsUrl(bridge.base);
 
   if (coopActive(co)) {
-    return (
-      <Modal title="Лобби" onClose={props.onClose} width={520} footer={<><Btn variant="danger" onClick={coopLeave}>Выйти из лобби</Btn><Btn variant="primary" onClick={props.onClose}>Играть</Btn></>}>
-        <div className="coop-modal">
+    return frame(
+      'Лобби',
+      <div className="coop-modal">
           <div className="field">
             <label>Код лобби (UUID) — отправьте друзьям</label>
             <div className="coop-row">
@@ -243,7 +275,7 @@ export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; pr
                 <span>мир</span>
                 <span>
                   сид <span className="mono">«{co.meta.seed}»</span>
-                  {co.meta.walk.clusters ? ' · квартиры и биомы' : ' · прежний рост'} · создал {co.meta.by}
+                  {co.meta.walk.story ? ' · сюжет' : co.meta.walk.clusters ? ' · квартиры и биомы' : ' · прежний рост'} · создал {co.meta.by}
                 </span>
               </>
             )}
@@ -253,17 +285,26 @@ export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; pr
           <div className="hint">
             {viaSteam
               ? 'Друзья запускают мост Steam (npm run steam -- join <id лобби Steam> или «Присоединиться к игре» в Steam) и в игре нажимают «Подключиться через Steam» — код придёт сам.'
+              : story
+              ? 'Друзья открывают игру с того же сервера (или указывают его адрес), «Запустить без отладки» → «Мультиплеер» → вставляют код.'
               : 'Друзья открывают игру с того же сервера (или указывают его адрес), вкладка «3D» → «Подключить онлайн» → вставляют код.'}{' '}
             Мир общий: двери, которые открывает кто-то один, открываются у всех. Сквозь друг друга можно пройти, но рядом с другим игроком оба идут на 75%
             медленнее. До 4 игроков.
           </div>
-        </div>
-      </Modal>
+        </div>,
+      <>
+        <Btn variant="danger" onClick={coopLeave}>
+          Выйти из лобби
+        </Btn>
+        <Btn variant="primary" onClick={props.onPlay}>
+          Играть
+        </Btn>
+      </>,
     );
   }
 
-  return (
-    <Modal title="Онлайн: лобби" onClose={props.onClose} width={560}>
+  return frame(
+    'Онлайн: лобби',
       <div className="coop-modal">
         <div className="grid2">
           <div className="field">
@@ -310,16 +351,23 @@ export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; pr
 
         <div className="coop-box">
           <div className="cap">Создать лобби</div>
-          <div className="hint">
-            Мир лобби — текущие настройки «Прогулки»: сид <span className="mono">«{props.walk.seed}»</span>
-            {props.walk.clusters ? ` · квартиры и биомы${props.biomeName ? ` · старт: ${props.biomeName}` : ''}` : ' · прежний рост'}. Проект (комнаты, отделка) — ваш: у
-            кого он другой, скачают ваш. Мир начинается заново с сида — ваша одиночная прогулка не меняется.
-          </div>
+          {story ? (
+            <div className="hint">
+              Новая игра по сюжету — с хрущёвки, сид <span className="mono">«{props.walk.seed}»</span>. Проект (комнаты, отделка) — ваш: у кого он другой, скачают
+              ваш. Ваша одиночная игра не меняется.
+            </div>
+          ) : (
+            <div className="hint">
+              Мир лобби — текущие настройки «Прогулки»: сид <span className="mono">«{props.walk.seed}»</span>
+              {props.walk.clusters ? ` · квартиры и биомы${props.biomeName ? ` · старт: ${props.biomeName}` : ''}` : ' · прежний рост'}. Проект (комнаты, отделка) — ваш: у
+              кого он другой, скачают ваш. Мир начинается заново с сида — ваша одиночная прогулка не меняется.
+            </div>
+          )}
           <Btn onClick={() => create()}>Создать лобби</Btn>
         </div>
 
         {err && <div className="v3-err">{err}</div>}
-      </div>
-    </Modal>
+      </div>,
+    null,
   );
 }

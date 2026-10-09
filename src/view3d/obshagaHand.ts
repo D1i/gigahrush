@@ -10,7 +10,16 @@
 // пути (опорный палец неподвижен в мире, кисть уходит вперёд над ним; кончики крайних — у стен); стоит — пальцы
 // опущены, изредка подёргиваются; замерла под взглядом — не шелохнётся вовсе. Хватает — пальцы крюком смыкаются вокруг
 // схваченного на уровне пояса (ставить его в fistCenter()); отступает от лампы — пальцы вытянуты и волочатся, скребут
-// пол. В проёме кисть сжата, пальцы веером по высоте двери протискиваются первыми. Беззвучна, своего света нет: обычный
+// пол. В проёме кисть сжата, пальцы веером по высоте двери протискиваются первыми. Тычет под кровать (view.poke) —
+// кисть припадает к полу у кровати (наклон вперёд, костяшки ниже), остальные пальцы упираются кончиками в пол
+// полукругом у костяшек высокой аркой (всё, кроме указательного, — в круге 1.2 м у кончика: механика держит кончик в
+// POKE_STAND 1.3 м от рамки кровати), указательный уходит под неё: ближние фаланги дугой вниз к краю (pokeBend), дальние
+// — горизонтально на 0.14 м над полом (под сеткой кровати на 0.30; ложится горизонтально за 0.2 м до рамки view.bed
+// по своему направлению), выпад к игроку и назад — по pokeReach(фаза), удар — на 0.3 м не доходя до глаз, ладонь на
+// ударе подаётся вперёд; и под взглядом (кисть замершей руки при тычке пересчитывается, остальные пальцы не
+// шелохнутся). Кровать рядом (view.bed) — пальцы переходят в позу упора заранее, на подходе в кровать не лезут. Пол:
+// каждая фаланга не ниже низа своего кольца (floorAngle), подушечки и ногти, упёршиеся в пол, приподняты — ни одна
+// вершина кисти не уходит под пол (перебор, тычок, разгон позы). Беззвучна, своего света нет: обычный
 // освещаемый материал (StandardMaterial без emissive и ambient) — в темноте не видна, под лампой видна.
 //
 // Без ассетов: геометрия своя (сетки-«трубы», вершины сразу в мировых координатах, матрица мешей единичная и
@@ -37,9 +46,11 @@
 //     комнатам; checkCollisions = true при создании (интеграция может переключать по комнатам каждый кадр).
 //   Карты byRoom()/colliders() живые (те же объекты, обновляются в update); пока руки нет — пустые.
 //   fistCenter() — полость кулака в мире (середина суставов четырёх пальцев), пока рука сжимается, иначе null.
+//   pokeTip() — кончик тычущего пальца в мире, пока рука тычет под кровать, иначе null (QA, тесты).
+//   Фаза тычка: view.poke01 (хост — каждый кадр точная; клиент — срез ~10/с, между срезами досчитывается по dt).
 //
 // Перерасчёт: труба руки — только когда меняются след, кончик или поворот кисти; кисть — каждый кадр, пока не замерла;
-// замершая — ни одной записи в буферы и ни одного вызова toWorld. Вершин: рука 29 на ~0.2 м (45 м — ~7.8 тыс.), кисть
+// замершая — ни одной записи в буферы и ни одного вызова toWorld (кроме тычка под кровать). Вершин: рука 29 на ~0.2 м (45 м — ~7.8 тыс.), кисть
 // ~2.1 тыс.; меши: кусок на комнату + кисть; кадр в движении ~1 мс (45 м, node).
 //
 // Ограничения: стены механика не знает — ось руки сглажена (углы коридора скругляются, на крутом повороте рука может
@@ -55,7 +66,7 @@ import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
-import type { HandView, Pt } from '../locations/obshaga';
+import { OBSHAGA, POKE_STAND, pokeReach, rectGap, type HandView, type Pt } from '../locations/obshaga';
 import { makeRng } from '../model/rng';
 import { PORTAL_LAYER } from './portal';
 
@@ -101,6 +112,21 @@ export const HAND = {
 
 /** Ладонь (локально: f — вперёд от кончика, l — влево, y — вверх от пола), м. */
 const PALM = { fc: -0.72, af: 0.98, al: 0.8, ay: 0.36, yc: 0.86 } as const;
+/**
+ * Тычок под кровать: наклон кисти вперёд (рад) и её опускание, выпад ладони на ударе, м; удар не доходит до глаз
+ * игрока на short, палец отходит на pull; высота оси дальних фаланг (сетка кровати — 0.30: верх сустава ≤ 0.29), м.
+ * Тычет указательный (палец finger): ближняя фаланга и следующие до prox одним звеном — дугой вниз (pokeBend), дальние —
+ * горизонтально; сустав, с которого палец лежит горизонтально, — не дальше POKE_STAND − edge от кончика руки (в плане:
+ * кончик стоит не ближе POKE_STAND к рамке кровати — всё, что выше 0.2 м, снаружи неё). Остальные пальцы упираются
+ * кончиками в пол полукругом радиуса plantR у кончика руки (поперёк — tl · plantL) высокой аркой: сгиб — у основания
+ * (веса суставов PLANT_W вместо fd.wts) — в круге POKE_STAND (тест obshagaHand.test.ts). Кровать рядом (view.bed) —
+ * в эту позу упора пальцы (и указательный) переходят заранее, с POKE_STAND + near до POKE_STAND от её рамки: на подходе
+ * в кровать не лезут. Тыча, кисть доворачивает к игроку не больше чем на turn (рад) от направления следа (запястье).
+ */
+const POKE = { pitch: 0.34, drop: 0.12, lunge: 0.12, short: 0.3, pull: 0.5, y: 0.14, finger: 0, prox: 3, edge: 0.2, plantR: 0.85, plantL: 0.8, near: 1.0, turn: 0.6 } as const;
+const PLANT_W = [1.6, 0.6, 0.4, 0.3];
+/** Пол: суставы, кольца и ногти не ниже стольких метров над полом. */
+const FLOOR_GAP = 0.005;
 /** сетки кисти: ладонь (ряды вдоль f × сегменты), палец (сегменты), ноготь (ряды × сегменты) */
 const PR = 16, PC = 22, FC = 12, NR = 6, NC = 8;
 /** повторов текстуры по окружности руки */
@@ -431,6 +457,54 @@ export function solveFinger(lens: readonly number[], wts: readonly number[], u: 
   out.a = a;
   out.b = b;
   return err;
+}
+
+/**
+ * Тычущий под кровать палец: ближняя фаланга (la) и следующие одним прямым звеном (lb) — от основания к началу дальних
+ * фаланг (u вперёд, v вверх от основания; дальние лежат горизонтально под кроватью). Сустав между звеньями — над
+ * прямой: палец дугой вверх и круто вниз, к полу у края кровати; не достаёт — оба звена по прямой к цели. Углы звеньев
+ * к горизонту (вверх +), рад.
+ */
+export function pokeBend(la: number, lb: number, u: number, v: number, out: { a: number; b: number }): { a: number; b: number } {
+  const line = Math.atan2(v, u);
+  const d = Math.hypot(u, v);
+  if (d >= la + lb - 1e-6) {
+    out.a = out.b = line;
+    return out;
+  }
+  const dd = Math.max(d, Math.abs(la - lb) + 1e-3);
+  out.a = line + Math.acos(clamp((la * la + dd * dd - lb * lb) / (2 * la * dd), -1, 1));
+  out.b = Math.atan2(v - la * Math.sin(out.a), u - la * Math.cos(out.a));
+  return out;
+}
+
+/** Путь луча (x, y) + t·(vx, vy) (единичный) до прямоугольника плана r: внутри — 0, мимо — +∞. */
+export function rayRect(x: number, y: number, vx: number, vy: number, r: { x0: number; y0: number; x1: number; y1: number }): number {
+  let t0 = 0, t1 = Infinity;
+  for (const [o, v, lo, hi] of [[x, vx, r.x0, r.x1], [y, vy, r.y0, r.y1]]) {
+    if (Math.abs(v) < 1e-12) {
+      if (o < lo || o > hi) return Infinity;
+      continue;
+    }
+    const a = (lo - o) / v, b = (hi - o) / v;
+    t0 = Math.max(t0, Math.min(a, b));
+    t1 = Math.min(t1, Math.max(a, b));
+  }
+  return t0 <= t1 ? t0 : Infinity;
+}
+
+/**
+ * Пол для фаланги: угол th к горизонту (вверх +) с началом на высоте y0 и длиной len — ближайший угол, при котором конец
+ * не ниже clr: смотрит вперёд — поднимается к горизонту вперёд, назад (cos < 0) — к горизонту назад; конец и так не ниже
+ * — th как есть (поза не трогается). Начало ниже clr − len — фаланга торчит вверх. Ветвь угла (± 2π) сохраняется.
+ */
+export function floorAngle(th: number, y0: number, len: number, clr: number): number {
+  const need = (clr - y0) / len;
+  if (Math.sin(th) >= need) return th;
+  const tn = th - TAU * Math.round(th / TAU);
+  const s = Math.asin(clamp(need, -1, 1));
+  const to = Math.cos(tn) >= 0 ? s : tn > 0 ? Math.PI - s : -Math.PI - s;
+  return th + (to - tn);
 }
 
 /**
@@ -851,6 +925,24 @@ export class HandMesh {
   private grab = 0;
   private retr = 0;
   private move = 0;
+  /** тычок под кровать: смесь позы 0…1, фаза цикла 0…1 (и последняя присланная), цель в мире (по точке плана) */
+  private pk = 0;
+  private pokeU = 0;
+  private pokeSrc = NaN;
+  private pkX = NaN;
+  private pkY = NaN;
+  private pkR = '';
+  private pkWx = 0;
+  private pkWy = 0;
+  private pkWz = 0;
+  /** тычущий палец: ближняя фаланга, следующие (одно звено), дальние (горизонтально), углы звеньев; кончик (локально f, l, y) */
+  private pokeLa = 0;
+  private pokeLb = 0;
+  private pokeLd = 0;
+  private readonly pokeAng = { a: 0, b: 0 };
+  private readonly pokeTipL = new Float32Array(3);
+  /** веса суставов упёртого пальца в позе тычка (смесь fd.wts → PLANT_W) */
+  private readonly wtmp = [0, 0, 0, 0];
   private sig = NaN;
   private right = true;
   private fingers: FingerDef[] = [];
@@ -1052,6 +1144,17 @@ export class HandMesh {
       this.oz = ow.z;
       this.tipRoom = tip.room;
     }
+    // цель тычка в мире (по точке плана, только при её смене)
+    const pa = view.pokeAt;
+    if (pa && (pa.x !== this.pkX || pa.y !== this.pkY || (pa.room ?? '') !== this.pkR)) {
+      const w = this.world(toWorld, pa.x, pa.y, pa.room ?? '');
+      this.pkWx = w.x;
+      this.pkWy = w.y;
+      this.pkWz = w.z;
+      this.pkX = pa.x;
+      this.pkY = pa.y;
+      this.pkR = pa.room ?? '';
+    }
     if (fresh || !frozen) {
       let bx = -Math.cos(view.heading), by = -Math.sin(view.heading);
       if (L > 0.05) {
@@ -1066,7 +1169,14 @@ export class HandMesh {
       const bw = this.world(toWorld, this.p2.x, this.p2.y, tip.room ?? '');
       const dx = this.ox - bw.x, dz = this.oz - bw.z;
       if (dx * dx + dz * dz > 1e-8) {
-        const target = Math.atan2(dz, dx);
+        let target = Math.atan2(dz, dx);
+        // тычет — кисть доворачивает к игроку под кроватью (запястье гнётся не больше POKE.turn): пришла к кровати
+        // наискось (короткий подход в тесной комнате) — палец не тянется поперёк кисти
+        if (view.poke && this.pk > 0) {
+          let d = Math.atan2(this.pkWz - this.oz, this.pkWx - this.ox) - target;
+          d -= TAU * Math.round(d / TAU);
+          if (Number.isFinite(d)) target += clamp(d, -POKE.turn, POKE.turn) * ease(this.pk);
+        }
         if (fresh) this.yaw = target;
         else if (!frozen) {
           let dd = target - this.yaw;
@@ -1085,6 +1195,13 @@ export class HandMesh {
       this.retr = approach(this.retr, view.phase === 'retreating' ? 1 : 0, dt / 0.35);
       this.move = approach(this.move, moved > 1e-5 ? 1 : 0, dt / 0.25);
     }
+    // тычок под кровать — и у замершей (палец, что достаёт, бьёт под взглядом); фаза — по виду, между срезами — сама
+    if (!fresh) this.pk = approach(this.pk, view.poke ? 1 : 0, dt / 0.3);
+    if (view.poke) {
+      const u = view.poke01;
+      if (u !== this.pokeSrc) this.pokeU = this.pokeSrc = u;
+      else this.pokeU = (this.pokeU + dt / OBSHAGA.pokePeriodS) % 1;
+    }
     this.prevTipX = tip.x;
     this.prevTipY = tip.y;
 
@@ -1097,7 +1214,7 @@ export class HandMesh {
       this.buildArm(view, toWorld);
       rebuilt = true;
     }
-    if (fresh || rebuilt || !frozen) this.buildHand(view, t, fresh);
+    if (fresh || rebuilt || !frozen || this.pk > 0) this.buildHand(view, t, fresh);
     if (rebuilt && (fresh || this.nRings !== this.colRings || Math.hypot(tip.x - this.colTipX, tip.y - this.colTipY) > 0.1)) {
       this.buildColliders(view);
       this.colTipX = tip.x;
@@ -1124,6 +1241,14 @@ export class HandMesh {
     const fx = Math.cos(this.yaw), fz = Math.sin(this.yaw);
     const f = this.fist[0], l = this.fist[1];
     return out.set(this.ox + fx * f - fz * l, this.oy + this.fist[2], this.oz + fz * f + fx * l);
+  }
+
+  /** Кончик тычущего пальца в мире (край ногтя не считая), пока рука тычет под кровать; иначе null. */
+  pokeTip(out = new Vector3()): Vector3 | null {
+    if (!this.shown || this.pk < 0.3) return null;
+    const fx = Math.cos(this.yaw), fz = Math.sin(this.yaw);
+    const f = this.pokeTipL[0], l = this.pokeTipL[1];
+    return out.set(this.ox + fx * f - fz * l, this.oy + this.pokeTipL[2], this.oz + fz * f + fx * l);
   }
 
   /** Для QA: вершин и мешей сейчас. */
@@ -1165,11 +1290,18 @@ export class HandMesh {
     }
     this.kVar = view.variant;
     this.ik = this.fingers.map(() => ({ a: NaN, b: NaN }));
+    const pl = this.fingers[POKE.finger].lens;
+    this.pokeLa = pl[0];
+    this.pokeLb = pl.slice(1, POKE.prox).reduce((a, b) => a + b, 0);
+    this.pokeLd = pl.slice(POKE.prox).reduce((a, b) => a + b, 0);
     this.crawl = view.variant * HAND.crawlCycle;
     this.path = 0;
     this.grab = view.phase === 'grabbing' ? 1 : 0;
     this.retr = view.phase === 'retreating' ? 1 : 0;
     this.move = 0;
+    this.pk = view.poke ? 1 : 0;
+    this.pokeU = view.poke01;
+    this.pokeSrc = NaN;
     this.prevTipX = view.tip.x;
     this.prevTipY = view.tip.y;
     this.sig = NaN;
@@ -1511,14 +1643,19 @@ export class HandMesh {
   private buildHand(view: HandView, t: number, fresh: boolean) {
     const loc = this.hLoc, uv = this.hUv, col = this.hCol, cenL = this.hCenL;
     const g = ease(this.grab), rb = ease(this.retr), mv = this.move;
+    // тычок под кровать: кисть припадает к полу (наклон вперёд, ниже), на ударе — выпад ладонью; кровать рядом — пальцы
+    // заранее в позе упора (near)
+    const pkb = ease(this.pk), ext = pokeReach(this.pokeU);
+    const near = view.bed ? smoothstep(POKE_STAND + POKE.near, POKE_STAND + 0.05, rectGap(view.tip, view.bed)) : 0;
+    const lunge = POKE.lunge * pkb * Math.max(0, ext);
     // в проёме кисть сжата: пальцы веером по высоте двери, ладонь узкая и выше
     const kq = smoothstep(0.3, 2.4, this.L - this.sDoor);
     const sL = lerp(0.5, 1, kq), sY = lerp(1.35, 1, kq);
-    const lift = 0.08 * g, pitch = 0.12 * g;
+    const lift = 0.08 * g - POKE.drop * pkb, pitch = 0.12 * g + POKE.pitch * pkb;
     const cp = Math.cos(pitch), sp = Math.sin(pitch);
     const xf = (f: number, l: number, y: number, o: Float32Array, at: number) => {
       const df = f - PALM.fc, dy = y - PALM.yc;
-      o[at] = PALM.fc + df * cp + dy * sp;
+      o[at] = PALM.fc + df * cp + dy * sp + lunge;
       o[at + 1] = l;
       o[at + 2] = PALM.yc + dy * cp - df * sp + lift;
     };
@@ -1585,6 +1722,10 @@ export class HandMesh {
     const J = this.joints;
     let fistF = 0, fistL = 0, fistY = 0, fistN = 0;
     const blocked = view.blocked ? 2.4 : 1;
+    // цель тычка — локально (игрок под кроватью; пол его комнаты относительно кисти)
+    const yfx = Math.cos(this.yaw), yfz = Math.sin(this.yaw);
+    const pdx = this.pkWx - this.ox, pdz = this.pkWz - this.oz;
+    const pkF = pdx * yfx + pdz * yfz, pkL = -pdx * yfz + pdz * yfx, pkDy = this.pkWy - this.oy;
     for (let i = 0; i < this.fingers.length; i++) {
       const fd = this.fingers[i];
       const G = this.grids[1 + i];
@@ -1592,7 +1733,10 @@ export class HandMesh {
       const n = fd.lens.length;
       // цель кончика: перебор → сжатие в проёме → отступление (волочатся, скребут)
       crawlGait(this.crawl / HAND.crawlCycle + fd.ph, gait, fd.stance);
-      const twitch = (1 - mv) * (0.07 * Math.pow(Math.max(0, Math.sin(t * 0.83 * blocked + 5.1 * i + this.kVar * 10)), 16) + 0.012 * Math.sin(t * 0.5 + i * 1.7));
+      // упор у кровати (тычет или кровать рядом): пальцы упираются в пол (без подёргиваний: замершая под взглядом не
+      // шелохнётся); указательный — только на подходе, тычет он своей позой
+      const plant = fd.thumb ? 0 : i === POKE.finger ? near : Math.max(pkb, near);
+      const twitch = (1 - mv) * (1 - Math.max(pkb, near)) * (0.07 * Math.pow(Math.max(0, Math.sin(t * 0.83 * blocked + 5.1 * i + this.kVar * 10)), 16) + 0.012 * Math.sin(t * 0.5 + i * 1.7));
       let tf = lerp(fd.front, fd.back, gait.k);
       let tl = fd.tl;
       let ty = fd.r1 + 0.05 + gait.lift * 0.38 * mv + twitch;
@@ -1609,6 +1753,17 @@ export class HandMesh {
       tf = lerp(tf, fd.front + 0.3 - 0.35 * claw, rb);
       tl = lerp(tl, fd.tl * 0.85, rb);
       ty = lerp(ty, fd.r1 + 0.04, rb);
+      // тычет — остальные упираются кончиками в пол полукругом у костяшек высокой аркой (сгиб у основания): кисть и
+      // пальцы — в круге POKE_STAND у кончика руки, снаружи кровати
+      let wts = fd.wts;
+      if (plant > 0) {
+        const pl = clamp(fd.tl * POKE.plantL, -0.9 * POKE.plantR, 0.9 * POKE.plantR);
+        tf = lerp(tf, Math.sqrt(POKE.plantR * POKE.plantR - pl * pl), plant);
+        tl = lerp(tl, pl, plant);
+        ty = lerp(ty, fd.r1 + 0.04, plant);
+        wts = this.wtmp;
+        for (let k = 0; k < fd.wts.length; k++) wts[k] = lerp(fd.wts[k], PLANT_W[k] ?? fd.wts[k], plant);
+      }
       tl = clamp(tl, -(wallLim - fd.r1 - 0.04), wallLim - fd.r1 - 0.04);
       // основание — с ладонью (сжатие, подъём и наклон в кулаке)
       xf(fd.bf, fd.bl * sL, PALM.yc + (fd.by - PALM.yc) * sY, J, 0);
@@ -1618,7 +1773,7 @@ export class HandMesh {
       dfx /= u;
       dlx /= u;
       const ik = this.ik[i];
-      solveFinger(fd.lens, fd.wts, u, ty - bY, ik);
+      solveFinger(fd.lens, wts, u, ty - bY, ik);
       // кулак: пальцы крюком вокруг схваченного на уровне пояса (вперёд, вниз и назад под него), большой — поперёк
       const a = lerp(ik.a, fd.thumb ? 0.3 : 0.35, g);
       const b = lerp(ik.b, fd.thumb ? 0.9 : 1.0, g);
@@ -1631,11 +1786,48 @@ export class HandMesh {
       const dn = Math.hypot(Df, Dl) || 1;
       Df /= dn;
       Dl /= dn;
-      // суставы (FK) и рамки фаланг: T — вдоль, N — к тыльной стороне; Lf — поперёк плоскости пальца
+      // тычущий палец: ближние фаланги дугой вниз к краю кровати, дальние — горизонтально под ней, к игроку; выпад —
+      // путь кончика от основания (удар — на POKE.short не доходя, отведён — на POKE.pull ближе). Горизонтально палец
+      // ложится не дальше POKE_STAND − edge от кончика руки (дальше — кровать) и там, куда достают ближние звенья;
+      // игрок дальше — палец не достаёт (кончик короче цели), но под сетку не лезет
+      const poking = i === POKE.finger && pkb > 0;
+      let pa = 0, pb = 0;
+      if (poking) {
+        const ux = Math.max(0.3, pkF - bF), ul = pkL - bL;
+        const uh = Math.hypot(ux, ul);
+        const rHit = Math.max(0.3, uh - POKE.short);
+        const R = lerp(rHit - POKE.pull, rHit, ext);
+        const py = Math.max(fd.r1 + 0.03, POKE.y + pkDy);
+        // край кровати по направлению пальца (план: от основания к цели); кровать неизвестна — без предела
+        const dF = ux / uh, dL = ul / uh;
+        let xEdge = Infinity;
+        const bed = view.bed;
+        if (bed) {
+          const bx = view.tip.x + yfx * bF - yfz * bL, by = -(-view.tip.y + yfz * bF + yfx * bL);
+          const vx = yfx * dF - yfz * dL, vy = -(yfz * dF + yfx * dL);
+          xEdge = rayRect(bx, by, vx, vy, bed) - POKE.edge;
+        }
+        const reach = 0.995 * (this.pokeLa + this.pokeLb);
+        const xLink = Math.sqrt(Math.max(0, reach * reach - (py - bY) * (py - bY)));
+        pokeBend(this.pokeLa, this.pokeLb, Math.max(0.05, Math.min(R - this.pokeLd, xEdge, xLink)), py - bY, this.pokeAng);
+        pa = this.pokeAng.a;
+        pb = this.pokeAng.b;
+        Df = lerp(Df, ux / uh, pkb);
+        Dl = lerp(Dl, ul / uh, pkb);
+        const pn = Math.hypot(Df, Dl) || 1;
+        Df /= pn;
+        Dl /= pn;
+      }
+      // суставы (FK) и рамки фаланг: T — вдоль, N — к тыльной стороне; Lf — поперёк плоскости пальца. Пол: конец фаланги
+      // не ниже низа своего кольца (сустав — 1.2 радиуса, у кончика — радиус и подушечка; смотрит назад — тыльная
+      // сторона снизу, она толще) — фаланга поднимается к горизонту (floorAngle), поза выше пола не трогается
       let c = 0;
       for (let k = 0; k < n; k++) {
-        if (k > 0) c += fd.wts[k - 1];
-        const th = a - b * c;
+        if (k > 0) c += wts[k - 1];
+        let th = a - b * c;
+        if (poking) th = lerp(th, k === 0 ? pa : k < POKE.prox ? pb : 0, pkb);
+        const rEnd = k + 1 < n ? 1.2 * 0.92 * lerp(fd.r0, fd.r1, (k + 1) / n) : fd.r1;
+        th = floorAngle(th, J[k * 9 + 2], fd.lens[k], rEnd * (Math.cos(th) < 0 && k + 1 < n ? 1.2 : 1) + FLOOR_GAP);
         const co = Math.cos(th), si = Math.sin(th);
         const o = k * 9;
         // J: [x, l, y] сустава k; T и N фаланги k
@@ -1648,6 +1840,11 @@ export class HandMesh {
         J[o + 9] = J[o] + fd.lens[k] * J[o + 3];
         J[o + 10] = J[o + 1] + fd.lens[k] * J[o + 4];
         J[o + 11] = J[o + 2] + fd.lens[k] * J[o + 5];
+      }
+      if (poking) {
+        this.pokeTipL[0] = J[n * 9];
+        this.pokeTipL[1] = J[n * 9 + 1];
+        this.pokeTipL[2] = J[n * 9 + 2];
       }
       if (!fd.thumb) {
         for (let k = 1; k <= n; k++) {
@@ -1662,8 +1859,11 @@ export class HandMesh {
       let row = 0;
       let arc = 0;
       const rJ = (k: number) => lerp(fd.r0, fd.r1, k / n);
-      // кольцо пальца: центр, к тыльной стороне N, радиус, сустав (костяшка, складки), кончик (подушечка грязнее)
+      // кольцо пальца: центр, к тыльной стороне N, радиус, сустав (костяшка, складки), кончик (подушечка грязнее);
+      // ушло под пол (подушечка у пола, остатки после floorAngle) — приподнято целиком: прижато к полу
       const ring = (px: number, pl: number, py: number, N0: number, N1: number, N2: number, r: number, joint: number, tipK: number) => {
+        const low = py - Math.abs(N2) * r * 0.92 * (N2 < 0 ? 1 + 0.2 * joint : 1);
+        if (low < FLOOR_GAP) py += FLOOR_GAP - low;
         const at = G.cbase + row;
         cenL[at * 3] = px;
         cenL[at * 3 + 1] = pl;
@@ -1768,6 +1968,13 @@ export class HandMesh {
             col[o4 + 2] = lerp(lerp(0.66, 0.44, free), 0.24, edge) * under;
             col[o4 + 3] = 1;
           }
+        }
+        // свободный край упёрся в пол — ряд приподнят: ноготь гнётся по полу, а не уходит под него
+        let lo = Infinity;
+        for (let cc = 0; cc <= NG.cols; cc++) lo = Math.min(lo, loc[(NG.base + r * NCc + cc) * 3 + 2]);
+        if (lo < FLOOR_GAP) {
+          for (let cc = 0; cc <= NG.cols; cc++) loc[(NG.base + r * NCc + cc) * 3 + 2] += FLOOR_GAP - lo;
+          cenL[at * 3 + 2] += FLOOR_GAP - lo;
         }
       }
     }

@@ -2,12 +2,15 @@
 // (BlockoutViewer.setOverlay) и минималистичный HUD поверх холста: приглашение «клик — войти», подсказка у
 // кнопок поста, экран смерти с «Ещё раз», звук, отладка. Правило игроку не раскрывается — только после первой
 // смерти подсказка. Сцена и загрузчик glTF грузятся лениво (import()) при первом входе.
+// Сюжет (story, «Запустить без отладки»): отладки нет; выбросило в шахту / оборвался трос — не «Ещё раз», а темнота и
+// «очнулся» в общаге (req.onFall через STORY_FALL_MS или кнопкой «Очнуться»).
 import { useEffect, useRef, useState } from 'react';
 import { Color4 } from '@babylonjs/core/Maths/math.color';
 import type { BlockoutViewer } from './viewer';
 import type { LiftSide, LiftSpec } from '../model/types';
 import { liftFloorLabel, type LiftRoll } from '../locations/lift';
 import type { LiftExitKind, LiftHud, LiftMechanics, LiftScene } from '../locations/sceneLift';
+import { STORY_FALL_MS } from './StairwellLayer';
 
 export interface LiftRequest {
   kind: 'lift';
@@ -25,14 +28,17 @@ export interface LiftRequest {
   /** «Комната» — можно выйти кнопкой; «Прогулка» — только ногами через дверь */
   mode: 'room' | 'walk';
   onExit(kind: LiftExitKind, floor: number, lair: boolean): void;
+  /** сюжет: выбросило / оборвался трос — срыв в общагу (вместо «Ещё раз»); нет — обычная смерть */
+  onFall?(): void;
 }
 
 const PHASE: Record<string, string> = { idle: 'стоит', moving: 'едет', jammed: 'доска, качает', thrown: 'выброшен', snapped: 'трос оборвался' };
 const SIDE: Record<string, string> = { straight: 'прямо', right: 'направо' };
 const SOUND_KEY = 'room-forge/lift-sound';
 
-export function LiftLayer(props: { viewer: BlockoutViewer | null; req: LiftRequest; onClose?(): void }) {
+export function LiftLayer(props: { viewer: BlockoutViewer | null; req: LiftRequest; onClose?(): void; story?: boolean }) {
   const { viewer, req } = props;
+  const story = !!props.story;
   const [hud, setHud] = useState<LiftHud | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [debug, setDebug] = useState(false);
@@ -40,6 +46,10 @@ export function LiftLayer(props: { viewer: BlockoutViewer | null; req: LiftReque
   const sceneRef = useRef<LiftScene | null>(null);
   const exitRef = useRef(req.onExit);
   exitRef.current = req.onExit;
+  const fallRef = useRef(req.onFall);
+  fallRef.current = req.onFall;
+  /** сюжет: срыв уже ушёл (таймер или кнопка) */
+  const fellRef = useRef(false);
 
   useEffect(() => {
     if (!viewer) return;
@@ -103,23 +113,38 @@ export function LiftLayer(props: { viewer: BlockoutViewer | null; req: LiftReque
 
   const h = hud;
   const error = err ?? h?.error ?? null;
+  // сюжет: сорвался — темнота, через STORY_FALL_MS — в общагу
+  const fall = story && !!req.onFall;
+  const fallNow = () => {
+    if (fellRef.current) return;
+    fellRef.current = true;
+    fallRef.current?.();
+  };
+  const dead = !!h?.dead;
+  useEffect(() => {
+    if (!fall || !dead) return;
+    const t = setTimeout(fallNow, STORY_FALL_MS);
+    return () => clearTimeout(t);
+  }, [fall, dead]);
   return (
     <div className="v3-loc">
       <div className="float v3-loc-tools">
         <button className={'btn sm' + (sound ? ' on' : '')} onClick={() => setSound(!sound)} title="Звук локации (WebAudio)">
           звук: {sound ? 'вкл' : 'выкл'}
         </button>
-        <label className="check" title="Фаза механики, этаж, крен и амплитуда раскачки, логово">
-          <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
-          отладка
-        </label>
+        {!story && (
+          <label className="check" title="Фаза механики, этаж, крен и амплитуда раскачки, логово">
+            <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
+            отладка
+          </label>
+        )}
         {req.mode === 'room' && (
           <button className="btn sm" onClick={() => props.onClose?.()} title="Выйти из локации (только для просмотра комнаты)">
             выйти
           </button>
         )}
       </div>
-      {debug && h && (
+      {debug && !story && h && (
         <div className="float v3-loc-debug mono">
           <div>
             {req.title} · {h.variant === 'cage' ? 'клетка' : 'каретка'} · попытка {h.attempt + 1} · смертей {h.deaths}
@@ -169,7 +194,18 @@ export function LiftLayer(props: { viewer: BlockoutViewer | null; req: LiftReque
         </div>
       )}
       {h && h.started && h.locked && !h.dead && h.prompt && <div className="float hud v3-lift-prompt">{h.prompt}</div>}
-      {h?.dead && (
+      {h?.dead && fall && (
+        <div className="v3-loc-dead v3-story-fall">
+          <div>
+            <h2>{h.dead.reason === 'snap' ? 'Трос оборвался' : 'Вас выбросило в шахту'}</h2>
+            <p className="hint">…падение, удар, темнота</p>
+            <button className="btn" onClick={fallNow}>
+              Очнуться
+            </button>
+          </div>
+        </div>
+      )}
+      {h?.dead && !fall && (
         <div className="v3-loc-dead">
           <div>
             <h2>{h.dead.reason === 'snap' ? 'Трос оборвался' : 'Вас выбросило в шахту'}</h2>

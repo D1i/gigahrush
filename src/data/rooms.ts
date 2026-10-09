@@ -12,6 +12,10 @@ import { buildSnowRooms } from './roomsSnow';
 import { buildFactoryRooms } from './roomsFactory';
 import { buildObshagaRooms } from './roomsObshaga';
 import { buildSpecialRooms } from './roomsSpecial';
+// metro
+import { buildMetroRooms } from './roomsMetro';
+// cellar
+import { buildCellarRooms } from './roomsCellar';
 
 // Цвета групп спотов
 const C_SEAT = '#e9c46a';
@@ -948,6 +952,10 @@ export function buildRooms(): Room[] {
     ...buildObshagaRooms(),
     ...buildFlatRooms(),
     ...buildSpecialRooms(),
+    // metro
+    ...buildMetroRooms(),
+    // cellar
+    ...buildCellarRooms(),
   ];
 }
 

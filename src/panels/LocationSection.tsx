@@ -6,12 +6,15 @@ import { LIFT_FLOOR_M, LIFT_LIMITS, LIFT_PUMP_RATE, liftRule, newLift } from '..
 import { lairSign, newLair } from '../locations/lair';
 import { newSwamp, swampRule } from '../locations/swampEnd';
 import { hangarBossSign, hangarRule, newHangar } from '../locations/hangar';
+import { newHatch, newSnowDoor } from '../locations/storyDoors';
 import { NumField, Section, Select, TextField } from '../ui/kit';
 import { mutRoom } from './util';
 
 type Kind = 'none' | LocationSpec['kind'];
 
-const NEW: Record<LocationSpec['kind'], () => LocationSpec> = { stairwell: newStairwell, lift: newLift, lair: newLair, hangar: newHangar, swamp: newSwamp };
+const NEW: Record<LocationSpec['kind'], () => LocationSpec> = { stairwell: newStairwell, lift: newLift, lair: newLair, hangar: newHangar, swamp: newSwamp,
+  // переходы сюжета (src/game/story.ts): параметров в инспекторе нет — по умолчанию
+  hatch: newHatch, snowdoor: newSnowDoor };
 
 export function LocationSection({ room }: { room: Room }) {
   const loc = room.location ?? null;

@@ -1,8 +1,10 @@
 // Кооп «Прогулки» (docs/COOP.md): другие игроки в сцене и своё положение для них.
 //
-//  • Аватар — капсула цвета игрока, голова с тёмным «визором» (куда смотрит) и табличка с именем над головой. Положение —
-//    комната (её ведёт портальный рендер) + камера; между сообщениями — плавно (экспонента), скачок (шов хода, лифт,
-//    телепорт) — сразу.
+//  • Аватар — модель игрока «забинтованный в шинели» (src/coop/avatarModel.ts: свой скелет и клипы; шинель — по месту в
+//    лобби PlayerInfo.slot, у второго — слегка другого цвета) и табличка с именем (полоска — цвет игрока) над головой.
+//    Поза — по высоте глаз (стоя / скрючившись / ползком, лёжа) и скорости (на месте / идёт), голова — по наклону
+//    взгляда. Положение — комната (её ведёт портальный рендер) + камера; между сообщениями — плавно (экспонента), скачок
+//    (шов хода, лифт, телепорт) — сразу. Пока модель грузится — видна только табличка.
 //  • Портальный рендер (src/view3d/portal.ts): аватар рисуется вместе со своей комнатой — в её области стенсила, с её
 //    отсечением (PortalRenderer.extras), — поэтому виден ровно там, где видна его комната: сквозь проёмы, но не сквозь
 //    стены и не в комнатах других слоёв W, стоящих в 3D там же. У самого проёма (ближе NEAR_PORTAL_M) — ещё и с
@@ -11,40 +13,42 @@
 //  • Сквозь друг друга проходят (коллизий нет), но рядом (ближе SLOW_RADIUS_M, в той же комнате или у общего проёма)
 //    оба идут на 75% медленнее: сдвиг камеры за кадр урезается до SLOW_FACTOR (после ввода и коллизий).
 //  • Своё положение — серверу ~15 раз в секунду (только когда изменилось; иначе раз в секунду) — по таймеру, не по кадрам
-//    сцены: в спец-локации (лифт, лестница) рисуется её сцена, а другим надо узнать «он в локации». С ним — высота глаз:
-//    в снежных лазах игрок ползёт (аватар лежит), в берлоге — скрючен (аватар ниже); и «засыпан обвалом».
+//    сцены: в спец-локации (лифт, лестница) рисуется её сцена, а другим надо узнать «он в локации». С ним — высота глаз
+//    над ногами (Posture.eye): скрючившись, на четвереньках, лёжа — ниже (аватар в позе); и «засыпан обвалом».
 //  • Засыпанный напарник рядом (ближе DIG_RADIUS_M) — nearBuried: страница показывает «E — откапывать» и шлёт ему
 //    действие dig (CoopSession.act); у него — SnowWalk.mateDig.
-//  • Общага (src/view3d/obshagaWalk.ts): держит лампу — у аватара в руке керосиновая лампа (свет у неё ставит общага);
-//    погиб — аватар не виден. Свои флаги — PlayerState.lamp / dead (геттеры flags).
+//  • Общага (src/view3d/obshagaWalk.ts): держит лампу — у аватара в правой руке керосиновая лампа (свет у неё ставит
+//    общага); погиб — аватар не виден. Свои флаги — PlayerState.lamp / dead (геттеры flags).
+//  • Горящий фонарик в руке (PlayerState.torch, хотбар src/view3d/inventory.ts) — у аватара модель фонаря в правой руке
+//    (лампа общаги в правой — фонарь в левой) и SpotLight по взгляду (yaw, pitch).
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
-import { CreateCapsule } from '@babylonjs/core/Meshes/Builders/capsuleBuilder';
-import { CreateSphere } from '@babylonjs/core/Meshes/Builders/sphereBuilder';
-import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
 import { CreatePlane } from '@babylonjs/core/Meshes/Builders/planeBuilder';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Observer } from '@babylonjs/core/Misc/observable';
 import type { Scene } from '@babylonjs/core/scene';
 import type { Camera } from '@babylonjs/core/Cameras/camera';
+import { SpotLight } from '@babylonjs/core/Lights/spotLight';
+import { FLASH_ANGLE, FLASH_COLOR, FLASH_EXP, FLASH_RANGE, FlashlightModel, LIGHT_SLOTS, ensureLightSlots, flashIntensity, sceneLitness } from '../view3d/flashlight';
 import { PORTAL_LAYER } from '../view3d/portal';
 import type { BlockoutViewer } from '../view3d/viewer';
 import type { FoldDriver } from '../view3d/fold';
 import type { RunExport } from '../blockout/types';
 import type { PlayerInfo, PlayerState } from './protocol';
 import type { CoopSession } from './session';
+import { AvatarModels, type AvatarBody } from './avatarModel';
 
 /** Рядом с другим игроком скорость — столько от обычной (замедление на 75%). */
 export const SLOW_FACTOR = 0.25;
-/** «Рядом»: по горизонтали ближе, м (капсулы игроков — 0.3 м радиусом, перекрылись — уже рядом). */
+/** «Рядом»: по горизонтали ближе, м (эллипсоиды коллизий игроков — 0.3 м радиусом, перекрылись — уже рядом). */
 export const SLOW_RADIUS_M = 0.75;
 /** …и по высоте (ног) ближе, м (лестница, другой этаж в том же месте 3D — не рядом). */
 const SLOW_DY_M = 1.2;
 /** Засыпанного напарника можно откапывать ближе этого, м (по горизонтали). */
 export const DIG_RADIUS_M = 1.6;
-/** Ниже этого (глаза над полом, м) — ползком: аватар лежит. */
+/** Ниже этого (глаза над полом, м) — ползком: лампа и фонарь — у пола. */
 const CRAWL_EYE = 0.8;
 /** Аватар ближе этого к проёму своей комнаты рисуется и с соседом за проёмом, м. */
 const NEAR_PORTAL_M = 0.8;
@@ -54,6 +58,12 @@ const SNAP_M = 3;
 const EYE = 1.6;
 /** Сдвиг камеры за кадр больше этого — телепорт (переход, шов, лифт), не замедляется, м. */
 const TELEPORT_M = 0.5;
+/** Скорость аватара (для клипа ходьбы) сглаживается так, 1/с. */
+const SPEED_RATE = 6;
+/** Табличка с именем — выше головы (кости Head) на столько, м. */
+const LABEL_DY = 0.6;
+/** Ручка лампы / фонарь в кулаке — ниже кости кисти (запястья) на столько, м. */
+const GRIP_M = 0.08;
 const SEND_MS = 66;
 const HEARTBEAT_MS = 1000;
 /** обычный слой камер (всё, кроме PORTAL_LAYER) */
@@ -63,22 +73,28 @@ interface Avatar {
   id: string;
   name: string;
   color: string;
-  body: Mesh;
-  head: Mesh;
-  visor: Mesh;
+  /** место в лобби (цвет шинели) */
+  slot: number | undefined;
+  /** модель игрока (null — ещё грузится) */
+  model: AvatarBody | null;
   label: Mesh;
   /** керосиновая лампа в руке (общага) — клон модели p_obsh_lantern, создаётся, когда понадобилась */
   lamp: Mesh | null;
+  /** горящий фонарик в руке — модель и луч, создаются, когда понадобились */
+  torch: { m: FlashlightModel; l: SpotLight } | null;
+  /** меши модели и табличка */
   meshes: Mesh[];
   mats: StandardMaterial[];
   tex: DynamicTexture;
   room: string | null;
-  /** показанное положение глаз, их высота над полом и поворот */
+  /** показанное положение глаз, их высота над полом, поворот, наклон взгляда и скорость (м/с, сглажена) */
   x: number;
   y: number;
   z: number;
   eye: number;
   yaw: number;
+  pitch: number;
+  speed: number;
   has: boolean;
   visible: boolean;
 }
@@ -113,6 +129,7 @@ export class CoopPresence {
   private nbCache: { rx: RunExport; room: string; set: Set<string> } | null = null;
   private visCache: { rx: RunExport; room: string; set: Set<string> } | null = null;
   private rooms = new WeakMap<RunExport, Set<string>>();
+  private readonly models: AvatarModels;
   private disposed = false;
 
   constructor(
@@ -124,9 +141,10 @@ export class CoopPresence {
     /** свой игрок засыпан обвалом (снежные ходы) */
     private readonly buried: () => boolean = () => false,
     /** общага: свой игрок держит лампу / погиб (PlayerState.lamp / dead) */
-    private readonly flags: { lamp?: () => boolean; dead?: () => boolean } = {},
+    private readonly flags: { lamp?: () => boolean; dead?: () => boolean; torch?: () => boolean } = {},
   ) {
     this.scene = v.scene;
+    this.models = new AvatarModels(this.scene);
     this.obs = this.scene.onBeforeRenderObservable.add(() => this.update());
     this.camObs = v.fps.onAfterCheckInputsObservable.add(() => this.slowStep());
     this.sendTimer = setInterval(() => this.sendState(performance.now()), SEND_MS);
@@ -161,15 +179,16 @@ export class CoopPresence {
     this.byRoom = new Map();
     let slow = false;
     let dig: { id: string; name: string; d: number } | null = null;
-    const myFeet = cam.y - eyeOf(v.fps);
+    const myFeet = cam.y - (v.posture?.eye ?? eyeOf(v.fps));
     for (const a of this.avatars.values()) {
       const s = this.co.players.get(a.id)?.state ?? null;
       a.visible = false;
       const room = s?.room ?? null;
       // в спец-локации (своя сцена), погиб или в комнате, которой в копии мира ещё нет, — не виден
       if (!s || s.loc || s.dead || !room || (rx && !this.hasRoom(rx, room))) {
-        for (const m of a.meshes) m.setEnabled(false);
+        this.show(a, false);
         a.lamp?.setEnabled(false);
+        this.torchOf(a, null);
         continue;
       }
       // плавно к последнему положению; скачок — сразу
@@ -181,35 +200,43 @@ export class CoopPresence {
         a.z = tz;
         a.eye = te;
         a.yaw = s.yaw;
+        a.pitch = s.pitch;
+        a.speed = 0;
         a.has = true;
       } else {
+        const ox = a.x, oz = a.z;
         a.x += (tx - a.x) * k;
         a.y += (ty - a.y) * k;
         a.z += (tz - a.z) * k;
         a.eye += (te - a.eye) * k;
         a.yaw = angleLerp(a.yaw, s.yaw, k);
+        a.pitch += (s.pitch - a.pitch) * k;
+        if (dt > 0) a.speed += (Math.hypot(a.x - ox, a.z - oz) / dt - a.speed) * (1 - Math.exp(-dt * SPEED_RATE));
       }
+      if (!a.model) this.attachModel(a);
       a.room = room;
       this.pose(a, cam);
       const lamp = this.lampOf(a, !!s.lamp && fps);
+      const torch = this.torchOf(a, s.torch && fps ? s : null);
       // рядом ли (та же комната или сосед через общий проём, не шов хода; по высоте — ноги)
       const here = fps && !!me && (room === me || !!near?.has(room)) && Math.abs(a.y - a.eye - myFeet) < SLOW_DY_M;
       const dist = Math.hypot(a.x - cam.x, a.z - cam.z);
       if (here && dist < SLOW_RADIUS_M) slow = true;
       if (here && s.buried && dist < DIG_RADIUS_M && (!dig || dist < dig.d)) dig = { id: a.id, name: a.name, d: dist };
       if (!fps) {
-        for (const m of a.meshes) m.setEnabled(false);
+        this.show(a, false);
         continue;
       }
       if (portal) {
-        for (const m of a.meshes) {
-          m.setEnabled(true);
-          m.layerMask = PORTAL_LAYER;
-        }
+        this.show(a, true, PORTAL_LAYER);
         this.addTo(room, a);
         if (lamp) {
           lamp.layerMask = PORTAL_LAYER;
           this.byRoom.get(room)!.push(lamp);
+        }
+        for (const m of torch ?? []) {
+          m.layerMask = PORTAL_LAYER;
+          this.byRoom.get(room)!.push(m);
         }
         // у проёма — и с соседом за ним (тело, вышедшее за плоскость проёма, не обрезается)
         const piece = portal.cache.peek(room);
@@ -220,15 +247,14 @@ export class CoopPresence {
         a.visible = true;
       } else {
         const on = !!vis?.has(room);
-        for (const m of a.meshes) {
-          m.setEnabled(on);
-          m.layerMask = SCENE_LAYER;
-        }
+        this.show(a, on, SCENE_LAYER);
         a.visible = on;
         if (lamp) {
           lamp.layerMask = SCENE_LAYER;
           lamp.setEnabled(on);
         }
+        for (const m of torch ?? []) m.layerMask = SCENE_LAYER;
+        if (torch) a.torch!.m.root.setEnabled(on);
       }
     }
     this.slowed = slow;
@@ -246,40 +272,44 @@ export class CoopPresence {
   private addTo(room: string, a: Avatar) {
     let l = this.byRoom.get(room);
     if (!l) this.byRoom.set(room, (l = []));
-    if (!l.includes(a.body)) l.push(...a.meshes);
+    if (!l.includes(a.label)) l.push(...a.meshes);
   }
 
-  /** Аватар в позу: ноги на полу (глаза — eye над ним), визор — по взгляду, табличка — лицом к камере. Ползком —
-   *  лежит вдоль взгляда, голова впереди; скрючившись — ниже (капсула сжата по высоте). */
-  private pose(a: Avatar, cam: Vector3) {
-    const feet = a.y - a.eye;
-    const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
-    let headY: number;
-    if (a.eye < CRAWL_EYE) {
-      // лёжа: капсула 1.44 м вдоль взгляда, голова — у переднего конца
-      a.body.scaling.y = 1;
-      a.body.rotation.set(Math.PI / 2, a.yaw, 0);
-      a.body.position.set(a.x - fx * 0.35, feet + 0.25, a.z - fz * 0.35);
-      headY = feet + 0.3;
-      a.head.position.set(a.x + fx * 0.45, headY, a.z + fz * 0.45);
-      a.visor.position.set(a.x + fx * 0.58, headY + 0.03, a.z + fz * 0.58);
-    } else {
-      const k = Math.min(1.2, a.eye / EYE);
-      a.body.scaling.y = k;
-      a.body.rotation.set(0, a.yaw, 0);
-      a.body.position.set(a.x, feet + 0.72 * k, a.z);
-      headY = feet + Math.max(0.3, a.eye - 0.1);
-      a.head.position.set(a.x, headY, a.z);
-      a.visor.position.set(a.x + fx * 0.13, headY + 0.03, a.z + fz * 0.13);
+  /** Модель загрузилась — аватару своя копия (шинель — по месту в лобби). */
+  private attachModel(a: Avatar) {
+    const body = this.models.make(a.id, a.slot);
+    if (!body) return;
+    for (const m of body.meshes) {
+      m.layerMask = PORTAL_LAYER;
+      m.metadata = { coop: a.id };
     }
-    a.visor.rotation.y = a.yaw;
-    a.label.position.set(a.x, headY + 0.45, a.z);
+    a.model = body;
+    a.meshes = [...body.meshes, a.label];
+  }
+
+  /** Показать / скрыть аватар (модель и табличку); layer — слой камер его мешей. */
+  private show(a: Avatar, on: boolean, layer?: number) {
+    a.model?.setEnabled(on);
+    a.label.setEnabled(on);
+    if (layer !== undefined) for (const m of a.meshes) m.layerMask = layer;
+  }
+
+  /** Аватар в позу: модель — ноги на полу (глаза — eye над ним), голова у глаз, клипы — по позе и скорости
+   *  (avatarModel.ts); табличка — над головой, лицом к камере. */
+  private pose(a: Avatar, cam: Vector3) {
+    let headY = a.y - a.eye + Math.max(0.3, a.eye - 0.1);
+    if (a.model) {
+      a.model.update({ x: a.x, y: a.y, z: a.z, eye: a.eye, yaw: a.yaw, pitch: a.pitch, speed: a.speed });
+      headY = a.model.head.getAbsolutePosition().y;
+    }
+    a.label.position.set(a.x, headY + LABEL_DY, a.z);
     // лицевая сторона плоскости — −Z: развернуть её к камере
     a.label.rotation.y = Math.atan2(-(cam.x - a.x), -(cam.z - a.z));
-    for (const m of a.meshes) m.computeWorldMatrix(true);
+    a.label.computeWorldMatrix(true);
   }
 
-  /** Лампа в руке аватара (общага): справа у бедра, по взгляду; null — не держит (или модели ещё нет). */
+  /** Лампа в руке аватара (общага): висит в правой руке модели (ползком — стоит на полу у кисти), по взгляду; пока
+   *  модели игрока нет — справа у бедра. null — не держит (или модели лампы ещё нет). */
   private lampOf(a: Avatar, on: boolean): Mesh | null {
     if (!on) {
       a.lamp?.setEnabled(false);
@@ -296,16 +326,69 @@ export class CoopPresence {
     }
     const m = a.lamp;
     const feet = a.y - a.eye;
-    const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
-    // правая рука: вправо от взгляда (Babylon: (cos yaw, −sin yaw)) и чуть вперёд; лёжа — у головы
-    const low = a.eye < CRAWL_EYE;
-    const side = low ? 0.2 : 0.3, fwd = low ? 0.55 : 0.22;
-    m.position.set(a.x + fz * side + fx * fwd, feet + (low ? 0.02 : 0.55), a.z - fx * side + fz * fwd);
+    if (a.model) {
+      // ручка (верх лампы) — в кулаке
+      const h = a.model.handPos('R');
+      const top = m.getBoundingInfo().boundingBox.maximum.y * m.scaling.y;
+      m.position.set(h.x, Math.max(feet, h.y - GRIP_M - top), h.z);
+    } else {
+      // правая рука: вправо от взгляда (Babylon: (cos yaw, −sin yaw)) и чуть вперёд; лёжа — у головы
+      const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
+      const low = a.eye < CRAWL_EYE;
+      const side = low ? 0.2 : 0.3, fwd = low ? 0.55 : 0.22;
+      m.position.set(a.x + fz * side + fx * fwd, feet + (low ? 0.02 : 0.55), a.z - fx * side + fz * fwd);
+    }
     m.rotation.y = a.yaw;
     m.setEnabled(true);
     m.isVisible = true;
     m.computeWorldMatrix(true);
     return m;
+  }
+
+  /** Фонарик в руке аватара: в кулаке правой руки модели (лампа общаги в правой — в левой; пока модели игрока нет — у
+   *  груди), по взгляду; свет — от линзы. s null — не держит (модель и свет гаснут). Возвращает меши модели. */
+  private torchOf(a: Avatar, s: PlayerState | null): Mesh[] | null {
+    if (!s) {
+      if (a.torch) {
+        a.torch.m.root.setEnabled(false);
+        a.torch.l.setEnabled(false);
+      }
+      return null;
+    }
+    if (!a.torch) {
+      // свои источники у материалов: фонари напарников сверх обычных
+      ensureLightSlots(this.scene, LIGHT_SLOTS + 3);
+      const m = new FlashlightModel(this.scene, `coop:torch:${a.id}`);
+      m.setKnob(true);
+      m.setLensLit(true);
+      for (const x of m.meshes) x.metadata = { coop: a.id };
+      const l = new SpotLight(`coop:torch:${a.id}`, new Vector3(), new Vector3(0, 0, 1), FLASH_ANGLE, FLASH_EXP, this.scene);
+      l.diffuse = FLASH_COLOR.clone();
+      l.specular = FLASH_COLOR.scale(0.3);
+      l.range = FLASH_RANGE;
+      a.torch = { m, l };
+    }
+    const { m, l } = a.torch;
+    const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
+    if (a.model) {
+      // в кулаке; ползком кисть на полу — фонарь чуть над ним
+      const h = a.model.handPos(s.lamp ? 'L' : 'R');
+      m.root.position.set(h.x + fx * 0.04, Math.max(a.y - a.eye + 0.05, h.y - GRIP_M), h.z + fz * 0.04);
+    } else {
+      const low = a.eye < CRAWL_EYE;
+      // вправо от взгляда — (cos yaw, −sin yaw); лёжа — у головы
+      const side = (s.lamp ? -1 : 1) * (low ? 0.15 : 0.24), fwd = low ? 0.6 : 0.3;
+      m.root.position.set(a.x + fz * side + fx * fwd, a.y - (low ? 0.12 : 0.42), a.z - fx * side + fz * fwd);
+    }
+    m.root.rotation.set(s.pitch, a.yaw, 0);
+    m.root.setEnabled(true);
+    const w = m.root.computeWorldMatrix(true);
+    for (const x of m.meshes) x.computeWorldMatrix(true);
+    Vector3.TransformCoordinatesToRef(new Vector3(0, 0, 0.09), w, l.position);
+    l.direction.set(fx * Math.cos(s.pitch), -Math.sin(s.pitch), fz * Math.cos(s.pitch));
+    l.intensity = flashIntensity(sceneLitness(this.scene)) * 0.9;
+    if (!l.isEnabled()) l.setEnabled(true);
+    return m.meshes;
   }
 
   /** Соседи комнаты через проёмы (без швов бесконечного хода — там сосед на своём месте, не рядом). */
@@ -359,15 +442,16 @@ export class CoopPresence {
       loc: this.inLoc(),
       fps: this.v.mode === 'fps',
     };
-    // глаза не на 1.6 (снежные лазы) и «засыпан» — только когда есть (сообщение короче)
-    const eye = round(eyeOf(c));
+    // глаза не на 1.6 (скрючившись, ползком, лёжа) и «засыпан» — только когда есть (сообщение короче)
+    const eye = round(this.v.posture?.eye ?? eyeOf(c));
     if (Math.abs(eye - EYE) > 0.01) s.eye = eye;
     if (this.buried()) s.buried = true;
     if (this.flags.lamp?.()) s.lamp = 1;
+    if (this.flags.torch?.()) s.torch = 1;
     if (this.flags.dead?.()) s.dead = 1;
     const o = this.sent;
     const same =
-      o && o.room === s.room && o.loc === s.loc && o.fps === s.fps && o.eye === s.eye && o.buried === s.buried && o.lamp === s.lamp && o.dead === s.dead &&
+      o && o.room === s.room && o.loc === s.loc && o.fps === s.fps && o.eye === s.eye && o.buried === s.buried && o.lamp === s.lamp && o.torch === s.torch && o.dead === s.dead &&
       Math.abs(o.p[0] - s.p[0]) < 0.01 && Math.abs(o.p[1] - s.p[1]) < 0.01 && Math.abs(o.p[2] - s.p[2]) < 0.01 && Math.abs(o.yaw - s.yaw) < 0.01;
     if (same && t - this.sentAt < HEARTBEAT_MS) return;
     this.co.sendState(s);
@@ -381,7 +465,7 @@ export class CoopPresence {
     const players = this.co.players;
     for (const [id, a] of this.avatars) {
       const p = players.get(id);
-      if (!p || p.name !== a.name || p.color !== a.color) {
+      if (!p || p.name !== a.name || p.color !== a.color || p.slot !== a.slot) {
         this.drop(a);
         this.avatars.delete(id);
       }
@@ -389,26 +473,9 @@ export class CoopPresence {
     for (const p of players.values()) if (!this.avatars.has(p.id)) this.avatars.set(p.id, this.make(p));
   }
 
+  /** Аватар игрока: табличка с именем сразу, модель — когда загрузится (attachModel). */
   private make(p: PlayerInfo): Avatar {
     const sc = this.scene;
-    const col = Color3.FromHexString(/^#[0-9a-f]{6}$/i.test(p.color) ? p.color : '#e8b04b');
-    const mat = (name: string, c: Color3, emissive: number) => {
-      const m = new StandardMaterial(`coop:${name}:${p.id}`, sc);
-      m.diffuseColor = c;
-      m.specularColor = new Color3(0.08, 0.08, 0.08);
-      // немного свечения: в тёмных биомах игрока видно
-      m.emissiveColor = c.scale(emissive);
-      return m;
-    };
-    const mBody = mat('body', col, 0.35);
-    const mHead = mat('head', Color3.Lerp(col, Color3.White(), 0.35), 0.35);
-    const mVisor = mat('visor', new Color3(0.06, 0.07, 0.08), 0);
-    const body = CreateCapsule(`coop:body:${p.id}`, { height: 1.44, radius: 0.24, tessellation: 14, subdivisions: 2 }, sc);
-    body.material = mBody;
-    const head = CreateSphere(`coop:head:${p.id}`, { diameter: 0.3, segments: 10 }, sc);
-    head.material = mHead;
-    const visor = CreateBox(`coop:visor:${p.id}`, { width: 0.22, height: 0.07, depth: 0.06 }, sc);
-    visor.material = mVisor;
     // табличка с именем
     const tex = new DynamicTexture(`coop:name:${p.id}`, { width: 512, height: 128 }, sc, true);
     const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
@@ -430,27 +497,31 @@ export class CoopPresence {
     mLabel.backFaceCulling = false;
     const label = CreatePlane(`coop:labelPlane:${p.id}`, { width: 0.8, height: 0.2 }, sc);
     label.material = mLabel;
-    const meshes = [body, head, visor, label];
-    for (const m of meshes) {
-      m.isPickable = false;
-      m.checkCollisions = false;
-      m.layerMask = PORTAL_LAYER;
-      m.setEnabled(false);
-      m.metadata = { coop: p.id };
-    }
-    return { id: p.id, name: p.name, color: p.color, body, head, visor, label, meshes, mats: [mBody, mHead, mVisor, mLabel], tex, lamp: null, room: null, x: 0, y: 0, z: 0, eye: EYE, yaw: 0, has: false, visible: false };
+    label.isPickable = false;
+    label.checkCollisions = false;
+    label.layerMask = PORTAL_LAYER;
+    label.setEnabled(false);
+    label.metadata = { coop: p.id };
+    const a: Avatar = { id: p.id, name: p.name, color: p.color, slot: p.slot, model: null, label, meshes: [label], mats: [mLabel], tex, lamp: null, torch: null, room: null, x: 0, y: 0, z: 0, eye: EYE, yaw: 0, pitch: 0, speed: 0, has: false, visible: false };
+    this.attachModel(a);
+    return a;
   }
 
   private drop(a: Avatar) {
-    for (const m of a.meshes) m.dispose(false, false);
+    a.model?.dispose();
+    a.label.dispose(false, false);
     a.lamp?.dispose(false, false);
+    a.torch?.m.dispose();
+    a.torch?.l.dispose();
     for (const m of a.mats) m.dispose(false, false);
     a.tex.dispose();
   }
 
-  /** Аватары, видимые в последнем кадре (для HUD и QA). */
-  get shown(): { id: string; room: string | null; pos: [number, number, number] }[] {
-    return [...this.avatars.values()].filter((a) => a.visible).map((a) => ({ id: a.id, room: a.room, pos: [a.x, a.y, a.z] }));
+  /** Аватары, видимые в последнем кадре (для HUD и QA): глаза, скорость (м/с), веса клипов модели, цвет шинели. */
+  get shown(): { id: string; room: string | null; pos: [number, number, number]; speed: number; clips: Partial<Record<string, number>> | null; coat: string | null }[] {
+    return [...this.avatars.values()]
+      .filter((a) => a.visible)
+      .map((a) => ({ id: a.id, room: a.room, pos: [a.x, a.y, a.z], speed: a.speed, clips: a.model?.weights ?? null, coat: this.models.coatColor(a.slot)?.toHexString() ?? null }));
   }
 
   dispose() {
@@ -468,13 +539,14 @@ export class CoopPresence {
     for (const a of this.avatars.values()) this.drop(a);
     this.avatars.clear();
     this.byRoom.clear();
+    this.models.dispose();
   }
 }
 
 const round = (x: number): number => Math.round(x * 1000) / 1000;
 
-/** Глаза камеры над её низом (полом), м: эллипсоид коллизий — 2·ellipsoid.y − ellipsoidOffset.y (стоя — 1.6, в снежных
- *  лазах SnowWalk делает его ниже). */
+/** Глаза камеры над низом её эллипсоида, м: 2·ellipsoid.y − ellipsoidOffset.y — запасной, если у просмотрщика нет позы
+ *  (Posture.eye — глаз над ногами; низ эллипсоида в низких позах выше ног на «шаг» lift). */
 function eyeOf(c: { ellipsoid: Vector3; ellipsoidOffset: Vector3 }): number {
   return 2 * c.ellipsoid.y - c.ellipsoidOffset.y;
 }

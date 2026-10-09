@@ -215,3 +215,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .stopdx-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .stopdx-fix { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; padding-top: 6px; border-top: 1px solid #d8604a44; font-size: 12px; }
 .stopdx a { color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
+
+/* ───── «Запустить без отладки» (шапка; сама игра — src/play/play.css) ───── */
+.play-launch {
+  height: 28px; padding: 0 14px; cursor: pointer;
+  background: #1f3430; color: #e9e3d2; border: 1px solid #3d5c53; border-radius: var(--r);
+  font-family: var(--font-c); font-weight: 600; font-size: 13px; letter-spacing: 0.04em;
+}
+.play-launch:hover { background: #284540; border-color: var(--accent); color: #fff; }
+.play-launch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

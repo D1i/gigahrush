@@ -172,6 +172,9 @@ export interface Room {
   /** Лестница с перепадом высоты (src/model/stairs.ts): марши и площадки над низом комнаты. Комнаты за метками
    *  стоят на высоте пола у метки — бесконечный мир поднимается/опускается (Instance.z). Нет поля / null — пол ровный. */
   stair?: StairSpec | null;
+  /** Своя высота потолка комнаты, м от пола комнаты (у лестничных залов — над подъёмом, как в liftPiece): стены,
+   *  потолок, перемычки и пропы с тегом «потолок» — до неё (залы метро 4.5). Нет поля — wallHeightM. */
+  ceilM?: number;
 }
 
 /** Марш: прямоугольник клеток плана комнаты (до поворота экземпляра) [x, x + w) × [y, y + h), up — куда идти вверх,
@@ -184,6 +187,9 @@ export interface StairFlight {
   up: Side;
   z0: number;
   z1: number;
+  /** стиль марша: 'escalator' — блокаут не рисует видимые ступени и перила (их рисует модуль метро), коллайдеры
+   *  (пандус по линии носков, перила) и опора остаются. Нет поля — обычная лестница */
+  style?: 'escalator';
 }
 
 /** Площадка выше низа комнаты: прямоугольник клеток и высота её пола над низом комнаты, м. */
@@ -286,7 +292,30 @@ export interface HangarSpec {
   darkness: number;
 }
 
-export type LocationSpec = StairwellSpec | LiftSpec | LairSpec | HangarSpec | SwampSpec;
+/**
+ * «Люк в погреб» — переход сюжета из сарая (src/game/story.ts): в полу комнаты — люк; E — открыть и спуститься
+ * (затемнение), StreamWorld.descend → биом следующего шага сюжета (погреб). Ставится только переходом (вес роста 0).
+ */
+export interface HatchSpec {
+  kind: 'hatch';
+  /** на сколько этажей ниже выводит люк: случайное целое в [min, max] */
+  floorsDown: [number, number];
+}
+
+/**
+ * «Дверь в снег» — переход сюжета из погреба и общаги (src/game/story.ts): E у двери — за ней снег, обвал засыпает
+ * игрока; откапываться (E, digs нажатий) — выбирается в снежных тоннелях (StreamWorld.descend → биом снега).
+ * Ставится только переходом (вес роста 0).
+ */
+export interface SnowDoorSpec {
+  kind: 'snowdoor';
+  /** сколько нажатий E, чтобы откопаться: случайное целое в [min, max] */
+  digs: [number, number];
+  /** на сколько этажей ниже выводит: случайное целое в [min, max] */
+  floorsDown: [number, number];
+}
+
+export type LocationSpec = StairwellSpec | LiftSpec | LairSpec | HangarSpec | SwampSpec | HatchSpec | SnowDoorSpec;
 
 export type MatchMode =
   /** стыкуются метки с одинаковым tag и одинаковой длиной */
@@ -326,6 +355,10 @@ export interface GeneratorSettings {
   /** служебное (прогон бесконечного мира в режиме квартир): ходы и хабы подвала — длинный обзор, предел обзора на
    *  линии через них не действует (docs/GENERATOR-4D.md §17). В настройках проекта не задаётся */
   longSight?: boolean;
+  /** служебное (бесконечный мир с биомами со своим пределом обзора, Biome.sightM): id комнаты → её предел, м (0 — без
+   *  предела), только отличные от sightM. validateFoldRun сверяет линию с самым мягким пределом комнат, через которые
+   *  она идёт. В настройках проекта не задаётся */
+  sightRooms?: Record<string, number>;
 }
 
 export type GeneratorMode = 'euclid' | 'fold';
@@ -509,6 +542,9 @@ export interface Biome {
   /** дальность обзора в «Прогулке», м: пока игрок в комнате биома, портальный рендер открывает проёмы и мир раскрывается
    *  вперёд не меньше чем на столько (длинные прямые коридоры общаги). Нет — по пределу обзора (viewHorizonM) */
   viewM?: number;
+  /** предел обзора по порталам для пула комнат биома, м: комнаты с большим внутренним обзором не выкидываются из
+   *  роста. Нет поля — общий WalkGenSettings.sightM; 0 — без предела; число — свой предел (метро 28) */
+  sightM?: number;
   note: string;
 }
 
@@ -610,6 +646,9 @@ export interface WorldSettings extends ApartmentSettings {
   startBiome: string | null;
   /** сеть ходов подвала (биомы с layout = 'tunnels') */
   tunnels: TunnelSettings;
+  /** сюжет (режим «Запустить без отладки», src/game/story.ts): переходы ведут по цепочке локаций, а не в случайный
+   *  биом; срыв с лестницы / из лифта — в общагу. Нет поля / false — переходы как в «Прогулке» */
+  story?: boolean;
 }
 
 // ───────────────────────── Прогон (результат генерации) ─────────────────────────
@@ -653,6 +692,9 @@ export interface Link {
   floors?: number;
   /** для 'lift': какой выход кабины — прямо (напротив входа) или направо */
   side?: LiftSide;
+  /** для 'descent': срыв (сюжет, src/game/story.ts) — Хвататель утащил с лестницы / из лифта выпал (a — лестница или
+   *  лифт), b — комната прихода в общаге (StreamWorld.fall); у локации — отдельно от её спуска */
+  fall?: true;
   /** бесконечный мир: дверь «исчезла» (пропущенный переход) — проёма больше нет, обе метки — тупики */
   sealed?: true;
   /** бесконечный мир: дверь в переход (спец-комнату) — метки любые (теги и ширина могут не совпадать), проём — их
@@ -785,4 +827,5 @@ export type Selection =
   | { kind: 'decor' | 'spot' | 'door' | 'connector'; id: string }
   | null;
 
-export type Page = 'editor' | 'library' | 'economy' | 'spawn' | 'generator' | 'view3d' | 'data';
+/** 'play' — «Запустить без отладки»: игра на весь экран по сюжету, без редактора и отладочных панелей */
+export type Page = 'editor' | 'library' | 'economy' | 'spawn' | 'generator' | 'view3d' | 'data' | 'play';

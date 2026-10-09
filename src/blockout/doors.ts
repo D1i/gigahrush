@@ -23,10 +23,18 @@ export type { DoorRole };
 /** Ручка — то, что двигается перед распахом: нажимная ручка, круглая ручка, штурвал, засов, щеколда-вертушка. */
 export type HandleKind = 'lever' | 'knob' | 'wheel' | 'bolt' | 'latch' | 'none';
 
-export type DoorGroup = 'хрущёвка' | 'общага' | 'подвал' | 'сарай' | 'погреб' | 'снег' | 'завод';
+export type DoorGroup = 'хрущёвка' | 'общага' | 'подвал' | 'сарай' | 'погреб' | 'снег' | 'завод'
+  // metro
+  | 'метро'
+  // catacombs
+  | 'катакомбы';
 
 /** Вид полотна — какой построитель модели. */
-export type DoorLook = 'dermantin' | 'panel' | 'flat' | 'glazed' | 'metal' | 'planks' | 'slats' | 'hermetic' | 'corrugated';
+export type DoorLook = 'dermantin' | 'panel' | 'flat' | 'glazed' | 'metal' | 'planks' | 'slats' | 'hermetic' | 'corrugated'
+  // metro: глухая фальш-стена во весь проём (не открывается)
+  | 'blind'
+  // catacombs: закладка проёма (кирпич или бетон) и ржавая решётка лаза — не двери, не открываются, не заколачиваются
+  | 'bricked' | 'grate';
 
 export interface DoorStyle {
   id: string;
@@ -213,6 +221,45 @@ export const DOOR_STYLES: DoorStyle[] = [
     casing: { w: 0.1, t: 0.04, color: '#3f433d' },
     model: 'две створки из профлиста с рамой, калитка в левой створке, засов',
   },
+  // ── метро (metro) ──
+  {
+    id: 'metro_door', name: 'Маятниковая дверь метро', group: 'метро', look: 'glazed', leaves: 2, thick: 0.05,
+    where: 'метро: «Выход в город» вестибюлей (stair), закрытые переходы (metro_per, hall>per, per>hall)', rest: 92,
+    anim: { handle: 'none', unlatchS: 0.15, swingS: 1.2 }, colors: ['#5b3d26', '#4d3422', '#6a4a2e'],
+    casing: { w: 0.08, t: 0.03, color: '#c9c4b8' },
+    model: 'две тяжёлые створки: дубовая обвязка, большое стекло в три ряда, филёнка внизу, мраморный наличник',
+  },
+  {
+    id: 'metro_wall', name: 'Глухая стена с панно (метро)', group: 'метро', look: 'blind', leaves: 1, thick: 0.12,
+    where: 'метро: закрытые широкие проходы — ось зала станции (metro_hall, 17.6 м), торцы эскалатора (esc>hall)', rest: 90,
+    anim: { handle: 'none', unlatchS: 0.2, swingS: 1.5 }, colors: ['#dcd9d2', '#d2cec5'],
+    casing: null,
+    model: 'фальш-стена из мраморных плит во весь проём с цоколем и карнизом, посередине мозаичное панно: круг-эмблема, ' +
+      'ступенчатые треугольники, полосы красного, чёрного и белого камня; не открывается',
+  },
+  // ── катакомбы (catacombs) ──
+  {
+    id: 'cat_bricked', name: 'Закладка кирпичом (катакомбы)', group: 'катакомбы', look: 'bricked', leaves: 1, thick: 0.12,
+    where: 'катакомбы: закрытые ходы (catacombs, 2 м) и проёмы ниш-убежищ (catacombs>refuge)', rest: 90,
+    anim: { handle: 'none', unlatchS: 0.2, swingS: 1.5 }, colors: ['#7a3f2e', '#6b3a2c', '#80493a'],
+    casing: null,
+    model: 'проём заложен красным кирпичом вперевязку: швы раствора, кирпичи разного тона, внизу — тёмная полоса ила и ' +
+      'высолов; не открывается',
+  },
+  {
+    id: 'cat_concrete', name: 'Бетонная заглушка (катакомбы)', group: 'катакомбы', look: 'bricked', leaves: 1, thick: 0.12,
+    where: 'катакомбы: закрытые ходы (catacombs, 2 м) — вперемешку с кирпичной закладкой', rest: 90,
+    anim: { handle: 'none', unlatchS: 0.2, swingS: 1.5 }, colors: ['#7d7b74', '#6f6d66'],
+    casing: null,
+    model: 'бетонная заглушка во весь проём: следы щитов опалубки, потёки, тёмная полоса ила снизу; не открывается',
+  },
+  {
+    id: 'cat_grate', name: 'Ржавая решётка лаза (катакомбы)', group: 'катакомбы', look: 'grate', leaves: 1, thick: 0.05,
+    where: 'катакомбы: закрытые лазы (cat_duct, 0.8×0.8 м)', rest: 90,
+    anim: { handle: 'none', unlatchS: 0.2, swingS: 1.0 }, colors: ['#6e4a32', '#5d4130'],
+    casing: null,
+    model: 'ржавая решётка из прутьев в раме на заклёпках, за ней — темнота короба (глухая чёрная плита); не открывается',
+  },
 ];
 
 export const DOOR_STYLE_BY_ID: ReadonlyMap<string, DoorStyle> = new Map(DOOR_STYLES.map((s) => [s.id, s]));
@@ -245,6 +292,14 @@ const LEAF_SIDE: Record<string, boolean> = {
   // снежные ходы: боковой лаз в тупиковую берлогу — открытый без двери (стиля по метке нет), закрытый — обледенелая
   // дверь со стороны берлоги
   'den>snow': true, 'snow>den': false,
+  // metro: проём из зала через пути и торцы эскалатора — без полотна (закрытые — по метке); служебные двери — в служебный
+  // ход и в служебное помещение
+  'per>hall': true, 'hall>per': false,
+  'esc>hall': true, 'hall>esc': false,
+  'slu>per': true, 'per>slu': false,
+  'room>slu': true, 'slu>room': false,
+  // catacombs: проём хода в нишу-убежище — без полотна (стиля по метке нет); не выросла ниша — закладка кирпичом
+  'refuge>catacombs': true, 'catacombs>refuge': false,
 };
 
 /** Дверь по метке (у пары — одна и та же); несколько — вариант по месту. */
@@ -266,6 +321,9 @@ const STYLE_BY_TAG: Record<string, string[]> = {
   'obshaga>room': ['obshaga_room'], 'room>obshaga': ['obshaga_room'],
   'obshaga>common': ['obshaga_room'], 'common>obshaga': ['obshaga_room'],
   'hall>vahter': ['obshaga_room'], 'vahter>hall': ['obshaga_room'],
+  // metro: служебные двери — железные
+  'per>slu': ['service_metal'], 'slu>per': ['service_metal'],
+  'slu>room': ['service_metal'], 'room>slu': ['service_metal'],
 };
 
 /** Локация комнаты по её тегам (особые биомы — раньше квартирных тегов). */
@@ -276,12 +334,36 @@ export function doorContext(roomTags: readonly string[]): DoorGroup {
   if (roomTags.includes('сарай')) return 'сарай';
   if (roomTags.includes('подвал')) return 'подвал';
   if (roomTags.includes('общага')) return 'общага';
+  // metro
+  if (roomTags.includes('метро')) return 'метро';
+  // catacombs
+  if (roomTags.includes('катакомбы')) return 'катакомбы';
   return 'хрущёвка';
 }
 
 /** Закрытая дверь локации, если по метке не определилась (марши, ходы, неизвестные метки, особые биомы). */
 const CLOSED_BY_CONTEXT: Record<DoorGroup, string> = {
   'хрущёвка': 'int_dg', 'общага': 'obshaga_room', 'подвал': 'basement_metal', 'сарай': 'barn_plank', 'погреб': 'cellar_low', 'снег': 'snow_iced', 'завод': 'factory_hermetic',
+  // metro
+  'метро': 'metro_door',
+  // catacombs: марш наверх из хаба ('stair') и прочее — подвальная железная
+  'катакомбы': 'basement_metal',
+};
+
+/** catacombs: закрытые проходы катакомб по метке (где бы ни стояли): ход 2 м — закладка кирпичом или бетонная
+ *  заглушка (вариант по месту), проём ниши — кирпичом, лаз — ржавая решётка. */
+const CAT_CLOSED: Record<string, string[]> = {
+  catacombs: ['cat_bricked', 'cat_bricked', 'cat_concrete'],
+  'catacombs>refuge': ['cat_bricked'], 'refuge>catacombs': ['cat_bricked'],
+  cat_duct: ['cat_grate'],
+};
+
+/** metro: закрытые проходы метро по метке (где бы ни стояли): широкие (ось зала, торцы эскалатора) — глухая стена с
+ *  панно, переходы — маятниковая дверь, служебный ход — железная служебная. */
+const METRO_CLOSED: Record<string, string> = {
+  metro_hall: 'metro_wall', 'esc>hall': 'metro_wall', 'hall>esc': 'metro_wall',
+  metro_per: 'metro_door', 'hall>per': 'metro_door', 'per>hall': 'metro_door',
+  metro_slu: 'service_metal',
 };
 
 /** Полотно этой метки висит в её комнате (у прохода с меткой tag, если он не выход). */
@@ -319,7 +401,13 @@ export function doorStyleFor(tag: string, roomTags: readonly string[], closed: b
   // ворота
   if (closed && ctx === 'завод' && tag === 'factory') id = 'factory_gate';
   else if (closed && (ctx === 'погреб' || ctx === 'снег' || ctx === 'завод')) id = CLOSED_BY_CONTEXT[ctx];
-  else if (list) id = list[doorHash(seed + '#style') % list.length];
+  // metro: закрытые проходы метро — по метке; «Выход в город» вестибюля ('stair') — маятниковая дверь
+  else if (closed && (METRO_CLOSED[tag] || (ctx === 'метро' && tag === 'stair'))) id = METRO_CLOSED[tag] ?? 'metro_door';
+  // catacombs: закрытые проходы катакомб — по метке; марш наверх хаба ('stair') — подвальная железная
+  else if (closed && (CAT_CLOSED[tag] || (ctx === 'катакомбы' && tag === 'stair'))) {
+    const l = CAT_CLOSED[tag] ?? [CLOSED_BY_CONTEXT['катакомбы']];
+    id = l[doorHash(seed + '#style') % l.length];
+  } else if (list) id = list[doorHash(seed + '#style') % list.length];
   else if (closed) {
     if (tag === 'stair') id = ctx === 'подвал' ? 'basement_metal' : ctx === 'сарай' ? 'barn_plank' : 'tambour';
     else if (tag === 'corridor') id = ctx === 'хрущёвка' ? 'tambour' : CLOSED_BY_CONTEXT[ctx];
@@ -918,6 +1006,94 @@ function buildLeaf(st: DoorStyle, w: number, h: number, seed: string, k: number)
       }
       break;
     }
+    // metro: глухая фальш-стена во весь проём (широкие проходы метро) — мраморные плиты со швами, цоколь тёмного
+    // гранита, карниз; посередине мозаичное панно: рама чёрного камня, белый фон, полосы красного и чёрного камня внизу,
+    // круг-эмблема (диск из повёрнутых квадратов и обод), ступенчатые треугольники по сторонам. Ручки нет.
+    case 'blind': {
+      const RED = '#a8322b', BLACK = '#1f1d1c';
+      L.box(0, 0, 0, w, h, t, col);
+      const joint = shade(col, 0.82);
+      const nx = Math.max(1, Math.round(w / 1.2)), ny = Math.max(1, Math.round((h - 0.5) / 1.2));
+      for (let i = 1; i < nx; i++) L.front((i * w) / nx - 0.003, 0.3, (i * w) / nx + 0.003, h - 0.2, 0.002, joint);
+      for (let j = 1; j < ny; j++) {
+        const y = 0.3 + (j * (h - 0.5)) / ny;
+        L.front(0, y - 0.003, w, y + 0.003, 0.002, joint);
+      }
+      L.both(0, 0, w, 0.3, 0.02, '#45413e');
+      L.both(0, h - 0.2, w, h, 0.04, shade(col, 0.9));
+      const pw = Math.min(4, w * 0.7), ph = Math.min(2.6, h - 0.9);
+      if (pw > 0.6 && ph > 0.6) {
+        const x0 = (w - pw) / 2, y0 = Math.max(0.5, (h - ph) / 2 + 0.1), x1 = x0 + pw, y1 = y0 + ph;
+        L.front(x0 - 0.06, y0 - 0.06, x1 + 0.06, y1 + 0.06, 0.012, BLACK);
+        L.front(x0, y0, x1, y1, 0.012, '#e6e1d6', -0.012);
+        const sh = ph * 0.07;
+        [RED, BLACK, RED].forEach((c, i) => L.front(x0, y0 + sh * (i * 1.4 + 0.3), x1, y0 + sh * (i * 1.4 + 1.3), 0.008, c, -0.024));
+        const cx = (x0 + x1) / 2, cy = y0 + ph * 0.6, R = Math.min(pw, ph) * 0.24;
+        for (let a = 0; a < 3; a++) L.parts.push({ c: [cx, cy, -0.03], s: [R * 1.42, R * 1.42, 0.008], rz: (a * Math.PI) / 6, color: RED });
+        for (let i = 0; i < 16; i++) {
+          const a0 = (i / 16) * Math.PI * 2, a1 = ((i + 1) / 16) * Math.PI * 2, r = R * 1.2;
+          L.parts.push(bar(cx + r * Math.cos(a0), cy + r * Math.sin(a0), cx + r * Math.cos(a1), cy + r * Math.sin(a1), 0.05, -0.034, -0.026, BLACK));
+        }
+        for (const sx of [-1, 1]) {
+          const bx = cx + sx * pw * 0.34, tw = pw * 0.18, th = ph * 0.35, n = 5;
+          for (let k = 0; k < n; k++) {
+            const ww = tw * (1 - k / n), yb = cy - th / 2 + (k * th) / n;
+            L.front(bx - ww / 2, yb, bx + ww / 2, yb + th / n, 0.008, k % 2 ? BLACK : RED, -0.024);
+          }
+        }
+      }
+      break;
+    }
+    // catacombs: закладка проёма — кирпич вперевязку (полосы по два ряда разного тона, швы раствора, вертикальные швы
+    // со сдвигом) или бетонная заглушка (швы щитов опалубки, потёки); внизу — тёмная полоса ила и высолы. Ручки нет.
+    case 'bricked': {
+      L.box(0, 0, 0, w, h, t, col);
+      const SILT = '#3b3328', SALT = '#c9c2b0';
+      if (st.id === 'cat_concrete') {
+        const seam = shade(col, 0.8);
+        for (let y = 0.5; y < h - 0.05; y += 0.5) L.front(0, y - 0.006, w, y + 0.006, 0.003, seam);
+        for (let x = 1.0; x < w - 0.05; x += 1.0) L.front(x - 0.006, 0, x + 0.006, h, 0.003, seam);
+        for (let i = 0; i < 4; i++) {
+          const x = 0.1 + rnd() * Math.max(0.05, w - 0.25);
+          L.front(x, 0.3, x + 0.04 + rnd() * 0.05, 0.6 + rnd() * (h - 0.8), 0.002, shade(col, 0.72));
+        }
+      } else {
+        const mortar = '#a59a86';
+        const BH = 0.15;
+        for (let k = 0, y = 0; y < h - 1e-6; k++, y += BH) {
+          const y1 = Math.min(h, y + BH);
+          L.front(0, y, w, y1 - 0.012, 0.006, rnd() < 0.5 ? col : shade(col, 0.88 + rnd() * 0.24));
+          L.front(0, y1 - 0.012, w, y1, 0.003, mortar);
+          for (let x = k % 2 ? 0.26 : 0.52; x < w - 0.05; x += 0.52) L.front(x - 0.006, y, x + 0.006, y1 - 0.012, 0.007, mortar);
+        }
+        for (let i = 0; i < 3; i++) {
+          const x = rnd() * Math.max(0.05, w - 0.4);
+          L.front(x, 0.3, x + 0.2 + rnd() * 0.2, 0.42 + rnd() * 0.25, 0.008, SALT);
+        }
+      }
+      L.front(0, 0, w, 0.3, 0.01, SILT);
+      break;
+    }
+    // catacombs: ржавая решётка лаза — рама и прутья на заклёпках перед глухой чёрной плитой (за решёткой — темнота
+    // короба: одинаково, есть за ней проём или стена). Ручки нет.
+    case 'grate': {
+      L.box(0, 0, t - 0.01, w, h, t, '#0b0b0a');
+      const fw = 0.04, dark = shade(col, 0.8);
+      L.box(0, 0, 0, fw, h, 0.03, dark);
+      L.box(w - fw, 0, 0, w, h, 0.03, dark);
+      L.box(fw, 0, 0, w - fw, fw, 0.03, dark);
+      L.box(fw, h - fw, 0, w - fw, h, 0.03, dark);
+      const n = Math.max(2, Math.round((w - 2 * fw) / 0.1));
+      for (let i = 1; i < n; i++) {
+        const x = fw + (i * (w - 2 * fw)) / n;
+        L.box(x - 0.008, fw, 0.005, x + 0.008, h - fw, 0.025, rnd() < 0.5 ? col : shade(col, 1.1));
+      }
+      for (const y of [h / 3, (2 * h) / 3]) L.box(fw, y - 0.012, 0, w - fw, y + 0.012, 0.03, dark);
+      for (const [x, y] of [[fw / 2, fw / 2], [w - fw / 2, fw / 2], [fw / 2, h - fw / 2], [w - fw / 2, h - fw / 2]] as const) {
+        L.front(x - 0.012, y - 0.012, x + 0.012, y + 0.012, 0.01, STEEL_DARK);
+      }
+      break;
+    }
   }
   return L;
 }
@@ -1020,7 +1196,8 @@ export function doorGeometry(inp: DoorGeometryInput): DoorGeometry {
   }
   // ── заколоченная (тупик): доски наискось поверх полотна и наличника — на брусках, гвозди. Самозакрывающаяся (общага)
   // не заколочена — просто заперта: её распахивает рука, полотно ходит ──
-  if (inp.role === 'dead' && !st.selfClosing) {
+  // (глухая стена метро — не дверь: без досок)
+  if (inp.role === 'dead' && !st.selfClosing && st.look !== 'blind') {
     const rnd = rngOf(inp.seed + '#boards');
     // перед самой выступающей деталью полотна (ручка, штурвал)
     let front = zf;

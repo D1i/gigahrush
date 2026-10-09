@@ -24,6 +24,10 @@ import barnUrl from './assets/barn_props.glb?url';
 import factoryUrl from './assets/factory_props.glb?url';
 // общага из примитивов (tools/make-obshaga-props.mjs, p_obsh_*)
 import obshagaUrl from './assets/obshaga_props.glb?url';
+// metro: колонная станция из примитивов (tools/make-metro-props.mjs, p_metro_*)
+import metroUrl from './assets/metro_props.glb?url';
+// cellar: погреб из набора earth-cellar-3d и крепь по его рецепту (tools/optimize-cellar.mjs, p_cel_*)
+import cellarUrl from './assets/cellar_props.glb?url';
 
 /** Поля PBR-материала glTF, которые переносятся (без импорта класса — он тянет весь PBR). */
 interface PbrLike extends Material {
@@ -45,7 +49,7 @@ export class PropModels {
   readonly loaded: Promise<void>;
   private disposed = false;
 
-  constructor(readonly scene: Scene, urls: string[] = [basementUrl, barnUrl, factoryUrl, obshagaUrl]) {
+  constructor(readonly scene: Scene, urls: string[] = [basementUrl, barnUrl, factoryUrl, obshagaUrl, metroUrl, cellarUrl]) {
     this.loaded = (async () => {
       for (const u of urls) {
         try {

@@ -166,9 +166,9 @@ export function stairIssues(room: Room): string[] {
 }
 
 /** Лестница экземпляра в мировых клетках (поворот rot вокруг (0, 0), затем сдвиг dx, dy) — для экспорта прогона
- *  (RunInstance.stair): прямоугольники [x0, x1) × [y0, y1). */
+ *  (RunInstance.stair): прямоугольники [x0, x1) × [y0, y1); стиль марша (эскалатор) — только если задан. */
 export function worldStair(spec: StairSpec, rot: number, dx: number, dy: number): {
-  flights: { x0: number; y0: number; x1: number; y1: number; up: Side; z0: number; z1: number }[];
+  flights: { x0: number; y0: number; x1: number; y1: number; up: Side; z0: number; z1: number; style?: 'escalator' }[];
   pads: { x0: number; y0: number; x1: number; y1: number; z: number }[];
 } {
   const rect = (r: { x: number; y: number; w: number; h: number }) => {
@@ -177,7 +177,7 @@ export function worldStair(spec: StairSpec, rot: number, dx: number, dy: number)
     return { x0: Math.min(ax, bx) + dx, y0: Math.min(ay, by) + dy, x1: Math.max(ax, bx) + 1 + dx, y1: Math.max(ay, by) + 1 + dy };
   };
   return {
-    flights: spec.flights.map((f) => ({ ...rect(f), up: rotateSide(f.up, rot), z0: f.z0, z1: f.z1 })),
+    flights: spec.flights.map((f) => ({ ...rect(f), up: rotateSide(f.up, rot), z0: f.z0, z1: f.z1, ...(f.style === 'escalator' ? { style: f.style } : {}) })),
     pads: (spec.pads ?? []).map((p) => ({ ...rect(p), z: p.z })),
   };
 }
@@ -200,6 +200,8 @@ export function parseStair(v: unknown): StairSpec | null {
     up: SIDES.includes(o.up as Side) ? (o.up as Side) : 'N',
     z0: Math.max(0, n(o.z0)),
     z1: Math.max(0, n(o.z1)),
+    // стиль марша: только известный (эскалатор метро), иначе обычная лестница
+    ...(o.style === 'escalator' ? { style: 'escalator' as const } : {}),
   })).filter((f) => f.w > 0 && f.h > 0);
   const pads: StairPad[] = (Array.isArray(v.pads) ? v.pads : []).filter(isObj).map((o) => ({ ...rect(o), z: Math.max(0, n(o.z)) })).filter((p) => p.w > 0 && p.h > 0);
   if (!flights.length && !pads.length) return null;

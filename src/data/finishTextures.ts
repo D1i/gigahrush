@@ -11,7 +11,9 @@
 export type FinishTexKind =
   | 'stripe' | 'flower' | 'rhomb' | 'rogozhka'
   | 'tile' | 'paint' | 'whitewash' | 'plaster' | 'concrete' | 'brick' | 'dvp'
-  | 'lino_parquet' | 'lino_speckle' | 'herringbone' | 'metlakh' | 'boards' | 'tile_floor' | 'tile_panel';
+  | 'lino_parquet' | 'lino_speckle' | 'herringbone' | 'metlakh' | 'boards' | 'tile_floor' | 'tile_panel'
+  // metro
+  | 'marble' | 'granite_floor' | 'tile_plinth' | 'soot' | 'soot_floor';
 
 export interface FinishTexOpts {
   /** основной цвет */
@@ -776,6 +778,184 @@ function drawBoards(t: T, o: FinishTexOpts): void {
   t.modulate(t.fbm(3, 3, 3), 0.06);
 }
 
+// ---------------------------------------------------------------- метро (metro)
+
+/**
+ * Прожилки мрамора: поле v = |sin 2π(m·x/W + p·y/H + amp·(шум − ½))| — периодично по построению (m, p целые, шум на
+ * периодической решётке); прожилка — где v мало (ширина width), к цвету col с силой alpha. cells — крупность извивов.
+ */
+function veins(t: T, col: string, m: number, p: number, amp: number, width: number, alpha: number, cells: number): void {
+  const { W, H } = t;
+  const n = t.fbm(cells, cells, 4);
+  const id = t.c.getImageData(0, 0, W, H);
+  const d = id.data;
+  const c = hex(col);
+  for (let y = 0, q = 0; y < H; y++) {
+    for (let x = 0; x < W; x++, q++) {
+      const v = Math.abs(Math.sin(2 * Math.PI * ((m * x) / W + (p * y) / H + amp * (n[q] - 0.5))));
+      if (v >= width) continue;
+      const k = alpha * (1 - v / width) ** 2;
+      const i = q * 4;
+      for (let ch = 0; ch < 3; ch++) d[i + ch] += (c[ch] - d[i + ch]) * k;
+    }
+  }
+  t.c.putImageData(id, 0, 0);
+}
+
+/** Швы плит n × n: тонкая тёмная линия со светлой кромкой (у края картинки — половина, при повторе целый шов). */
+function slabJoints(t: T, n: number, dark: string, light: string): void {
+  const { W, H } = t;
+  const s = W / n, sy = H / n;
+  for (let k = 0; k <= n; k++) {
+    t.rect(k * s - 1, 0, 2, H, dark);
+    t.rect(0, k * sy - 1, W, 2, dark);
+    t.rect(k * s + 1, 0, 1, H, light);
+    t.rect(0, k * sy + 1, W, 1, light);
+  }
+}
+
+/**
+ * Мрамор метро (стены зала, пилоны; тёмный — вестибюли и эскалаторы): плиты n × n с разницей тона, облака, прожилки
+ * accent — крупные диагональные и тонкие волоски поперёк, тонкие швы плит.
+ */
+function drawMarble(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#e8e6e0';
+  const vein = o.accent ?? '#868b91';
+  const n = o.n ?? 2;
+  const { W, H } = t;
+  const s = W / n, sy = H / n;
+  t.fill(base);
+  // плиты из разных блоков: тон каждой чуть свой
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) t.rect(i * s, j * sy, s, sy, rgba(t.r() < 0.5 ? '#ffffff' : '#000000', t.u(0, 0.04)));
+  t.modulate(t.fbm(3, 3, 4), 0.05);
+  t.modulate(t.fbm(2, 2, 3), 0.35, mix(base, vein, 0.25)); // мягкие облака к цвету прожилок
+  veins(t, vein, 1, 2, 2.4, 0.09, 0.55, 3);
+  veins(t, vein, 2, -1, 3.2, 0.035, 0.45, 4);
+  veins(t, mix(vein, base, 0.4), 1, -3, 4.0, 0.02, 0.35, 5);
+  t.specks(220, [vein, shade(base, 0.3)], 0.4, 1.1, 0.25);
+  slabJoints(t, n, rgba('#000000', 0.22), rgba('#ffffff', 0.18));
+}
+
+/** Зерно гранита: крапины тёмные, рыжие, светлые. */
+function graniteGrain(t: T, base: string, count: number): void {
+  t.specks(count, [shade(base, -0.45), shade(base, -0.25), mix(base, '#7a3a28', 0.5), shade(base, 0.32)], 0.4, 1.5, 0.5);
+}
+
+/** Ромб с центром (x, y) и полудиагональю r. */
+function diamond(t: T, x: number, y: number, r: number, fill: string): void {
+  const c = t.c;
+  c.fillStyle = fill;
+  c.beginPath();
+  c.moveTo(x, y - r);
+  c.lineTo(x + r, y);
+  c.lineTo(x, y + r);
+  c.lineTo(x - r, y);
+  c.closePath();
+  c.fill();
+}
+
+/**
+ * Гранитный пол метро: бежевые плиты n × n (повтор картинки — 2 × 2 плиты по 0.6 м), швы — полосы серого гранита, в
+ * узлах — ромбы через один: красные с бежевой серединкой и серые с красной (n чётное — узел на краю совпадает с узлом на
+ * противоположном краю). Зерно гранита по всему полу, лёгкая неровность тона.
+ */
+function drawGraniteFloor(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#c9b89d';
+  const red = o.accent ?? '#a23b2f';
+  const grey = o.low ?? '#5d6064';
+  const n = Math.max(2, Math.round((o.n ?? 2) / 2) * 2);
+  const { W, H } = t;
+  const s = W / n, sy = H / n;
+  t.fill(base);
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) t.rect(i * s, j * sy, s, sy, rgba(t.r() < 0.5 ? '#ffffff' : '#000000', t.u(0, 0.05)));
+  graniteGrain(t, base, Math.round((W * H) / 90));
+  // полосы серого гранита по швам плиток (0.05 м)
+  const band = s * (0.05 / 0.6);
+  for (let k = 0; k <= n; k++) {
+    t.rect(k * s - band / 2, 0, band, H, grey);
+    t.rect(0, k * sy - band / 2, W, band, grey);
+  }
+  // ромбы в узлах
+  const r = s * 0.24;
+  for (let i = 0; i <= n; i++) {
+    for (let j = 0; j <= n; j++) {
+      const x = i * s, y = j * sy;
+      const even = (i + j) % 2 === 0;
+      diamond(t, x, y, r + 2, shade(grey, -0.35));
+      diamond(t, x, y, r, even ? red : grey);
+      diamond(t, x, y, r * 0.45, even ? base : red);
+    }
+  }
+  // зерно и по полосам, и по ромбам; общая неровность тона
+  graniteGrain(t, grey, Math.round((W * H) / 260));
+  t.modulate(t.fbm(3, 3, 3), 0.05);
+  slabJoints(t, n, rgba('#000000', 0.18), rgba('#ffffff', 0.08));
+}
+
+/**
+ * Кафельная панель переходов метро: кремовый кафель 15×15 рядами снизу вверх над гранитным цоколем в две плитки высотой
+ * (0.3 м: плита на всю ширину картинки, светлая фаска сверху). Картинка — на всю высоту панели (tileH отделки = высота
+ * dado, низ картинки у пола), по X — n плиток с повтором; выше панели тот же кафель — ряды сходятся.
+ */
+function drawTilePlinth(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#ead9b7';
+  const grout = o.accent ?? '#a89e8a';
+  const plinth = o.low ?? '#45413e';
+  const n = o.n ?? 4;
+  const { W, H } = t;
+  const s = W / n, g = Math.max(2, s * 0.035), bev = Math.max(1, s * 0.025);
+  const ph = 2 * s;
+  t.fill(grout);
+  for (let y = H - ph - s; y > -s; y -= s) {
+    for (let i = 0; i < n; i++) t.tileRect(i * s + g / 2, y + g / 2, s - g, s - g, shade(base, t.u(-0.035, 0.03)), bev, 0.22);
+  }
+  // цоколь: тёмный гранит с зерном, фаска сверху, тень под кафелем, шов плиты у края картинки
+  t.rect(0, H - ph, W, ph, plinth);
+  t.c.save();
+  t.c.beginPath();
+  t.c.rect(0, H - ph, W, ph);
+  t.c.clip();
+  graniteGrain(t, plinth, Math.round((W * ph) / 60));
+  t.c.restore();
+  t.rect(0, H - ph, W, 3, shade(plinth, 0.3));
+  t.rect(0, H - ph - 2, W, 2, rgba('#000000', 0.25));
+  t.rect(0, H - ph, 1, ph, shade(plinth, -0.4));
+  t.rect(W - 1, H - ph, 1, ph, shade(plinth, -0.4));
+  t.modulate(t.fbm(3, 3, 2), 0.03);
+}
+
+/** Мрамор в копоти (сгоревший зал): белый мрамор, поверх — пятна и потёки копоти accent вверх, хлопья сажи. */
+function drawSoot(t: T, o: FinishTexOpts): void {
+  const soot = o.accent ?? '#1b1918';
+  drawMarble(t, { base: o.base ?? '#d9d6cf', accent: '#868b91', n: o.n ?? 2 });
+  t.modulate(t.fbm(2, 2, 4), 1.1, soot);
+  t.modulate(t.fbm(4, 4, 3), 0.45, soot);
+  // потёки копоти вверх (дым) — с повтором через край
+  const c = t.c;
+  for (let k = 0; k < 14; k++) {
+    const x = t.u(0, t.W), w = t.u(4, 18), y0 = t.u(0, t.H), len = t.u(t.H * 0.3, t.H * 0.9);
+    t.wrap((ox, oy) => {
+      if (x + ox < -w || x + ox > t.W + w || y0 + oy < 0 || y0 + oy - len > t.H) return;
+      const gr = c.createLinearGradient(0, y0 + oy, 0, y0 + oy - len);
+      gr.addColorStop(0, rgba(soot, 0.5));
+      gr.addColorStop(1, rgba(soot, 0));
+      c.fillStyle = gr;
+      c.fillRect(x + ox - w / 2, y0 + oy - len, w, len);
+    });
+  }
+  t.specks(500, [soot, '#3a2f28'], 0.6, 2.4, 0.5);
+}
+
+/** Гранитный пол в пепле и копоти: тот же узор, сверху тёмные разводы, серый пепел и угольки. */
+function drawSootFloor(t: T, o: FinishTexOpts): void {
+  const soot = o.accent ?? '#1b1918';
+  drawGraniteFloor(t, { base: o.base, accent: '#8e3a2e', low: o.low, n: o.n });
+  t.modulate(t.fbm(2, 2, 4), 1.0, soot);
+  t.modulate(t.fbm(5, 5, 3), 0.5, '#4a4541');
+  t.specks(900, ['#9c968e', '#7d776f'], 0.5, 1.8, 0.45);
+  t.specks(400, [soot, '#2b2420'], 0.6, 2.2, 0.6);
+}
+
 // ---------------------------------------------------------------- публичный API
 
 const DRAW: Record<FinishTexKind, (t: T, o: FinishTexOpts) => void> = {
@@ -797,6 +977,12 @@ const DRAW: Record<FinishTexKind, (t: T, o: FinishTexOpts) => void> = {
   herringbone: drawHerringbone,
   metlakh: drawMetlakh,
   boards: drawBoards,
+  // metro
+  marble: drawMarble,
+  granite_floor: drawGraniteFloor,
+  tile_plinth: drawTilePlinth,
+  soot: drawSoot,
+  soot_floor: drawSootFloor,
 };
 
 const cache = new Map<string, string>();

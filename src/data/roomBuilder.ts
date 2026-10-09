@@ -84,9 +84,61 @@ export const TAG_LEN = {
   // вестибюль-вахта → комната вахтёра (полотно 0.8 → 0.9)
   'hall>vahter': 9,
   'vahter>hall': 9,
+  // metro (src/data/roomsMetro.ts): ось зала станции — во всю ширину зала 17.6 м (пролёты стыкуются торцами)
+  metro_hall: 176,
+  // метро: переходы между собой (во всю ширину перехода 3.0 м)
+  metro_per: 30,
+  // метро: служебные ходы между собой (во всю ширину хода 1.6 м)
+  metro_slu: 16,
+  // метро: торец эскалаторного тоннеля ↔ зал у эскалатора (5.2 м — три дорожки с балюстрадами); направленная — два
+  // тоннеля и два зала у эскалатора друг к другу не встают
+  'esc>hall': 52,
+  'hall>esc': 52,
+  // метро: зал станции → переход (проём 3.0 м в путевой стене, через пути)
+  'hall>per': 30,
+  'per>hall': 30,
+  // метро: переход → служебный ход (служебная дверь, полотно 0.8 → 0.9)
+  'per>slu': 9,
+  'slu>per': 9,
+  // метро: служебный ход → служебное помещение (дежурная, щитовая, машинный зал, комната отдыха; полотно 0.8 → 0.9)
+  'slu>room': 9,
+  'room>slu': 9,
+  // cellar (src/data/roomsCellar.ts): земляные ходы погреба между собой — во всю ширину хода 0.6 м (лицом вперёд —
+  // впритирку плечами)
+  cellar: 6,
+  // погреб: ход → боковая клетушка через щель 0.4 м (без полотна; протиснуться только боком)
+  'cellar>bin': 4,
+  'bin>cellar': 4,
+  // catacombs (src/data/roomsCatacombs.ts): ходы катакомб между собой — во всю ширину хода 2.0 м
+  catacombs: 20,
+  // катакомбы: квадратный лаз 0.8×0.8 м (только ползком) — лазы между собой и устье лаза в торце хода
+  cat_duct: 8,
+  // катакомбы: ход → боковая ниша-убежище (проём 0.9 м без полотна; не выросла — заложен кирпичом)
+  'catacombs>refuge': 9,
+  'refuge>catacombs': 9,
 } as const;
 
 export type ConnTag = keyof typeof TAG_LEN;
+
+/**
+ * Высота проёма по метке стыковки: tag → верх проёма в м от пола проёма; перемычка — от него до потолка комнаты.
+ * Метки нет в таблице — doorHeightM. Высокие проходы метро (зал — проём на всю высоту, переходы, эскалаторы)
+ * добавляются своим блоком в конец.
+ */
+export const TAG_OPEN_H: Record<string, number> = {
+  // metro: зал — проём на всю высоту зала 4.5 (шва между пролётами не видно); переходы и проём из зала через пути —
+  // 2.9; торцы эскалатора — 3.2; служебные двери — по умолчанию
+  metro_hall: 4.5,
+  metro_per: 2.9,
+  'hall>per': 2.9,
+  'per>hall': 2.9,
+  'esc>hall': 3.2,
+  'hall>esc': 3.2,
+  // catacombs: ход — проём 2.4 (над ним перемычка до свода 3.0 или потолка 2.6 — подпружная арка на стыке кусков);
+  // лаз — квадратный 0.8
+  catacombs: 2.4,
+  cat_duct: 0.8,
+};
 
 export const ELITE_NORMAL: RoomElite[] = [
   { tierId: 'tier_1', weight: 60 },
@@ -128,6 +180,9 @@ export class RoomBuilder {
   private groups: SpotGroup[] = [];
   private lootRows: LootRow[] = [];
   private nOpen = 0;
+  /** разобранные клетки и габарит для open / wall (большие залы метро — десятки тысяч клеток): сброс в rect / cut */
+  private parsed: [number, number][] | null = null;
+  private box: ReturnType<typeof bbox> | null = null;
 
   constructor(readonly id: string, readonly name: string, private meta: RoomMeta) {}
 
@@ -135,6 +190,7 @@ export class RoomBuilder {
   rect(x: number, y: number, w: number, h: number): this {
     for (let cy = cells(y); cy < cells(y + h); cy++)
       for (let cx = cells(x); cx < cells(x + w); cx++) this.cellSet.add(cellKey(cx, cy));
+    this.parsed = this.box = null;
     return this;
   }
 
@@ -142,6 +198,7 @@ export class RoomBuilder {
   cut(x: number, y: number, w: number, h: number): this {
     for (let cy = cells(y); cy < cells(y + h); cy++)
       for (let cx = cells(x); cx < cells(x + w); cx++) this.cellSet.delete(cellKey(cx, cy));
+    this.parsed = this.box = null;
     return this;
   }
 
@@ -158,7 +215,7 @@ export class RoomBuilder {
     const len = TAG_LEN[tag];
     const a = cells(from);
     let cx: number, cy: number;
-    const all = [...this.cellSet].map(parseKey);
+    const all = (this.parsed ??= [...this.cellSet].map(parseKey));
     if (side === 'N' || side === 'S') {
       cx = a;
       if (at !== undefined) cy = side === 'N' ? cells(at) : cells(at) - 1;
@@ -207,7 +264,7 @@ export class RoomBuilder {
   wall(propId: string, side: Side, from: number, opts: WallOpts = {}): this {
     const p = PROP_BY_ID[propId];
     if (!p) throw new Error(`${this.id}: нет prop ${propId}`);
-    const bb = bbox(this.cellSet)!;
+    const bb = (this.box ??= bbox(this.cellSet))!;
     const off = opts.off ?? 0;
     const along = half((from + p.w / 2) / CELL_M);
     // перпендикулярная координата: округляем «от стены», чтобы не залезть в стену

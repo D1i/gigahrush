@@ -104,4 +104,39 @@ describe('coop: копии мира у игроков лобби', { timeout: 24
     for (const s of [B, C, D]) s.leave();
     await close();
   });
+
+  it("предметы на полу: 'drop' одного, 'pick' двоих сразу — подобрал один, копии и чекпойнт одинаковы", async () => {
+    const { hub, url, close } = await startCoopServer({ port: 0, host: '127.0.0.1' });
+    const p = project();
+    const lobby = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+    const mk = (id: string, create = false) =>
+      new CoopSession({ url, lobby, player: { id, name: id, color: '#e8b04b' }, local: () => p, ...(create ? { create: { walk: { ...DEFAULT_WALK, seed: 'кооп-предметы' }, project: p } } : {}) });
+    const A = mk('A', true);
+    await until(() => A.status === 'online');
+    const B = mk('B');
+    await until(() => B.status === 'online');
+    const start = A.walk!.world.startId!;
+    const d = { id: 'A:1', item: 'it_flashlight', inst: start, x: 0.5, y: 0, z: -1.25, yaw: 1.5, on: true };
+    expect(await A.request({ k: 'drop', d })).toBe('A:1');
+    await until(() => B.lastSeq === A.lastSeq);
+    expect(B.walk!.drops()).toEqual([d]);
+    const [pa, pb] = await Promise.all([A.request({ k: 'pick', id: 'A:1' }), B.request({ k: 'pick', id: 'A:1' })]);
+    expect([pa, pb].filter((x) => x === 'A:1')).toHaveLength(1);
+    expect([pa, pb].filter((x) => x === null)).toHaveLength(1);
+    expect(await B.request({ k: 'drop', d: { ...d, id: 'B:1', on: false } })).toBe('B:1');
+    await until(() => A.lastSeq === B.lastSeq);
+    expect(A.walk!.drops()).toEqual(B.walk!.drops());
+    expect(A.walk!.drops().map((x) => x.id)).toEqual(['B:1']);
+    expect(B.walk!.fingerprint()).toBe(A.walk!.fingerprint());
+    expect(noTime(B.walk!.world.save())).toEqual(noTime(A.walk!.world.save()));
+    // опоздавший — из чекпойнта хоста: предмет на месте
+    A.checkpointNow();
+    await until(() => hub.lobbies.get(lobby)?.cp?.seq === A.lastSeq);
+    const C = mk('C');
+    await until(() => C.status === 'online' && C.lastSeq === A.lastSeq);
+    expect(C.walk!.drops()).toEqual(A.walk!.drops());
+    expect(A.diverged + B.diverged + C.diverged).toBe(0);
+    for (const s of [A, B, C]) s.leave();
+    await close();
+  });
 });

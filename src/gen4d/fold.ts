@@ -639,22 +639,33 @@ function portalWorld(bodies: (VBody | null)[], index: Map<string, number>, links
  * линию: k клеток, диагональ, менялся ли контекст, старт.
  */
 function scanPortalLines(W: PortalWorld, bodies: (VBody | null)[], gap: number,
-  cb: (k: number, diag: boolean, multi: boolean, start: number, x: number, y: number, dx: number, dy: number, long: boolean) => void,
-  longSight: (room: number) => boolean = () => false): void {
+  cb: (k: number, diag: boolean, multi: boolean, start: number, x: number, y: number, dx: number, dy: number, long: boolean, own: number) => void,
+  longSight: (room: number) => boolean = () => false,
+  /** свой предел обзора комнаты, м (Infinity — без предела, 0 — общий); own в cb — самый мягкий по комнатам линии */
+  ownLim: (room: number) => number = () => 0): void {
   const { ps, move } = W;
   for (const [dx, dy] of SIGHT_DIRS) {
     const diag = dx !== 0 && dy !== 0;
     const visit = (c: number, x: number, y: number) => {
       if (move(c, x, y, -dx, -dy) !== null) return; // не начало линии
-      let k = 1, cc = c, px = x, py = y, multi = false, long = c >= 0 && longSight(c);
+      let k = 1, cc = c, px = x, py = y, multi = false, long = c >= 0 && longSight(c), own = c >= 0 ? ownLim(c) : 0, room = c >= 0;
       for (;;) {
         const nc = move(cc, px, py, dx, dy);
         if (nc === null) break;
         if (nc !== cc) multi = true;
         if (nc >= 0 && !long && longSight(nc)) long = true;
+        if (nc >= 0 && nc !== cc) own = Math.max(own, ownLim(nc));
+        if (nc >= 0) room = true;
         cc = nc; px += dx; py += dy; k++;
       }
-      cb(k, diag, multi, c, x, y, dx, dy, long);
+      // линия целиком в зазоре проёма (вдоль широкого прохода — зал метро): она общая для двух его комнат — как у
+      // генератора (sight4d portalOk), длинный обзор и свой предел — по ним
+      if (!room && c < 0) {
+        const P = ps[-1 - c];
+        long = longSight(P.a) || longSight(P.b);
+        own = Math.max(ownLim(P.a), ownLim(P.b));
+      }
+      cb(k, diag, multi, c, x, y, dx, dy, long, own);
     };
     bodies.forEach((b, i) => {
       if (!b) return;
@@ -764,7 +775,10 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
       // за выходом лифта выше на floors этажей ('lift'), b.connector — метка прихода
       const up = l.kind === 'lift';
       const kind = p.rooms.find((r) => r.id === wa.inst.roomId)?.location?.kind;
-      if (!up && kind !== 'stairwell') err(`${name}: переход вниз не из спец-локации`);
+      // вниз — из лестницы, ангара, люка, двери в снег (у неё бывает 0 этажей); срыв (сюжет, fall) — с лестницы, из лифта
+      const from = l.fall ? ['stairwell', 'lift'] : ['stairwell', 'hangar', 'hatch', 'snowdoor'];
+      const minDown = !l.fall && kind === 'snowdoor' ? 0 : 1;
+      if (!up && !from.includes(kind ?? '')) err(`${name}: переход вниз не из спец-локации`);
       if (up && kind !== 'lift') err(`${name}: выход лифта не из лифта`);
       if (up && l.side !== 'straight' && l.side !== 'right') err(`${name}: выход лифта side = ${l.side}`);
       const B = wb.connectors.find((c) => c.id === l.b.connector);
@@ -774,7 +788,7 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
       used.add(k);
       const want = floorOf(l.a.inst) + (up ? 1 : -1) * (l.floors ?? 0);
       // спуск — floors ≥ 1 этажей вниз; лифт — floors ≠ 0 этажей вверх (отрицательное — вниз)
-      if (!Number.isInteger(l.floors) || (up ? l.floors === 0 : l.floors! < 1)) err(`${name}: floors = ${l.floors}`);
+      if (!Number.isInteger(l.floors) || (up ? l.floors === 0 : l.floors! < minDown)) err(`${name}: floors = ${l.floors}`);
       else if (floorOf(l.b.inst) !== want) err(`${name}: этаж ${floorOf(l.b.inst)}, а должен быть ${floorOf(l.a.inst)} ${up ? '+' : '−'} ${l.floors}`);
       pairs.add(`${l.a.inst}>${l.b.inst}`);
       continue;
@@ -928,14 +942,27 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
     const room = longOn ? p.rooms.find((r) => r.id === w.inst.roomId) : undefined;
     return !!room && longSight(room);
   });
-  scanPortalLines(pw, bodies, gap, (k, diag, multi, c, x, y, dx, dy, longLine) => {
+  // свои пределы комнат биомов со своим пределом обзора (Run.settings.sightRooms, Biome.sightM): линия через такую
+  // комнату — до самого мягкого предела комнат на ней
+  const sightRooms = (run.settings as { sightRooms?: Record<string, number> }).sightRooms;
+  const ownLim = worlds.map((w) => {
+    const v = sightRooms?.[w.inst.roomId];
+    return v === undefined ? 0 : v > 0 ? v : Infinity;
+  });
+  const ownOk = (k: number, diag: boolean, own: number): boolean => {
+    if (own === Infinity) return true;
+    if (!(own > 0)) return false;
+    const l = sightLimits(own, cellM);
+    return k <= (diag ? l.diag : l.ortho);
+  };
+  scanPortalLines(pw, bodies, gap, (k, diag, multi, c, x, y, dx, dy, longLine, own) => {
     const m = runMeters(k, diag, cellM);
     if (m > vmax) vmax = m;
     // линия целиком внутри стартовой комнаты, которая сама длиннее предела, — допустима (предупреждение генератора)
-    if (lim && !longLine && k > (diag ? lim.diag : lim.ortho) && (multi || c !== startIdx)) {
+    if (lim && !longLine && k > (diag ? lim.diag : lim.ortho) && (multi || c !== startIdx) && !ownOk(k, diag, own)) {
       if (++long <= 5) err(`линия обзора ${m.toFixed(2)} м от клетки (${x}, ${y}) по (${dx}, ${dy}) длиннее предела ${sightM} м`);
     }
-  }, (i) => longRoom[i]);
+  }, (i) => longRoom[i], (i) => ownLim[i]);
   if (long > 5) err(`… всего линий длиннее предела: ${long}`);
   if (!run.sight) err('нет Run.sight');
   else if (Math.abs(Math.round(vmax * 1000) / 1000 - run.sight.maxM) > 1e-6) {

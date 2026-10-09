@@ -13,7 +13,7 @@ export type TextureKind =
   | 'bottle_crate' | 'trash' | 'pipe' | 'mattress' | 'sewing_machine' | 'bookshelf' | 'cot'
   | 'elevator' | 'mailboxes' | 'bench' | 'locker' | 'office_desk' | 'shower' | 'sink_row'
   | 'drying_rack' | 'electrical_panel' | 'pipes' | 'boiler_tank' | 'stroller' | 'bicycle'
-  | 'lenin_bust' | 'chess_table' | 'coat_hooks';
+  | 'lenin_bust' | 'chess_table' | 'coat_hooks' | 'hatch';
 
 export const TEXTURE_KINDS: TextureKind[] = [
   'sofa', 'bed_single', 'bed_double', 'wardrobe', 'sideboard', 'wall_unit',
@@ -25,7 +25,7 @@ export const TEXTURE_KINDS: TextureKind[] = [
   'bottle_crate', 'trash', 'pipe', 'mattress', 'sewing_machine', 'bookshelf', 'cot',
   'elevator', 'mailboxes', 'bench', 'locker', 'office_desk', 'shower', 'sink_row',
   'drying_rack', 'electrical_panel', 'pipes', 'boiler_tank', 'stroller', 'bicycle',
-  'lenin_bust', 'chess_table', 'coat_hooks',
+  'lenin_bust', 'chess_table', 'coat_hooks', 'hatch',
 ];
 
 // ---------------------------------------------------------------- палитра
@@ -1284,6 +1284,16 @@ const DRAW: Record<TextureKind, Draw> = {
     // молоток
     p.line([0.55, 0.62, 0.78, 0.3], K.walnutL, Math.max(3, p.m * 0.05));
     p.poly([0.74, 0.24, 0.84, 0.32, 0.81, 0.36, 0.71, 0.28], K.steelD, { sw: 1 });
+  },
+  // люк в полу (крышка погреба): тёмный проём по краю, доски поперёк, две кованые полосы, кольцо-ручка
+  hatch: (p) => {
+    const wood = '#6a5038';
+    p.rect(0, 0, 1, 1, '#1e1812', { r: 0.02 });
+    const e = 0.04, n = Math.max(4, Math.round(p.hM / 0.16));
+    for (let i = 0; i < n; i++) p.rect(e, e + (i * (1 - 2 * e)) / n, 1 - 2 * e, (1 - 2 * e) / n, shade(wood, i % 2 ? -0.06 : 0.04), { bv: 2, sw: 1 });
+    p.grain(e, e, 1 - 2 * e, 1 - 2 * e, shade(wood, -0.18), 53);
+    for (const x of [0.22, 0.7]) p.rect(x, e, 0.08, 1 - 2 * e, K.steelD, { bv: 2, sw: 1 });
+    p.circ(0.5, 0.5, 0.09, 'rgba(0,0,0,0)', { s: K.steelD, sw: Math.max(2, p.m * 0.025) });
   },
   shelf: (p, rnd) => {
     p.rect(0, 0, 1, 1, K.walnutL, { bv: true, r: 0.05 });

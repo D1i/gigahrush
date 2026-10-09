@@ -388,14 +388,17 @@ function roomSightM(info: RoomInfo, cellM: number): number {
   return m;
 }
 
-/** При пределе обзора исключить из пула комнаты, внутри которых обзор уже длиннее. */
-function applySightLimit(infos: (RoomInfo | null)[], sightM: number, cellM: number): { info: RoomInfo; m: number }[] {
+/** При пределе обзора исключить из пула комнаты, внутри которых обзор уже длиннее. limOf — свой предел комнаты, м
+ *  (0 — без предела; бесконечный мир: Biome.sightM её биомов, src/gen4d/biomes.ts roomSightLimit), иначе sightM. */
+function applySightLimit(infos: (RoomInfo | null)[], sightM: number, cellM: number, limOf?: (room: Room) => number): { info: RoomInfo; m: number }[] {
   const out: { info: RoomInfo; m: number }[] = [];
-  if (!(sightM > 0)) return out;
+  if (!(sightM > 0) && !limOf) return out;
   for (const info of infos) {
     if (!info) continue;
+    const lim = limOf ? limOf(info.room) : sightM;
+    if (!(lim > 0)) continue;
     info.sightM = roomSightM(info, cellM);
-    if (info.sightM > sightM + 1e-9 && info.inPool) {
+    if (info.sightM > lim + 1e-9 && info.inPool) {
       info.inPool = false;
       out.push({ info, m: info.sightM });
     }
@@ -472,11 +475,12 @@ function computeGrowth(infos: (RoomInfo | null)[], pool: RoomInfo[], match: Gene
   }
 }
 
-/** Анализ роста для UI и тестов: по каждой комнате — ростовые метки и оценка потенциала (по индексу connectors). */
-export function analyzeGrowth(p: Project, overrides?: Partial<GeneratorSettings>): Record<string, { grow: boolean[]; pot: number[]; leaf: boolean }> {
+/** Анализ роста для UI и тестов: по каждой комнате — ростовые метки и оценка потенциала (по индексу connectors).
+ *  limOf — свой предел обзора комнаты, м (0 — без предела; бесконечный мир с Biome.sightM), иначе overrides.sightM. */
+export function analyzeGrowth(p: Project, overrides?: Partial<GeneratorSettings>, limOf?: (room: Room) => number): Record<string, { grow: boolean[]; pot: number[]; leaf: boolean }> {
   const settings = sanitize(p, overrides);
   const infos = p.rooms.map((r, i) => buildInfo(r, i));
-  applySightLimit(infos, settings.sightM, p.settings.cellM > 0 ? p.settings.cellM : 0.1);
+  applySightLimit(infos, settings.sightM, p.settings.cellM > 0 ? p.settings.cellM : 0.1, limOf);
   const pool = infos.filter((x): x is RoomInfo => !!x && x.inPool);
   computeGrowth(infos, pool, settings.match);
   const out: Record<string, { grow: boolean[]; pot: number[]; leaf: boolean }> = {};

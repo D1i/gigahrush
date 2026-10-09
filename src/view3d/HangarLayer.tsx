@@ -1,6 +1,7 @@
 // Спец-локация «Ангар» во вкладке «3D»: своя сцена (src/locations/sceneHangar.ts) в движке просмотрщика
 // (BlockoutViewer.setOverlay) и минималистичный HUD: «клик — войти», подсказка в зоне мини-босса, отладка. В
 // «Прогулке» сцена открывается падением (пятно подтаявшего снега пробито), выход — ворота цеха. Сцена грузится лениво.
+// Сюжет (story, «Запустить без отладки»): без отладки.
 import { useEffect, useRef, useState } from 'react';
 import { Color4 } from '@babylonjs/core/Maths/math.color';
 import type { BlockoutViewer } from './viewer';
@@ -22,8 +23,9 @@ export interface HangarRequest {
 
 const SOUND_KEY = 'room-forge/hangar-sound';
 
-export function HangarLayer(props: { viewer: BlockoutViewer | null; req: HangarRequest; onClose?(): void }) {
+export function HangarLayer(props: { viewer: BlockoutViewer | null; req: HangarRequest; onClose?(): void; story?: boolean }) {
   const { viewer, req } = props;
+  const story = !!props.story;
   const [hud, setHud] = useState<HangarHud | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [debug, setDebug] = useState(false);
@@ -92,17 +94,19 @@ export function HangarLayer(props: { viewer: BlockoutViewer | null; req: HangarR
         <button className={'btn sm' + (sound ? ' on' : '')} onClick={() => setSound(!sound)} title="Звук локации (WebAudio)">
           звук: {sound ? 'вкл' : 'выкл'}
         </button>
-        <label className="check" title="Фаза сцены и зона мини-босса">
-          <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
-          отладка
-        </label>
+        {!story && (
+          <label className="check" title="Фаза сцены и зона мини-босса">
+            <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
+            отладка
+          </label>
+        )}
         {req.mode === 'room' && (
           <button className="btn sm" onClick={() => props.onClose?.()} title="Выйти из локации (только для просмотра комнаты)">
             выйти
           </button>
         )}
       </div>
-      {debug && h && (
+      {debug && !story && h && (
         <div className="float v3-loc-debug mono">
           <div>
             {req.title} · {h.phase === 'fall' ? 'падение' : h.phase === 'walk' ? 'цех' : 'выход'} · {h.boss ? 'зона мини-босса' : 'цех'}

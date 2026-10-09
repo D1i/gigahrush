@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect } from 'react';
 import { getProject, redo, undo } from './model/store';
 import { missingPresets, outdatedPresets } from './model/mergePresets';
-import { notify, setUI, useToasts, useUI } from './model/ui';
+import { getUI, notify, setUI, useToasts, useUI } from './model/ui';
 import type { Page } from './model/types';
 import { EditorPage } from './pages/EditorPage';
 import { LibraryPage } from './pages/LibraryPage';
@@ -12,7 +12,28 @@ import { DataPage } from './pages/DataPage';
 
 // Babylon тяжёлый — грузится только при открытии вкладки «3D»
 const View3DPage = lazy(() => import('./view3d/View3DPage'));
+// «Запустить без отладки»: игра по сюжету на весь экран (меню, лобби, игра) — тоже лениво
+const PlayPage = lazy(() => import('./play/PlayPage'));
 import { SaveIndicator } from './ui/SaveIndicator';
+
+/** Вкладка была в игре без отладки до перезагрузки — вернуться в неё (меню; лобби — сразу в игру). */
+const PLAY_KEY = 'room-forge/play';
+/** откуда запустили игру без отладки — туда «Выйти в редактор» */
+let playBack: Page = 'view3d';
+const startPlay = () => {
+  const from = getUI().page;
+  if (from !== 'play') playBack = from;
+  try {
+    sessionStorage.setItem(PLAY_KEY, '1');
+  } catch {}
+  setUI({ page: 'play' });
+};
+const exitPlay = () => {
+  try {
+    sessionStorage.removeItem(PLAY_KEY);
+  } catch {}
+  setUI({ page: playBack });
+};
 
 const TABS: { id: Page; label: string }[] = [
   { id: 'editor', label: 'Комнаты' },
@@ -36,11 +57,15 @@ export function App() {
     const old = outdatedPresets(getProject());
     if (m.rooms + m.props + m.finishes + m.biomes > 0 || old > 0)
       notify(`Пресеты обновились (новых комнат ${m.rooms}, отделок ${m.finishes}, биомов ${m.biomes}, изменённых ${old}) — «Данные / JSON» → «Пресеты»`, 'info');
+    try {
+      if (sessionStorage.getItem(PLAY_KEY) === '1') startPlay();
+    } catch {}
   }, []);
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
-      if (isTyping(e.target)) return;
+      // в игре без отладки отмена правок проекта не нужна (и Ctrl+Z не должен тихо менять комнаты)
+      if (isTyping(e.target) || getUI().page === 'play') return;
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.code === 'KeyZ') {
         e.preventDefault();
@@ -53,6 +78,17 @@ export function App() {
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   }, []);
+
+  // игра без отладки — весь экран: ни шапки, ни вкладок
+  if (ui.page === 'play')
+    return (
+      <>
+        <Suspense fallback={<div className="empty">Загрузка…</div>}>
+          <PlayPage onExit={exitPlay} />
+        </Suspense>
+        <Toasts />
+      </>
+    );
 
   return (
     <div className="app">
@@ -69,6 +105,9 @@ export function App() {
           ))}
         </nav>
         <div className="spacer" />
+        <button className="play-launch" onClick={startPlay} title="Игра по сюжету на весь экран: меню, одиночная или мультиплеер — без отладочных панелей">
+          ▶ Запустить без отладки
+        </button>
         <SaveIndicator />
       </header>
       <main className="page">

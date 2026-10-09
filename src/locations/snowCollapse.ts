@@ -189,12 +189,13 @@ export interface CollapseRun {
 /**
  * Место обвала у игрока (план, метры) в лазе roomId: проём куска, связанный с соседом, — ближайший к игроку, завал
  * которого не запирает игрока (из куска по оставшимся связям достижим ещё не раскрытый проём — мир дальше растёт).
- * В берлоге и в комнатах не из снега — null.
+ * В берлоге и в комнатах не из снега — null. roomOk — свой фильтр комнат обвала по меткам (погреб:
+ * src/locations/cellarSqueeze.ts cellarCollapseRoom); по умолчанию — лаз снежных ходов.
  */
-export function collapseSite(run: CollapseRun, roomId: string, px: number, py: number): CollapseSite | null {
+export function collapseSite(run: CollapseRun, roomId: string, px: number, py: number, roomOk: (tags: readonly string[]) => boolean = snowLaz): CollapseSite | null {
   const byId = new Map(run.instances.map((i) => [i.id, i]));
   const room = byId.get(roomId);
-  if (!room || !room.roomTags.includes('снег') || room.roomTags.includes('берлога')) return null;
+  if (!room || !roomOk(room.roomTags)) return null;
   const cell = run.cellM > 0 ? run.cellM : 0.1;
   const cands = room.connectors
     .filter((k) => k.len >= 1 && k.linkedTo)
@@ -208,6 +209,11 @@ export function collapseSite(run: CollapseRun, roomId: string, px: number, py: n
     if (frontierWithout(byId, roomId, roomId, c.k.id)) return { inst: roomId, connector: c.k.id, x: c.x, y: c.y };
   }
   return null;
+}
+
+/** Комната обвала по умолчанию: лаз снежных ходов (снег, не берлога). */
+function snowLaz(tags: readonly string[]): boolean {
+  return tags.includes('снег') && !tags.includes('берлога');
 }
 
 /** Из start по связям, кроме связи (inst, conn), достижим нераскрытый проём (cut). */

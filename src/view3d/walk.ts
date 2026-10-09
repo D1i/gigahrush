@@ -22,10 +22,10 @@
 //    игроков в одном порядке — копии мира одинаковы. Кооп-мир не пишется в localStorage (WalkSource).
 import {
   DEFAULT_STREAM, DEFAULT_STREAM_FOLD, createStreamWorld, streamSettings, viewHorizonM, worldKey,
-  type EnterResult, type StreamSave, type StreamSettings, type StreamStats, type StreamWorld,
+  type EnterResult, type StreamSave, type StreamSettings, type StreamStats, type StreamWorld, type WorldDrop,
 } from '../gen4d/stream';
 import { exportRunJSON } from '../gen/world';
-import { startBiomeOf } from '../gen4d/biomes';
+import { startBiomeOf, storyWorld } from '../gen4d/biomes';
 
 /** Дальний обзор биомов для портального рендера: тег группы биома → Biome.viewM, м (RunExport.viewByTag). */
 function viewByTag(w: WorldSettings | null | undefined): { viewByTag?: Record<string, number> } {
@@ -45,8 +45,11 @@ export type WorldOp =
   | { k: 'enter'; id: string }
   /** открыть закрытый выход квартиры → id комнаты за дверью */
   | { k: 'door'; inst: string; conn: string }
-  /** спуск из спец-локации (лестница) → id комнаты-выхода */
+  /** спуск из спец-локации (лестница, ангар, люк, дверь в снег) → id комнаты-выхода */
   | { k: 'descend'; id: string }
+  /** сюжет (src/game/story.ts): игрока утащил Хвататель на лестнице / выбросило из лифта id → id комнаты прихода в
+   *  общаге (STORY_FALL; одна на локацию, как выход спуска) */
+  | { k: 'fall'; id: string }
   /** выход лифта → id комнаты за выходом */
   | { k: 'ascend'; id: string; floor: number; side: LiftSide }
   /** обвал снежного хода у метки (src/locations/snowCollapse.ts) → inst, если завалило */
@@ -54,7 +57,15 @@ export type WorldOp =
   /** раскопка завала снежного хода: работа amount (доля 0…1, от любого игрока) → inst, когда раскопан до конца */
   | { k: 'dig'; inst: string; conn: string; amount: number }
   /** общага: керосиновую лампу взяли со спота spot экземпляра inst → inst, если взял этот запрос (уже взята — null) */
-  | { k: 'lamp'; inst: string; spot: string };
+  | { k: 'lamp'; inst: string; spot: string }
+  /** игрок выбросил предмет из хотбара (src/game/hotbar.ts) в комнату d.inst → d.id, если лёг (id занят / нет
+   *  экземпляра / негодный — null); отрисовка — src/view3d/worldItems.ts */
+  | { k: 'drop'; d: WorldDrop }
+  /** игрок подобрал предмет id с пола → id, если подобрал этот запрос (уже подобран другим раньше — null) */
+  | { k: 'pick'; id: string }
+  /** метро: дорожка lane эскалатора inst сорвалась (src/locations/metroEscalator.ts) → inst, если сорвал этот запрос
+   *  (уже сорвалась — null); кусок пересобирается без её марша */
+  | { k: 'esc'; inst: string; lane: number };
 
 /** Мир не из localStorage (кооп): снимок лобби, открытые двери; key — ключ позиции игрока в localStorage. */
 export interface WalkSource {
@@ -75,24 +86,35 @@ export interface WalkOptions {
   clusters: boolean;
   /** режим квартир: биом, в котором начинается мир (id); null — стартовый биом проекта (Project.world.startBiome) */
   biome: string | null;
+  /** сюжет («Запустить без отладки», src/game/story.ts): мир — WorldSettings.story, старт — STORY_START, своё
+   *  сохранение (модификатор ключа «сюжет»); biome не действует. Нет / false — обычная «Прогулка» */
+  story?: boolean;
 }
 
-/** Биом старта прогулки, отличный от стартового биома проекта (он и есть в проекте), иначе null — мир проекта как есть. */
-export function walkBiome(p: Project, opts: Pick<WalkOptions, 'biome' | 'clusters'>): string | null {
+/** Опции, от которых зависит мир прогулки (и ключ его сохранения). */
+type WorldOpts = Pick<WalkOptions, 'biome' | 'clusters'> & Partial<Pick<WalkOptions, 'story'>>;
+
+/** Биом старта прогулки, отличный от стартового биома проекта (он и есть в проекте), иначе null — мир проекта как есть.
+ *  Сюжет — всегда null (старт — STORY_START). */
+export function walkBiome(p: Project, opts: WorldOpts): string | null {
   const w = p.world;
-  if (!opts.clusters || !w || !opts.biome || !w.biomes.some((b) => b.id === opts.biome && !b.rich)) return null;
+  if (opts.story || !opts.clusters || !w || !opts.biome || !w.biomes.some((b) => b.id === opts.biome && !b.rich)) return null;
   return opts.biome === startBiomeOf(w)?.id ? null : opts.biome;
 }
 
-/** Мир прогулки: настройки проекта, старт — в выбранном биоме. */
-function walkWorld(p: Project, opts: Pick<WalkOptions, 'biome' | 'clusters'>): WorldSettings | null {
+/** Мир прогулки: настройки проекта, старт — в выбранном биоме; сюжет — мир сюжета (storyWorld: биомы и переходы по
+ *  src/game/story.ts). */
+function walkWorld(p: Project, opts: WorldOpts): WorldSettings | null {
+  if (opts.story && p.world) return storyWorld(p.world);
   if (!opts.clusters || !p.world) return null;
   const b = walkBiome(p, opts);
   return b ? { ...p.world, startBiome: b } : p.world;
 }
 
-/** Модификаторы ключа сохранения: у мира с квартирами — «квартиры», у старта в другом биоме — ещё «биом:id». */
-function walkMods(p: Project, opts: Pick<WalkOptions, 'biome' | 'clusters'>): string[] {
+/** Модификаторы ключа сохранения: у мира с квартирами — «квартиры», у старта в другом биоме — ещё «биом:id», у сюжета —
+ *  «сюжет» (своё сохранение, отладочная прогулка его не трогает). */
+function walkMods(p: Project, opts: WorldOpts): string[] {
+  if (opts.story) return ['квартиры', 'сюжет'];
   if (!opts.clusters) return [];
   const b = walkBiome(p, opts);
   return b ? ['квартиры', `биом:${b}`] : ['квартиры'];
@@ -103,7 +125,7 @@ function walkMods(p: Project, opts: Pick<WalkOptions, 'biome' | 'clusters'>): st
  * обзора и «вперёд дверей» — из «Бесконечного мира» (Project.world.walk); в прежнем росте (без квартир) «вперёд дверей»,
  * тупики и ветвистость — из панели прогулки.
  */
-export function walkStreamSettings(p: Project, opts: Pick<WalkOptions, 'seed' | 'deadEndChance' | 'branching' | 'aheadDoors' | 'clusters'> & Partial<Pick<WalkOptions, 'biome'>>): StreamSettings {
+export function walkStreamSettings(p: Project, opts: Pick<WalkOptions, 'seed' | 'deadEndChance' | 'branching' | 'aheadDoors' | 'clusters'> & Partial<Pick<WalkOptions, 'biome' | 'story'>>): StreamSettings {
   const g = p.generator;
   const wk = p.world?.walk;
   return streamSettings(opts.seed, {
@@ -113,15 +135,35 @@ export function walkStreamSettings(p: Project, opts: Pick<WalkOptions, 'seed' | 
     startRoomId: g.startRoomId,
     deadEndChance: opts.deadEndChance,
     branching: opts.branching,
-    aheadDoors: opts.clusters && wk ? wk.aheadDoors : opts.aheadDoors,
+    aheadDoors: (opts.clusters || opts.story) && wk ? wk.aheadDoors : opts.aheadDoors,
     ...(wk ? { fold: { ...DEFAULT_STREAM_FOLD, shiftChance: wk.shiftChance, maxShift: wk.maxShift, localRadius: wk.localRadius, localM: wk.localM, maxLayer: wk.maxLayer } } : {}),
-    world: walkWorld(p, { clusters: opts.clusters, biome: opts.biome ?? null }),
+    world: walkWorld(p, { clusters: opts.clusters, biome: opts.biome ?? null, story: opts.story }),
   });
 }
 
 export const DEFAULT_WALK: WalkOptions = {
   seed: 'гигахрущ', deadEndChance: DEFAULT_STREAM.deadEndChance, branching: DEFAULT_STREAM.branching, aheadDoors: DEFAULT_STREAM.aheadDoors, clusters: true, biome: null,
 };
+
+/** Сюжет («Запустить без отладки», src/game/story.ts): прогулка с квартирами, старт — по сюжету, своё сохранение. */
+export function storyWalk(seed: string): WalkOptions {
+  return { ...DEFAULT_WALK, seed, clusters: true, biome: null, story: true };
+}
+
+/** Есть ли в localStorage сохранённый мир для этих опций (тот же ключ, что у WalkSession). Устаревший (stale) — тоже. */
+export function hasWalkSave(p: Project, opts: WalkOptions): boolean {
+  try {
+    return !!localStorage.getItem(worldKey(opts.seed, walkMods(p, opts)));
+  } catch {
+    return false;
+  }
+}
+
+/** Стереть сохранение мира этих опций (мир, игрок, открытые двери, лампа общаги, хотбар) — «Новая игра» сюжета; прочие
+ *  миры сида (отладочная прогулка) не трогаются. */
+export function resetWalkSave(p: Project, opts: WalkOptions): void {
+  WalkSession.clearKey(worldKey(opts.seed, walkMods(p, opts)));
+}
 
 const WALK_KEY = 'room-forge/walk';
 
@@ -136,6 +178,7 @@ export function readWalk(): WalkOptions & { on: boolean } {
       aheadDoors: Number.isFinite(o.aheadDoors) ? o.aheadDoors : DEFAULT_WALK.aheadDoors,
       clusters: typeof o.clusters === 'boolean' ? o.clusters : DEFAULT_WALK.clusters,
       biome: typeof o.biome === 'string' && o.biome ? o.biome : null,
+      ...(o.story === true ? { story: true } : {}),
       on: o.on === true,
     };
   } catch {
@@ -311,6 +354,8 @@ export class WalkSession {
           return this.openDoor(op.inst, op.conn);
         case 'descend':
           return this.world.descend(op.id);
+        case 'fall':
+          return this.world.fall(op.id);
         case 'ascend':
           return this.world.ascend(op.id, op.floor, op.side);
         case 'collapse':
@@ -319,6 +364,18 @@ export class WalkSession {
           return this.world.digThrough(op.inst, op.conn, op.amount) === 1 ? op.inst : null;
         case 'lamp':
           return this.world.takeLamp(op.inst, op.spot) ? op.inst : null;
+        // предметы на полу — мимо onChange (куски не пересобираются): сохранить самим
+        case 'drop':
+          if (!this.world.dropItem(op.d)) return null;
+          this.scheduleSave();
+          return op.d.id;
+        case 'pick':
+          if (!this.world.pickItem(op.id)) return null;
+          this.scheduleSave();
+          return op.id;
+        // метро: сорвавшаяся дорожка эскалатора (мир сообщит onChange — кусок без её марша)
+        case 'esc':
+          return this.world.breakEscalator(op.inst, op.lane) ? op.inst : null;
       }
     } catch (e) {
       console.error(e);
@@ -336,23 +393,42 @@ export class WalkSession {
     return null;
   }
 
+  /** Сюжет («Запустить без отладки», WalkOptions.story): мир — по цепочке локаций src/game/story.ts. */
+  get story(): boolean {
+    return this.opts.story === true;
+  }
+
   /** Открытые выходы («inst/connector») — для чекпойнта кооп-лобби. */
   openedList(): string[] {
     return [...this.opened];
   }
 
+  /** Предметы на полу (WorldOp 'drop' / 'pick') — для слоя отрисовки (src/view3d/worldItems.ts): по порядку выброса,
+   *  массив заморожен; перестраивать, когда сменился dropsRev(). */
+  drops(): readonly WorldDrop[] {
+    return this.world.drops();
+  }
+
+  /** Номер версии предметов на полу: растёт при каждом выбросе/подборе (у пересобранной копии мира — с 0). */
+  dropsRev(): number {
+    return this.world.dropsRev();
+  }
+
   /** Отпечаток мира — сверка копий у игроков кооп-лобби. Только то, что однозначно задано состоянием мира (и так же
    *  восстанавливается из сохранения): счётчики экземпляров, связей, раскрытых, тупиков, квартир, переходов и место
-   *  последней комнаты — у разошедшихся копий почти наверняка разные. */
+   *  последней комнаты — у разошедшихся копий почти наверняка разные; предметы на полу (сколько и последний) — только
+   *  если есть (отпечаток мира без них прежний). */
   fingerprint(): string {
     const run = this.world.run();
     const s = this.world.stats();
     const tr = s.transition;
     const last = run.instances[run.instances.length - 1];
+    const drops = this.world.drops();
     return [
       run.instances.length, run.links.length, s.expanded, s.pending, s.deadChance + s.deadFail, s.clusters, s.exitsOpen,
       tr ? `${tr.count}.${tr.pending ? 1 : 0}` : '-', this.opened.size,
       last ? `${last.id}:${last.roomId}:${last.rot}:${last.dx},${last.dy},${last.w ?? 0},${last.floor ?? 0}` : '-',
+      ...(drops.length ? [`d${drops.length}:${drops[drops.length - 1].id}`] : []),
     ].join('/');
   }
 
@@ -407,10 +483,15 @@ export class WalkSession {
       // общага: взятые керосиновые лампы (WorldOp 'lamp') — их споты пусты, кусок пересобирается без лампы
       const lamps = e.spots.some((s) => s.id.endsWith('_s_lantern')) ? e.spots.filter((s) => this.world.lampTaken(i.id, s.id)).map((s) => s.id) : [];
       if (lamps.length) sig += '|' + lamps.length;
+      // метро: сорвавшиеся дорожки эскалатора (WorldOp 'esc') — их марши убраны из лестницы (нет пандуса и опоры, у края
+      // площадки сами встают перила), все марши до поломки — escLanes (номер дорожки — индекс в нём)
+      const esc = e.stair ? this.world.escBroken(i.id) : [];
+      if (esc.length) sig += '|e' + esc.join(',');
       if (this.sig.get(i.id) !== sig) {
         changed.push(i.id);
         e = {
           ...e,
+          ...(esc.length ? escPart(e, esc) : {}),
           spots: lamps.length ? e.spots.map((s) => (lamps.includes(s.id) ? { ...s, content: null, variantId: null } : s)) : e.spots,
           connectors: e.connectors.map((k, n) => {
             const to = linkBy.get(`${i.id}/${k.id}`) ?? null;
@@ -489,6 +570,17 @@ export class WalkSession {
     }
   }
 
+  /** Стереть сохранение одного мира по его ключу — то же, что reset для каждого своего ключа (resetWalkSave: сюжет). */
+  static clearKey(key: string) {
+    try {
+      localStorage.removeItem(key);
+      localStorage.removeItem(playerKey(key));
+      localStorage.removeItem(doorsKey(key));
+      localStorage.removeItem(key + '/obsh-lamp');
+      localStorage.removeItem(key + '/hotbar');
+    } catch {}
+  }
+
   /** Стереть сохранение этого сида (мир и игрока; с квартирами — и миры со стартом в биомах biomes). */
   static reset(seed: string, biomes: string[] = []) {
     for (const key of [worldKey(seed, []), worldKey(seed, ['квартиры']), ...biomes.map((b) => worldKey(seed, ['квартиры', `биом:${b}`]))]) {
@@ -498,6 +590,8 @@ export class WalkSession {
         localStorage.removeItem(doorsKey(key));
         // общага: лампа в руке (src/view3d/obshagaWalk.ts)
         localStorage.removeItem(key + '/obsh-lamp');
+        // хотбар игрока (src/view3d/inventory.ts): новая игра — снова набор новой игры
+        localStorage.removeItem(key + '/hotbar');
       } catch {}
     }
   }
@@ -545,4 +639,11 @@ function projectTables(p: Project): Pick<RunExport, 'props' | 'items' | 'finishe
     tiers: p.economy.tiers.map((t) => ({ id: t.id, name: t.name, level: (t as { level?: number }).level ?? 0, color: t.color, danger: (t as { danger?: number }).danger ?? 0 })),
     finishes,
   };
+}
+
+/** Метро: экземпляр с сорвавшимися дорожками эскалатора broken — марши до поломки (escLanes; у уже сломанного — те же),
+ *  в лестнице — только целые. */
+function escPart(e: RunInstance, broken: number[]): Pick<RunInstance, 'stair' | 'escBroken' | 'escLanes'> {
+  const full = e.escLanes ?? e.stair!.flights;
+  return { stair: { ...e.stair!, flights: full.filter((_, n) => !broken.includes(n)) }, escBroken: broken.slice(), escLanes: full };
 }

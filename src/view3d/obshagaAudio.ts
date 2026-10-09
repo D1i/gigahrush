@@ -9,9 +9,11 @@
 //  • шаги: плитка/линолеум (темп — от скорости), в воде по пояс — плеск, толчок воды, бульки; капли с гулким эхом;
 //  • двери: скрип фанерной двери и язычок замка; закрылась сама — мягкий щелчок (жуткий, потому что за спиной); упёрлась;
 //  • ХВАТКА: внезапный тяжёлый удар, мясистый хват, одежда, сдавленный вдох — громко; фон глохнет; волочение по плитке
-//    (drag каждый кадр); смерть — далёкий хлопок двери, низкий гул, тишина.
+//    (drag каждый кадр); смерть — далёкий хлопок двери, низкий гул, тишина;
+//  • тычок пальцем под кровать (poked) — тихо: глухой удар в тело, шорох одежды, короткий стон игрока сквозь зубы.
 //
-// ПРАВИЛО ДИЗАЙНА: у «Руки» НЕТ звука движения — ни шороха, ни шагов, ни дыхания. Единственный звук Руки — grab().
+// ПРАВИЛО ДИЗАЙНА: у «Руки» НЕТ звука движения — ни шороха, ни шагов, ни дыхания. Единственный звук Руки — grab()
+// (и удар тычка по игроку — poked(): это звук игрока, не руки).
 // Случайные скрипы дома (creak) сделаны намеренно не связанными с её появлением: ни по времени, ни по месту.
 // Интеграции: дверь, из которой выползает Рука, открывать/закрывать БЕЗ doorOpen()/doorClose() (они — для дверей мира);
 // на её движение не звать ничего. Только grab() в момент хватки и drag() каждый кадр волочения.
@@ -26,7 +28,7 @@
 //   a.update(dt, { inBiome, light, tubes, moving, speed, inWater, lantern, listener: {x,y,z,yaw}, dead }); // КАЖДЫЙ кадр
 //   a.flickerTick(k) — на каждое моргание;   a.blackout() — свет погас;    a.lightsBack() — свет вернулся;
 //   a.doorOpen(p) / doorClose(p) / doorBlocked(p) — p в мировых Babylon (центр двери);
-//   a.pickupLantern();  a.grab();  a.drag(progress) — каждый кадр волочения;  a.death();  a.dispose().
+//   a.pickupLantern();  a.grab();  a.drag(progress) — каждый кадр волочения;  a.poked(p?) — тычок;  a.death();  a.dispose().
 //   a.setEnabled(on) — кнопка «звук» (сама пишет в localStorage); a.enabled — текущее состояние.
 
 type V3 = { x: number; y: number; z: number };
@@ -65,6 +67,8 @@ export interface ObshagaAudioCounters {
   grab: number;
   drag: number;
   death: number;
+  /** тычок пальцем под кровать (удар по игроку и его стон) */
+  poke: number;
   step: number;
   dorm: number;
   creak: number;
@@ -165,7 +169,7 @@ export function ambientTargets(a: AmbientIn): AmbientOut {
 
 export class ObshagaAudio {
   ctx: AudioContext | null = null;
-  readonly counters: ObshagaAudioCounters = { flicker: 0, blackout: 0, back: 0, doorOpen: 0, doorClose: 0, doorBlocked: 0, pickup: 0, grab: 0, drag: 0, death: 0, step: 0, dorm: 0, creak: 0, drip: 0 };
+  readonly counters: ObshagaAudioCounters = { flicker: 0, blackout: 0, back: 0, doorOpen: 0, doorClose: 0, doorBlocked: 0, pickup: 0, grab: 0, drag: 0, death: 0, poke: 0, step: 0, dorm: 0, creak: 0, drip: 0 };
   private _enabled: boolean;
   private master!: GainNode;
   private fade!: GainNode;
@@ -1241,6 +1245,43 @@ export class ObshagaAudio {
     go.start(gt);
     go.stop(gt + 0.3);
     this.burst(this.noise, 0.04, 'bandpass', 600, 5, 0.3, gp, 0.5, 0.003); // «гк» — горло
+  }
+
+  /**
+   * Тычок пальцем под кровать (по игроку, не звук руки): глухой удар в тело, шорох одежды и короткий стон сквозь зубы.
+   * Тихо — тычков за темноту десятки.
+   */
+  poked(at?: V3): void {
+    if (!this.on()) return;
+    this.counters.poke++;
+    const ctx = this.ctx!;
+    const pn = this.panner(at ?? this.rel(0.3, 0, -0.1), 0.8, 0.8);
+    this.out(pn, 0.25);
+    this.tone('sine', 78, 42, 0.16, 0.3, pn, 0, 0.002);
+    this.burst(this.brown, 0.12, 'lowpass', 320, 0.7, 0.28, pn, 0, 0.002);
+    this.burst(this.noise, 0.09, 'bandpass', 2300, 1, 0.08, pn, 0.01, 0.005);
+    // стон: «хм» сквозь зубы — короткая пила через две форманты
+    const t = ctx.currentTime + 0.06;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.16, t + 0.03);
+    g.gain.setTargetAtTime(0, t + 0.12, 0.05);
+    const sp = ctx.createStereoPanner();
+    g.connect(sp);
+    this.out(sp, 0.15);
+    const o = ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(rnd(150, 175), t);
+    o.frequency.linearRampToValueAtTime(rnd(105, 120), t + 0.22);
+    for (const fr of [520, 950]) {
+      const f = ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.value = fr;
+      f.Q.value = 6;
+      o.connect(f).connect(g);
+    }
+    o.start(t);
+    o.stop(t + 0.4);
   }
 
   /** Волочение по плитке; звать КАЖДЫЙ кадр, пока тащат. progress 0…1 — путь до двери (быстрее и резче к концу). */

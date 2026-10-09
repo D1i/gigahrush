@@ -1,15 +1,51 @@
 // Навигация «Общаги» в «Прогулке» (src/view3d/obshagaNav.ts) и срез режиссёра для коопа (src/view3d/obshagaSync.ts).
 import { describe, expect, it } from 'vitest';
+import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
+import { Scene } from '@babylonjs/core/scene';
+import { buildBabylonBlockout } from '../blockout/babylon';
+import { buildBlockoutModel } from '../blockout/core';
 import type { RunConnector, RunExport, RunInstance, Side } from '../blockout/types';
 import { createDefaultProject } from '../data/presets';
 import { exportRunJSON } from '../gen/world';
 import { newWorldSettings } from '../gen4d/biomes';
 import { createStreamWorld, streamSettings } from '../gen4d/stream';
-import { createHand, createObshagaDirector, forceObshagaBlackout, openDoorById, stepDirector, type ObshagaInput, type Pt } from '../locations/obshaga';
 import {
-  CHART_HOPS, MOUTH_M, buildNav, chartOf, doorPoints, handGoal, nearestHub, nextGoal, polyLength, roomAt, roomPath, spawnCandidates, waypoints,
+  createHand, createObshagaDirector, forceObshagaBlackout, handView, openDoorById, POKE_R, POKE_STAND, rectGap, stepDirector, stepHand,
+  type HandEvent, type ObshagaInput, type Pt, type Rect,
+} from '../locations/obshaga';
+import {
+  BED_GOAL_PAD, CHART_HOPS, MOUTH_M, bedAt, bedGoal, bedRoute, buildNav, chartOf, doorPoints, handGoal, nearestHub, nextGoal, polyLength, remoteCover,
+  roomAt, roomPath, spawnCandidates, waypoints,
 } from './obshagaNav';
 import { FX_MAX, advanceRemote, fromWire, simplifyTrail, toWire } from './obshagaSync';
+
+// В node нет canvas: DynamicTexture сетки блокаута рисует в заглушку (NullEngine ничего не грузит в GPU).
+class FakeCanvas {
+  constructor(public width: number, public height: number) {}
+  getContext() {
+    const store: Record<string | symbol, unknown> = {};
+    return new Proxy(store, { get: (t, k) => (k in t ? t[k] : () => undefined), set: (t, k, v) => ((t[k] = v), true) });
+  }
+}
+(globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas ??= FakeCanvas;
+
+/** Настоящий мир общаги (~120 экземпляров от вестибюля), один на файл. */
+let world: { rx: RunExport; startId: string } | null = null;
+function obshWorld() {
+  if (world) return world;
+  const p = createDefaultProject();
+  const w = createStreamWorld(p, streamSettings('нав-общага', { world: { ...newWorldSettings(), startBiome: 'obshaga', trAfter: 100000 } }));
+  const q = [w.startId!];
+  const seen = new Set<string>();
+  while (q.length && w.run().instances.length < 120) {
+    const id = q.shift()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    w.expand(id);
+    for (const l of w.run().links) if (l.a.inst === id) q.push(l.b.inst);
+  }
+  return (world = { rx: exportRunJSON(p, w.run()) as RunExport, startId: w.startId! });
+}
 
 // ───────── синтетический прогон: клетка 0.1 м ─────────
 
@@ -199,20 +235,167 @@ describe('«Общага»: навигация', () => {
   });
 });
 
-describe('«Общага»: навигация в настоящем мире', () => {
-  it('сеть общаги: двери комнат и запертые, лампа у вахтёра, вестибюль, у каждой двери появления путь', () => {
-    const p = createDefaultProject();
-    const w = createStreamWorld(p, streamSettings('нав-общага', { world: { ...newWorldSettings(), startBiome: 'obshaga', trAfter: 100000 } }));
-    const q = [w.startId!];
-    const seen = new Set<string>();
-    while (q.length && w.run().instances.length < 120) {
-      const id = q.shift()!;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      w.expand(id);
-      for (const l of w.run().links) if (l.a.inst === id) q.push(l.b.inst);
+// ───────── кровати: комната общаги на двоих ─────────
+
+const BED_PROP = { id: 'p_obsh_bed', name: 'Кровать железная с панцирной сеткой', w: 1.9, h: 0.8, color: '#7d8a8c', tags: ['кровать', 'спальное', 'мебель', 'общага'], hasTex: false, tex: null };
+const STAND_PROP = { id: 'p_obsh_nightstand', name: 'Тумбочка казённая', w: 0.4, h: 0.4, color: '#6b5a44', tags: ['тумбочка', 'мебель', 'общага'], hasTex: false, tex: null };
+const WARDROBE_PROP = { id: 'p_obsh_wardrobe', name: 'Шкаф платяной казённый', w: 0.8, h: 0.5, color: '#6b5a44', tags: ['шкаф', 'мебель', 'общага'], hasTex: false, tex: null };
+const decor = (id: string, propId: string, x: number, y: number, rot: number) => ({ id, propId, x, y, rot });
+
+/**
+ * Комната bd 3.3 × 4.5 м (x 0…3.3, y 0…4.5), дверь с севера (x 2.0…2.9) в коридор bc (y −2.1…−0.1); кровати вдоль
+ * стен: E (rot 90 — x 2.5…3.3, y 1.7…3.6) и W (rot 270 — x 0…0.8), между ними проход 1.7 м; у E с юга тумбочка (на
+ * споте — как выпавшее). Зал hl 8 × 8 м (x 10…18) — кровать посередине (rot 0 — x 13.05…14.95, y 3.6…4.4) и (extra)
+ * ещё мебель.
+ */
+function bedFixture(hallExtra: { id: string; propId: string; x: number; y: number; rot: number }[] = []): RunExport {
+  const G = ['общага', 'коридор', 'только-биом'];
+  const instances = [
+    inst('bc', G, [0, -21, 90, -1], [k('s', 'obshaga>room', 'S', [20, -1, 29, -1], { inst: 'bd', connector: 'n' })]),
+    inst('bd', ['общага', 'комната', 'только-биом'], [0, 0, 33, 45], [k('n', 'room>obshaga', 'N', [20, 0, 29, 0], { inst: 'bc', connector: 's' })], {
+      decor: [decor('E', 'p_obsh_bed', 29, 26.5, 90), decor('W', 'p_obsh_bed', 4, 26.5, 270)],
+      spots: [{ id: 'ns', name: 'Тумбочка', x: 29, y: 40, rot: 0, groupId: null, variantId: null, content: { kind: 'prop', id: 'p_obsh_nightstand', rot: 90 }, contentRot: null }],
+    }),
+    inst('hl', ['общага', 'холл', 'только-биом'], [100, 0, 180, 80], [], { decor: [decor('B', 'p_obsh_bed', 140, 40, 0), ...hallExtra] }),
+  ];
+  return {
+    format: 'room-forge-run', version: 1, seed: 't', cellM: 0.1, settings: { gap: 1 }, props: [BED_PROP, STAND_PROP, WARDROBE_PROP], items: [], instances,
+    links: [{ a: { inst: 'bc', connector: 's' }, b: { inst: 'bd', connector: 'n' } }], openConnectors: [],
+  };
+}
+
+const R4 = (r: Rect) => [r.x0, r.y0, r.x1, r.y1].map((v) => Math.round(v * 1000) / 1000);
+
+describe('«Общага»: рука и кровать', () => {
+  const nav = buildNav(bedFixture());
+  const E = nav.rooms.get('bd')!.beds[0], W = nav.rooms.get('bd')!.beds[1];
+
+  it('мебель из декора и спотов: рамки по осям, повёрнутые — w и d местами; кровати — отдельно', () => {
+    expect(R4(E)).toEqual([2.5, 1.7, 3.3, 3.6]);
+    expect(R4(W)).toEqual([0, 1.7, 0.8, 3.6]);
+    const bd = nav.rooms.get('bd')!;
+    expect(bd.props.map((p) => p.propId)).toEqual(['p_obsh_bed', 'p_obsh_bed', 'p_obsh_nightstand']);
+    expect(bd.props[0].cover).toBe('bed');
+    expect(bd.props[2]).toMatchObject({ cover: null, h: 0.85 });
+    expect(R4(bd.props[2].rect)).toEqual([2.7, 3.8, 3.1, 4.2]);
+    expect(R4(nav.rooms.get('hl')!.beds[0])).toEqual([13.05, 3.6, 14.95, 4.4]);
+    expect(nav.rooms.get('bc')!.beds).toEqual([]);
+  });
+
+  it('кровать под точкой (с запасом) и правило напарника: глаз ниже порога И в рамке кровати', () => {
+    expect(bedAt(nav, P(2.9, 2.6, 'bd'))).toBe(E);
+    expect(bedAt(nav, P(0.4, 2.6, 'bd'))).toBe(W);
+    expect(bedAt(nav, P(1.6, 2.6, 'bd'))).toBeNull();
+    expect(bedAt(nav, P(2.45, 2.6, 'bd'))).toBe(E);
+    expect(bedAt(nav, P(2.45, 2.6, 'bd'), 0)).toBeNull();
+    // с меткой коридора (соседа по проёму) — та же кровать
+    expect(bedAt(nav, P(2.9, 2.6, 'bc'))).toBe(E);
+    // напарник: лёжа (глаз 0.22) под кроватью — укрыт; на четвереньках (0.5) — нет; лёжа в проходе — нет
+    expect(remoteCover(nav, P(2.9, 2.6, 'bd'), 0.22, 0.35)).toBe(E);
+    expect(remoteCover(nav, P(2.9, 2.6, 'bd'), 0.5, 0.35)).toBeNull();
+    expect(remoteCover(nav, P(1.6, 2.6, 'bd'), 0.22, 0.35)).toBeNull();
+    expect(remoteCover(nav, P(2.9, 2.6, 'bd'), undefined, 0.35)).toBeNull();
+  });
+
+  it('свободный бок: у стены и за стеной — нет; цель — проекция игрока снаружи на pokeStandM; подход по нормали', () => {
+    const out = POKE_STAND + BED_GOAL_PAD;
+    // E у восточной стены, торцы — у северной стены (близко) и у южной (за стеной): годен только западный бок
+    const g = bedGoal(nav, 'bd', E, P(2.9, 2.65, 'bd'))!;
+    expect(g.goal.x).toBeCloseTo(2.5 - out, 6);
+    expect(g.goal.y).toBeCloseTo(2.65, 6);
+    expect([g.nx, g.ny]).toEqual([-1, 0]);
+    // подход — по нормали дальше цели, на полу комнаты (у стены — короче BED_APPROACH_M)
+    expect(g.approach!.y).toBeCloseTo(2.65, 6);
+    expect(g.goal.x - g.approach!.x).toBeGreaterThan(0.3);
+    expect(g.approach!.x).toBeGreaterThan(0.1);
+    // проекция — не ближе 0.25 м к углам
+    expect(bedGoal(nav, 'bd', E, P(2.9, 3.55, 'bd'))!.goal.y).toBeCloseTo(3.35, 6);
+    // W — зеркально
+    expect(bedGoal(nav, 'bd', W, P(0.4, 2.2, 'bd'))!.goal.x).toBeCloseTo(0.8 + out, 6);
+    // кровать посреди зала: ближе к игроку — торец; шкаф перед торцом — бок
+    const hall = nav.rooms.get('hl')!.beds[0];
+    const end = bedGoal(nav, 'hl', hall, P(13.3, 4, 'hl'))!;
+    expect([end.nx, end.ny]).toEqual([-1, 0]);
+    expect(end.goal.x).toBeCloseTo(13.05 - out, 6);
+    const nav2 = buildNav(bedFixture([decor('wr', 'p_obsh_wardrobe', 120, 40, 90)]));
+    const side = bedGoal(nav2, 'hl', nav2.rooms.get('hl')!.beds[0], P(13.3, 4, 'hl'))!;
+    expect([side.nx, side.ny]).toEqual([0, -1]);
+    expect(side.goal.x).toBeCloseTo(13.3, 6);
+    expect(side.goal.y).toBeCloseTo(3.6 - out, 6);
+    // места нет ни у одного бока (кровать во всю комнату) — null
+    expect(bedGoal(nav, 'bd', { x0: 0.1, y0: 0.1, x1: 3.2, y1: 4.4 }, P(1.6, 2.2, 'bd'))).toBeNull();
+  });
+
+  /** Отрезок ab заходит в открытую рамку z (проверка пути — по точкам с шагом 1 см). */
+  const enters = (a: Pt, b: Pt, z: Rect) => {
+    const n = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 0.01);
+    for (let i = 0; i <= n; i++) {
+      const x = a.x + ((b.x - a.x) * i) / n, y = a.y + ((b.y - a.y) * i) / n;
+      if (x > z.x0 + 1e-9 && x < z.x1 - 1e-9 && y > z.y0 + 1e-9 && y < z.y1 - 1e-9) return true;
     }
-    const rx = exportRunJSON(p, w.run()) as RunExport;
+    return false;
+  };
+
+  it('путь к боку: в обход зоны кончика по углам, затем подход по нормали; на линии подхода — прямо; изнутри — сначала наружу', () => {
+    const zone = { x0: E.x0 - POKE_STAND, y0: E.y0 - POKE_STAND, x1: E.x1 + POKE_STAND, y1: E.y1 + POKE_STAND };
+    const ba = bedGoal(nav, 'bd', E, P(2.9, 2.65, 'bd'))!;
+    // от двери (над кроватью — зона): угол, подход, цель; ни один отрезок не заходит в зону
+    const door = P(2.45, -0.05, 'bc');
+    const route = bedRoute(nav, 'bd', door, E, ba);
+    expect(route.length).toBe(3);
+    expect(route.slice(-2)).toEqual([ba.approach, ba.goal]);
+    expect(route.every((p) => p.room === 'bd')).toBe(true);
+    let a: Pt = door;
+    for (const b of route) {
+      expect(enters(a, b, zone), `${a.x},${a.y} → ${b.x},${b.y}`).toBe(false);
+      a = b;
+    }
+    // на линии подхода — сразу к цели
+    expect(bedRoute(nav, 'bd', P(ba.goal.x - 0.3, 2.7, 'bd'), E, ba)).toEqual([ba.goal]);
+    // кончик в зоне (игрок залез под кровать рядом с рукой) — сначала наружу по ближайшей грани, на пол
+    const inside = bedRoute(nav, 'bd', P(1.6, 1.0, 'bd'), E, ba);
+    expect(rectGap(inside[0], E)).toBeGreaterThan(POKE_STAND);
+    expect(inside[0].x).toBeLessThan(1.6);
+    expect(inside[inside.length - 1]).toEqual(ba.goal);
+  });
+
+  it('рука по навигации: из коридора в обход кровати, кончик ни разу не ближе pokeStandM к ней, тычет с прохода лицом к кровати', () => {
+    const me = { id: 'me', p: P(2.9, 2.65, 'bd'), protected: false, cover: E };
+    const chart = chartOf(nav, 'bc');
+    // цель — не игрок, а проход у бока кровати; путь длиннее прямой
+    const g0 = handGoal(nav, P(6, -1, 'bc'), [me], [], chart);
+    expect(g0).toMatchObject({ target: 'me', open: true });
+    expect(g0.goal).toMatchObject({ room: 'bc' });
+    const h = createHand('кровать', P(6, -1.9, 'bc'), P(6, -1.1, 'bc'));
+    h.phase = 'stalking';
+    h.emerge = 1;
+    h.tip = P(6, -1.1, 'bc');
+    const players = [{ id: 'me', p: me.p, protected: false, sees: false, sheltered: true, cover: E }];
+    const ev: HandEvent[] = [];
+    let minGap = Infinity;
+    for (let i = 0; i < 64 * 30; i++) {
+      const goal = handGoal(nav, h.tip, [me], [], chart).goal;
+      ev.push(...stepHand(h, 1 / 64, { lightsOn: false, seen: false, goal, players, lanterns: [], playerSpeed: 4 }));
+      if (h.tip.room === 'bd') minGap = Math.min(minGap, rectGap(h.tip, E));
+      if (ev.filter((e) => e.type === 'poke').length >= 2) break;
+    }
+    expect(ev.some((e) => e.type === 'grab')).toBe(false);
+    expect(ev.filter((e) => e.type === 'poke').length).toBe(2);
+    expect(minGap).toBeGreaterThanOrEqual(POKE_STAND - 1e-6);
+    // тычет из прохода между кроватями (запад от E), пришла от точки подхода — почти по нормали к боку, лицом к кровати
+    const ba = bedGoal(nav, 'bd', E, me.p)!;
+    expect(h.tip.x).toBeLessThan(E.x0 - POKE_STAND + 1e-6);
+    expect(h.tip.x).toBeGreaterThan(ba.approach!.x - 1e-6);
+    expect(Math.abs(h.tip.y - me.p.y)).toBeLessThan(0.2);
+    expect(Math.hypot(h.tip.x - me.p.x, h.tip.y - me.p.y)).toBeLessThanOrEqual(POKE_R);
+    expect(handView(h).bed).toEqual(E);
+  });
+});
+
+describe('«Общага»: навигация в настоящем мире', () => {
+  it('сеть общаги: двери комнат и запертые, лампа у вахтёра, вестибюль, у каждой двери появления путь', { timeout: 60000 }, () => {
+    const { rx, startId } = obshWorld();
+    const w = { startId };
     const nav = buildNav(rx);
     const linked = nav.doors.filter((d) => d.room);
     expect(linked.length).toBeGreaterThan(15);
@@ -232,6 +415,60 @@ describe('«Общага»: навигация в настоящем мире', 
     expect(cands.length).toBeGreaterThan(3);
     for (const c of cands) expect(c.dist).toBeGreaterThan(0);
     expect(nearestHub(nav, linked[0].room!)).not.toBeNull();
+  });
+
+  it('кровати: рамки навигации — ровно коллайдеры кроватей болванки (PropBox ядра и меш Babylon с metadata.cover)', { timeout: 60000 }, () => {
+    const { rx } = obshWorld();
+    const nav = buildNav(rx);
+    const key = (r: Rect) => [r.x0, r.y0, r.x1, r.y1].map((v) => (Math.round(v * 1000) / 1000 + 0).toFixed(3)).join(',');
+    const ours = new Map<string, string[]>();
+    for (const r of nav.rooms.values()) if (r.beds.length) ours.set(r.id, r.beds.map(key).sort());
+    // кроватей много, и повёрнутые есть (rot 90/270 — w и d меняются местами)
+    const all = [...ours.values()].flat();
+    expect(all.length).toBeGreaterThan(10);
+    expect(all.some((k) => { const [x0, y0, x1, y1] = k.split(',').map(Number); return y1 - y0 > x1 - x0 + 0.5; })).toBe(true);
+    expect(all.some((k) => { const [x0, y0, x1, y1] = k.split(',').map(Number); return x1 - x0 > y1 - y0 + 0.5; })).toBe(true);
+    // ядро: PropBox с cover 'bed' — центр (x, y), бокс w × d, повёрнутый на rot
+    const model = buildBlockoutModel(rx);
+    const core = new Map<string, string[]>();
+    for (const p of model.props) {
+      if (p.cover !== 'bed') continue;
+      const a = (p.rot * Math.PI) / 180, ca = Math.abs(Math.cos(a)), sa = Math.abs(Math.sin(a));
+      const hw = (ca * p.w + sa * p.d) / 2, hd = (sa * p.w + ca * p.d) / 2;
+      const l = core.get(p.inst) ?? [];
+      l.push(key({ x0: p.x - hw, y0: p.y - hd, x1: p.x + hw, y1: p.y + hd }));
+      core.set(p.inst, l);
+    }
+    for (const l of core.values()) l.sort();
+    expect(Object.fromEntries(ours)).toEqual(Object.fromEntries(core));
+    // Babylon: коллайдер кровати (плита над просветом, metadata.cover) — его рамка в мире (x, −z) — та же; 3 комнаты
+    const rooms = [...ours.keys()].slice(0, 3);
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const sub = { ...rx, instances: rx.instances.filter((i) => rooms.includes(i.id)), links: [] };
+    buildBabylonBlockout(scene, buildBlockoutModel(sub), { collisions: true });
+    const bab = new Map<string, string[]>();
+    for (const m of scene.meshes) {
+      const md = m.metadata as { cover?: string; inst?: string } | null;
+      if (md?.cover !== 'bed') continue;
+      m.computeWorldMatrix(true);
+      const b = m.getBoundingInfo().boundingBox;
+      const l = bab.get(md.inst!) ?? [];
+      l.push(key({ x0: b.minimumWorld.x, y0: -b.maximumWorld.z, x1: b.maximumWorld.x, y1: -b.minimumWorld.z }));
+      bab.set(md.inst!, l);
+      // и под ней пролезают: плита от 0.30
+      expect(b.minimumWorld.y).toBeCloseTo(0.3, 3);
+    }
+    for (const l of bab.values()) l.sort();
+    expect(Object.fromEntries(bab)).toEqual(Object.fromEntries(rooms.map((r) => [r, ours.get(r)!])));
+    scene.dispose();
+    engine.dispose();
+    // кровать под точкой: в середине рамки — она (и с меткой соседа по проёму — тоже)
+    const [rid, beds] = [...nav.rooms.values()].filter((r) => r.beds.length).map((r) => [r.id, r.beds] as const)[0];
+    const b = beds[0];
+    expect(bedAt(nav, { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2, room: rid })).toBe(b);
+    const nb = nav.rooms.get(rid)!.edges[0]?.to;
+    if (nb) expect(bedAt(nav, { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2, room: nb })).toBe(b);
   });
 });
 
@@ -274,6 +511,42 @@ describe('«Общага»: срез режиссёра для коопа', () =
     expect(r.blackout.t).toBeCloseTo(Math.min(r.blackout.dur, t0 + 0.5));
     advanceRemote(r, 1e6);
     expect(r.blackout.t).toBe(r.blackout.dur);
+  });
+
+  it('тычок под кровать: кого, куда и фаза — туда-обратно; событие poke; рука 45 м с тычком — < 2 КБ', () => {
+    const dir = createObshagaDirector('кооп-тычок');
+    forceObshagaBlackout(dir);
+    stepDirector(dir, 0.3, { players: [], lanterns: [], playerSpeed: 1.7, spawnCandidates: [], goal: null });
+    const h = createHand('h', { x: 0, y: -0.7, room: 'i1' }, { x: 0, y: 1, room: 'c1' });
+    h.phase = 'stalking';
+    h.emerge = 1;
+    for (let k = 0; k < 180; k++) h.trail.push({ x: 0.25 * k, y: 1 + Math.floor(k / 30) * 0.4, room: `i${100 + Math.floor(k / 9)}` });
+    h.tip = { x: 45.1, y: 3, room: 'спальня-7' };
+    h.poke = 'игрок-2';
+    h.pokeT = 0.77;
+    h.pokeAt = { x: 46.234, y: 3.5, room: 'спальня-7' };
+    h.bed = { x0: 45.904, y0: 3.1, x1: 46.704, y1: 5.0 };
+    dir.hand = h;
+    const w = toWire(dir, 3, [['poke', 'игрок-2']]);
+    expect(JSON.stringify(w).length).toBeLessThan(FX_MAX);
+    const r = fromWire(JSON.parse(JSON.stringify(w)))!;
+    expect(r.hand!.poke).toBe('игрок-2');
+    expect(r.hand!.pokeAt).toEqual({ x: 46.23, y: 3.5, room: 'спальня-7' });
+    expect(r.hand!.poke01).toBeCloseTo(0.77 / 1.4, 2);
+    expect(r.hand!.bed).toEqual({ x0: 45.9, y0: 3.1, x1: 46.7, y1: 5 });
+    expect(r.events).toEqual([['poke', 'игрок-2']]);
+    // не тычет и кровати рядом нет — полей нет, у клиента — null
+    h.poke = null;
+    h.pokeAt = null;
+    h.bed = null;
+    const w2 = toWire(dir, 4);
+    expect(w2.h!.pk).toBeUndefined();
+    expect(w2.h!.bd).toBeUndefined();
+    const r2 = fromWire(w2)!;
+    expect(r2.hand!.poke).toBeNull();
+    expect(r2.hand!.pokeAt).toBeNull();
+    expect(r2.hand!.poke01).toBe(0);
+    expect(r2.hand!.bed).toBeNull();
   });
 
   it('упрощение следа: концы на месте, прямые — в две точки, изгиб сохраняется', () => {

@@ -84,7 +84,8 @@ describe('общага: комнаты', () => {
       // предел обзора прогулки 9 м: длиннее — комната выпала бы из пула
       expect(roomSightM(r, p.settings.cellM), r.id).toBeLessThanOrEqual(9 + 1e-9);
     }
-    const cors = OWN.filter((r) => has(r, 'коридор'));
+    // кроме тупика коридора с дверью в снег (переход сюжета, спец-локация)
+    const cors = OWN.filter((r) => has(r, 'коридор') && !r.location);
     expect(cors.length).toBeGreaterThanOrEqual(8);
     for (const r of cors) {
       const passes = r.connectors.filter((c) => c.tag === 'obshaga');

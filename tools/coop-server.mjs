@@ -22,7 +22,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** Версия протокола (src/coop/protocol.ts — COOP_PROTO). */
-export const COOP_PROTO = 1;
+export const COOP_PROTO = 2;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 /** Игроков в лобби не больше (подключённых одновременно). */
 export const MAX_PLAYERS = 4;
@@ -51,7 +51,7 @@ export function createCoopHub(o = {}) {
   const lobbies = new Map();
 
   const connected = (L) => [...L.players.values()].filter((p) => p.conn);
-  const info = (p) => ({ id: p.id, name: p.name, color: p.color, state: p.state });
+  const info = (p) => ({ id: p.id, name: p.name, color: p.color, slot: p.slot, state: p.state });
   const broadcast = (L, msg, except = null) => {
     for (const p of L.players.values()) if (p.conn && p !== except) p.conn.send(msg);
   };
@@ -105,6 +105,14 @@ export function createCoopHub(o = {}) {
       me = old ?? { id, order: lob.orders++, state: null };
       me.name = name;
       me.color = color;
+      // место в лобби: наименьшее свободное среди подключённых (у второго игрока шинель аватара другого цвета —
+      // src/coop/avatarModel.ts); вернувшийся сохраняет своё, если не занято
+      const taken = new Set(connected(lob).filter((p) => p !== me).map((p) => p.slot));
+      if (!Number.isInteger(me.slot) || taken.has(me.slot)) {
+        let slot = 0;
+        while (taken.has(slot)) slot++;
+        me.slot = slot;
+      }
       me.conn = conn;
       lob.players.set(id, me);
       lob.emptyAt = null;

@@ -11,7 +11,9 @@
 //  • Полы и потолки — по мешу на экземпляр (metadata.inst), пол/потолок проёмов — отдельными мешами.
 //  • Мебель — меш на предмет: позиция в центре на полу, rotation.y = rot·π/180. Есть модель предмета (propModel —
 //    шаблон из ассета, перед = −Z) — бокс остаётся невидимым коллайдером, видна модель; подвесное (тег «потолок») —
-//    модель под потолком (верх модели в y = 0).
+//    модель под потолком (верх модели в y = 0). Укрытие (PropBox.cover — кровать, стол на ножках): коллайдер — плита
+//    от просвета clear до верха (metadata.cover / clear), под ней пролезают лёжа / на четвереньках; без модели видна
+//    болванка «плита + 4 ножки».
 //  • Отделка (обои, кафель, краска, полы): облицовка по model.faces — квады на 1.5 мм перед гранью
 //    стены, один меш на отделку; dado делит грань по высоте. UV — метры / размер повтора (tileW, tileH).
 //
@@ -29,7 +31,7 @@ import type { Scene } from '@babylonjs/core/scene';
 import type { BaseTexture } from '@babylonjs/core/Materials/Textures/baseTexture';
 import { DOOR_STYLE_BY_ID, doorGeometry, type DoorLeafGeo, type DoorPart, type DoorStyle, type HandleKind } from './doors';
 import { stairMeshes } from './stairs';
-import type { BlockoutModel, DeadEnd, DoorSlot, Rect, RunFinish, Solid, SolidKind, Surface, WallFace } from './types';
+import type { BlockoutModel, DeadEnd, DoorSlot, PropCoverKind, Rect, RunFinish, Solid, SolidKind, Surface, WallFace } from './types';
 
 export type BlockoutMaterialKey = 'wall' | 'partition' | 'lintel' | 'column' | 'floor' | 'portalFloor' | 'ceiling' | 'deadEnd';
 
@@ -172,6 +174,11 @@ export interface BlockoutMeta {
   connector?: string;
   /** отделка (облицовка, пол с отделкой) */
   finishId?: string;
+  /** укрытие (PropBox.cover) — только у меша-коллайдера предмета: под кровать пролезают лёжа, под стол — на
+   *  четвереньках (src/view3d/posture.ts ищет его среди коллайдеров) */
+  cover?: PropCoverKind;
+  /** просвет укрытия: низ плиты коллайдера над его началом координат (полом предмета), м */
+  clear?: number;
 }
 
 /** Цвета по умолчанию: бетон, штукатурка, янтарные перемычки, «подъездный» пол проёмов. */
@@ -632,19 +639,27 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
   }
 
   // ── мебель: бокс w×d×h, пивот в центре на полу, перед = −Z локально (план +y при rot 0) ──
+  // Укрытие (PropBox.cover — кровать, стол на ножках): бокс-коллайдер — плита от просвета clear до h, под ней пролезают
+  // (src/view3d/posture.ts), у него metadata.cover / clear. Без модели коллайдер невидим, а видна дочерняя болванка
+  // «плита + 4 ножки» без коллизий — вызов отрисовки по-прежнему один на предмет.
   const props: Mesh[] = [];
   const propMats = sh.propMats;
   const topMats = sh.topMats;
+  /** тёмная полоска у низа передней грани (низ бокса — y0) — видно, куда предмет смотрит */
+  const stripe = (g: BoxBatch, w: number, d: number, y0: number, h: number) => {
+    g.color = [0.13, 0.12, 0.11, 1];
+    const s = Math.min(0.08, (h - y0) * 0.3);
+    g.face(2, -1, -d / 2 - 0.006, -w / 2 + 0.01, w / 2 - 0.01, y0 + 0.015, y0 + 0.015 + s);
+  };
   for (const p of model.props) {
     const w = Math.max(0.02, p.w);
     const d = Math.max(0.02, p.d);
     const h = Math.max(0.02, p.h);
+    // просвет укрытия; плита тоньше 2 см — уже не укрытие, бокс от пола
+    const clear = p.cover && p.clear != null && p.clear > 0 && p.clear <= h - 0.02 ? p.clear : 0;
     const g = new BoxBatch(true);
-    g.box(-w / 2, 0, -d / 2, w / 2, h, d / 2);
-    // тёмная полоска у низа передней грани — видно, куда предмет смотрит
-    g.color = [0.13, 0.12, 0.11, 1];
-    const sh = Math.min(0.08, h * 0.3);
-    g.face(2, -1, -d / 2 - 0.006, -w / 2 + 0.01, w / 2 - 0.01, 0.015, 0.015 + sh);
+    g.box(-w / 2, clear, -d / 2, w / 2, h, d / 2);
+    if (!clear) stripe(g, w, d, 0, h);
     const key = p.propId + '|' + p.color;
     let mat = propMats.get(key);
     if (!mat) {
@@ -654,7 +669,8 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
       propMats.set(key, mat);
       extraMats.push(mat);
     }
-    const m = add(g.toMesh(`prop:${p.inst}:${p.propId}`, scene), { kind: 'prop', inst: p.inst, propId: p.propId, name: p.name }, mat, true);
+    const md = (): BlockoutMeta => ({ kind: 'prop', inst: p.inst, propId: p.propId, name: p.name });
+    const m = add(g.toMesh(`prop:${p.inst}:${p.propId}`, scene), clear ? { ...md(), cover: p.cover, clear } : md(), mat, true);
     m.position.set(p.x, p.z ?? floorZ.get(p.inst) ?? 0, -p.y);
     m.rotation.y = (p.rot || 0) * deg;
     props.push(m);
@@ -669,9 +685,27 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
       v.isPickable = false;
       v.checkCollisions = false;
       if (p.tags.includes('потолок')) v.position.y = model.options.wallHeightM;
-      meta(v, { kind: 'prop', inst: p.inst, propId: p.propId, name: p.name });
+      meta(v, md());
       allMeshes.push(v);
       continue;
+    }
+    if (clear) {
+      // укрытие без модели: плита-коллайдер невидима, видна болванка «плита + ножки» (ребёнок, без коллизий)
+      m.isVisible = false;
+      const vg = new BoxBatch(true);
+      vg.box(-w / 2, clear, -d / 2, w / 2, h, d / 2);
+      stripe(vg, w, d, clear, h);
+      // ножки по углам: 5 см, отступ 3 см от края (у маленького предмета — тоньше)
+      vg.color = [0.7, 0.68, 0.65, 1];
+      const t = Math.min(0.05, w / 4, d / 4);
+      const e = Math.min(0.03, w / 8, d / 8);
+      for (const x0 of [-w / 2 + e, w / 2 - e - t]) for (const z0 of [-d / 2 + e, d / 2 - e - t]) vg.box(x0, 0, z0, x0 + t, clear, z0 + t);
+      const v = vg.toMesh(`propBox:${p.inst}:${p.propId}`, scene);
+      v.parent = m;
+      v.material = mat;
+      v.checkCollisions = false;
+      meta(v, md());
+      allMeshes.push(v);
     }
 
     // текстура вида сверху — отдельная плоскость чуть выше верха (+ zOffset), без z-fighting

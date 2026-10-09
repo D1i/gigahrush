@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildBlockoutModel, propHeightM, validateBlockout } from './core';
+import { BED_CLEAR_M, buildBlockoutModel, PROP_COVER, propCover, propHeightM, TABLE_CLEAR_M, validateBlockout } from './core';
+import { PROP_BY_ID } from '../data/props';
 import type { BlockoutModel, RunConnector, RunExport, RunFinish, RunInstance, RunSegment, Side, SolidKind, WallFace } from './types';
 
 // ───────────────────────── синтетические входы ─────────────────────────
@@ -434,6 +435,33 @@ describe('blockout: высоты и опции', () => {
     expect(propHeightM(['лифт', 'техника'], 'Лифт пассажирский')).toBe(2.2);
     expect(propHeightM(['почта', 'хранение'], 'Почтовые ящики')).toBe(1.5);
     expect(propHeightM([], 'Нечто')).toBe(0.8);
+  });
+
+  it('укрытия: кровать и стол на ножках получают cover/clear, сплошные — нет', () => {
+    // все id таблицы — настоящие предметы каталога, вид совпадает с каталогом (кровать / стол)
+    for (const [id, c] of Object.entries(PROP_COVER)) {
+      const def = PROP_BY_ID[id];
+      expect(def, id).toBeDefined();
+      expect(c.clear).toBe(c.cover === 'bed' ? BED_CLEAR_M : TABLE_CLEAR_M);
+      expect(def.tags.includes(c.cover === 'bed' ? 'кровать' : 'стол') || def.tags.includes('раскладушка'), id).toBe(true);
+      // под болванкой есть плита: высота по тегам выше просвета
+      expect(propHeightM(def.tags, def.name), id).toBeGreaterThan(c.clear + 0.04);
+    }
+    expect(BED_CLEAR_M).toBe(0.3);
+    expect(TABLE_CLEAR_M).toBe(0.62);
+    expect(propCover('p_obsh_bed')).toEqual({ cover: 'bed', clear: 0.3 });
+    expect(propCover('p_obsh_table')).toEqual({ cover: 'table', clear: 0.62 });
+    for (const id of ['p_desk', 'p_office_desk', 'p_obsh_vahter_desk', 'p_sofa', 'p_mattress', 'p_wardrobe', 'constructor', 'toString']) expect(propCover(id), id).toBeNull();
+
+    const run = pair(1);
+    const P = (id: string, name: string, tags: string[]) => ({ id, name, w: 0.9, h: 2, color: '#875', tags, hasTex: false, tex: null });
+    run.props = [P('p_bed1', 'Кровать односпальная', ['кровать']), P('p_table_kitchen', 'Стол кухонный', ['стол']), P('p_desk', 'Стол письменный', ['стол'])];
+    run.instances[0].decor = ['p_bed1', 'p_table_kitchen', 'p_desk'].map((propId, k) => ({ id: 'f' + k, propId, x: 2 + k * 10, y: 2, rot: 0 }));
+    const m = buildBlockoutModel(run);
+    const by = (id: string) => m.props.find((p) => p.propId === id)!;
+    expect(by('p_bed1')).toMatchObject({ h: 0.5, cover: 'bed', clear: 0.3 });
+    expect(by('p_table_kitchen')).toMatchObject({ h: 0.75, cover: 'table', clear: 0.62 });
+    expect('cover' in by('p_desk') || 'clear' in by('p_desk')).toBe(false);
   });
 });
 

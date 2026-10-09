@@ -2,6 +2,8 @@
 // в движке просмотрщика (BlockoutViewer.setOverlay) и минималистичный HUD поверх холста: приглашение
 // «клик — войти», экран смерти с «Ещё раз», звук, отладка. Правило игроку не раскрывается — только
 // после первой смерти подсказка. Сцена и загрузчик glTF грузятся лениво (import()) при первом входе.
+// Сюжет (story, «Запустить без отладки»): отладки нет; Хвататель утащил — не «Ещё раз», а темнота и «очнулся» в общаге
+// (req.onFall через STORY_FALL_S или кнопкой «Очнуться»).
 import { useEffect, useRef, useState } from 'react';
 import { Color4 } from '@babylonjs/core/Maths/math.color';
 import type { BlockoutViewer } from './viewer';
@@ -22,13 +24,19 @@ export interface LocationRequest {
   /** «Комната» — можно выйти кнопкой; «Прогулка» — только ногами через дверь */
   mode: 'room' | 'walk';
   onExit(kind: StairExit, floorsDown: number): void;
+  /** сюжет: Хвататель утащил — срыв в общагу (вместо «Ещё раз»); нет — обычная смерть */
+  onFall?(): void;
 }
+
+/** Сюжет: после смерти — темнота столько мс, потом срыв в общагу (или раньше — «Очнуться»). */
+export const STORY_FALL_MS = 2500;
 
 const PHASE: Record<string, string> = { calm: 'тихо', threat: 'угроза', grabbed: 'схвачен', open: 'разомкнута' };
 const SOUND_KEY = 'room-forge/stair-sound';
 
-export function StairwellLayer(props: { viewer: BlockoutViewer | null; req: LocationRequest; onClose?(): void }) {
+export function StairwellLayer(props: { viewer: BlockoutViewer | null; req: LocationRequest; onClose?(): void; story?: boolean }) {
   const { viewer, req } = props;
+  const story = !!props.story;
   const [hud, setHud] = useState<StairHud | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [debug, setDebug] = useState(false);
@@ -36,6 +44,10 @@ export function StairwellLayer(props: { viewer: BlockoutViewer | null; req: Loca
   const sceneRef = useRef<StairwellScene | null>(null);
   const exitRef = useRef(req.onExit);
   exitRef.current = req.onExit;
+  const fallRef = useRef(req.onFall);
+  fallRef.current = req.onFall;
+  /** сюжет: срыв уже ушёл (таймер или кнопка) */
+  const fellRef = useRef(false);
 
   useEffect(() => {
     if (!viewer) return;
@@ -98,23 +110,38 @@ export function StairwellLayer(props: { viewer: BlockoutViewer | null; req: Loca
 
   const h = hud;
   const error = err ?? h?.error ?? null;
+  // сюжет: утащили — темнота, через STORY_FALL_MS — в общагу
+  const fall = story && !!req.onFall;
+  const fallNow = () => {
+    if (fellRef.current) return;
+    fellRef.current = true;
+    fallRef.current?.();
+  };
+  const dead = !!h?.dead;
+  useEffect(() => {
+    if (!fall || !dead) return;
+    const t = setTimeout(fallNow, STORY_FALL_MS);
+    return () => clearTimeout(t);
+  }, [fall, dead]);
   return (
     <div className="v3-loc">
       <div className="float v3-loc-tools">
         <button className={'btn sm' + (sound ? ' on' : '')} onClick={() => setSound(!sound)} title="Звук локации (WebAudio)">
           звук: {sound ? 'вкл' : 'выкл'}
         </button>
-        <label className="check" title="Фаза механики, пережито/нужно, близость Хвателя, этаж петли">
-          <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
-          отладка
-        </label>
+        {!story && (
+          <label className="check" title="Фаза механики, пережито/нужно, близость Хвателя, этаж петли">
+            <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
+            отладка
+          </label>
+        )}
         {req.mode === 'room' && (
           <button className="btn sm" onClick={() => props.onClose?.()} title="Выйти из локации (только для просмотра комнаты)">
             выйти
           </button>
         )}
       </div>
-      {debug && h && (
+      {debug && !story && h && (
         <div className="float v3-loc-debug mono">
           <div>
             {req.title} · попытка {h.attempt + 1} · смертей {h.deaths}
@@ -152,7 +179,18 @@ export function StairwellLayer(props: { viewer: BlockoutViewer | null; req: Loca
           <b>Клик</b> — захватить мышь
         </div>
       )}
-      {h?.dead && (
+      {h?.dead && fall && (
+        <div className="v3-loc-dead v3-story-fall">
+          <div>
+            <h2>Хвататель утащил вас вглубь подъезда</h2>
+            <p className="hint">…темнота, сырой бетон, где-то капает вода</p>
+            <button className="btn" onClick={fallNow}>
+              Очнуться
+            </button>
+          </div>
+        </div>
+      )}
+      {h?.dead && !fall && (
         <div className="v3-loc-dead">
           <div>
             <h2>Хвататель утащил вас вглубь подъезда</h2>

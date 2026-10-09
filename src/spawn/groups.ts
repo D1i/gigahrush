@@ -19,6 +19,8 @@ export const GROUPS = [
   'жилая',
   'балкон',
   'кладовка',
+  // metro
+  'метро',
 ] as const;
 export const OTHER = 'другое';
 
@@ -40,6 +42,8 @@ export const GROUP_COLORS: Record<string, string> = {
   балкон: '#b8c86f',
   кладовка: '#9a8f7a',
   [OTHER]: '#5a5e66',
+  // metro
+  метро: '#b8423a',
 };
 
 /** Группа комнаты: первый её тег из списка групп, иначе «другое». */

@@ -1,11 +1,12 @@
-// Адаптер Babylon на NullEngine: число мешей, габариты, поворот мебели, instOf, отделка, dispose без утечек.
+// Адаптер Babylon на NullEngine: число мешей, габариты, поворот мебели, укрытия (плита над просветом), instOf, отделка,
+// dispose без утечек.
 import { describe, expect, it } from 'vitest';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
 import { Scene } from '@babylonjs/core/scene';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
 import { CreateBoxVertexData } from '@babylonjs/core/Meshes/Builders/boxBuilder';
-import type { Mesh } from '@babylonjs/core/Meshes/mesh';
+import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { BoxBatch, buildBabylonBlockout } from './babylon';
 import { buildBlockoutModel } from './core';
 import { DEFAULT_BLOCKOUT, type BlockoutModel, type RunExport, type RunFinish } from './types';
@@ -290,6 +291,118 @@ describe('buildBabylonBlockout', () => {
     expect(table.dir.z).toBeCloseTo(-1, 6);
     expect(table.stripe.z).toBeLessThan(table.center.z - 0.25);
     bo.dispose();
+    engine.dispose();
+  });
+
+  /** Две комнаты + кровать (просвет 0.30) в i0 и стол (0.62, на площадке 0.5 м, rot 90) в i1. */
+  const coverRooms = (): BlockoutModel => {
+    const m = twoRooms();
+    m.props.push(
+      { inst: 'i0', source: 'decor', propId: 'p_bed1', name: 'Кровать', x: 1.2, y: 1.5, rot: 0, w: 0.9, d: 2, h: 0.5, color: '#b0a080', tags: ['кровать'], cover: 'bed', clear: 0.3 },
+      { inst: 'i1', source: 'decor', propId: 'p_table_kitchen', name: 'Стол кухонный', x: 4.5, y: 3, rot: 90, w: 0.9, d: 0.6, h: 0.75, color: '#c9b48a', tags: ['стол'], z: 0.5, cover: 'table', clear: 0.62 },
+    );
+    return m;
+  };
+  const propMesh = (bo: ReturnType<typeof buildBabylonBlockout>, id: string) => bo.props.find((m) => (m.metadata as any).propId === id)!;
+
+  it('укрытия: коллайдер кровати и стола — плита от просвета, metadata.cover; видны плита и ножки без коллизий', () => {
+    const { scene, engine } = mkScene();
+    const bo = buildBabylonBlockout(scene, coverRooms(), { collisions: true });
+    expect(bo.props.length).toBe(4);
+    const collide = new Set(bo.root.getChildMeshes(false).filter((m) => m.checkCollisions));
+
+    const bed = propMesh(bo, 'p_bed1');
+    expect(bed.metadata).toEqual({ kind: 'prop', inst: 'i0', propId: 'p_bed1', name: 'Кровать', cover: 'bed', clear: 0.3 });
+    expect(collide.has(bed)).toBe(true);
+    expect(bed.isVisible).toBe(false); // коллайдер не рисуется (портальный рендер его пропустит)
+    const bb = worldBox([bed]);
+    expect(bb.min.y).toBeCloseTo(0.3, 6); // лёжа (0.05…0.25) — под ней, на четвереньках (0.18…0.59) — упор
+    expect(bb.max.y).toBeCloseTo(0.5, 6);
+    expect(bb.max.x - bb.min.x).toBeCloseTo(0.9, 6);
+    expect(bb.max.z - bb.min.z).toBeCloseTo(2, 6);
+    // видимая болванка: плита + 4 ножки до пола + полоска на переду плиты; без коллизий, на месте кровати
+    const vis = bed.getChildMeshes(false);
+    expect(vis.length).toBe(1);
+    const box = vis[0] as Mesh;
+    expect(box.name).toBe('propBox:i0:p_bed1');
+    expect(box.isVisible).toBe(true);
+    expect(collide.has(box)).toBe(false);
+    expect(box.metadata).toMatchObject({ kind: 'prop', inst: 'i0', propId: 'p_bed1' });
+    expect((box.metadata as any).cover).toBeUndefined();
+    expect(bo.instOf(box)).toBe('i0');
+    expect(box.getTotalVertices()).toBe(24 + 4 + 4 * 24);
+    const vb = worldBox([box]);
+    expect(vb.min.y).toBeCloseTo(0, 6);
+    expect(vb.max.y).toBeCloseTo(0.5, 6);
+    expect(vb.min.x).toBeCloseTo(bb.min.x, 6);
+    expect(vb.max.z).toBeCloseTo(bb.max.z, 6);
+    // ножки: всё, что ниже плиты, — четыре столбика 5 см по углам (отступ 3 см), середина под кроватью пуста
+    const pos = box.getVerticesData(VertexBuffer.PositionKind)!;
+    const col = box.getVerticesData(VertexBuffer.ColorKind)!;
+    const low: number[][] = [];
+    for (let v = 0; v < pos.length / 3; v++) if (pos[v * 3 + 1] < 0.3 - 1e-6) low.push([pos[v * 3], pos[v * 3 + 2]]);
+    expect(low.length).toBe(4 * 12); // у каждой ножки низ (4) и нижние углы 4 боковых граней (8)
+    for (const [x, z] of low) {
+      expect(Math.abs(x)).toBeGreaterThan(0.45 - 0.08 - 1e-6);
+      expect(Math.abs(x)).toBeLessThan(0.45 - 0.03 + 1e-6);
+      expect(Math.abs(z)).toBeGreaterThan(1 - 0.08 - 1e-6);
+      expect(Math.abs(z)).toBeLessThan(1 - 0.03 + 1e-6);
+    }
+    // тёмная полоска — на переднем торце плиты (−Z локально), по высоте внутри плиты
+    let dark = 0;
+    for (let v = 0; v < pos.length / 3; v++) {
+      if (col[v * 4] > 0.5) continue;
+      dark++;
+      expect(pos[v * 3 + 2]).toBeLessThan(-1);
+      expect(pos[v * 3 + 1]).toBeGreaterThan(0.3);
+      expect(pos[v * 3 + 1]).toBeLessThan(0.5);
+    }
+    expect(dark).toBe(4);
+
+    // стол на площадке 0.5 м, повёрнут: плита 0.5 + 0.62 … 0.5 + 0.75, ширина 0.9 легла вдоль Z мира
+    const table = propMesh(bo, 'p_table_kitchen');
+    expect(table.metadata).toMatchObject({ kind: 'prop', inst: 'i1', cover: 'table', clear: 0.62 });
+    expect(collide.has(table)).toBe(true);
+    const tb = worldBox([table]);
+    expect(tb.min.y).toBeCloseTo(1.12, 6);
+    expect(tb.max.y).toBeCloseTo(1.25, 6);
+    expect(tb.max.z - tb.min.z).toBeCloseTo(0.9, 6);
+    expect(worldBox(table.getChildMeshes(false) as Mesh[]).min.y).toBeCloseTo(0.5, 6);
+
+    // остальная мебель — как была: видимый бокс от пола, коллайдер, без cover
+    const wardrobe = propMesh(bo, 'p_wardrobe');
+    expect(wardrobe.metadata).toEqual({ kind: 'prop', inst: 'i0', propId: 'p_wardrobe', name: 'Шкаф' });
+    expect(wardrobe.isVisible).toBe(true);
+    expect(wardrobe.checkCollisions).toBe(true);
+    expect(wardrobe.getChildMeshes(false).length).toBe(0);
+    expect(worldBox([wardrobe]).min.y).toBeCloseTo(0, 6);
+    expect(bo.props.every((m) => m.checkCollisions)).toBe(true);
+    bo.dispose();
+    engine.dispose();
+  });
+
+  it('укрытия с моделью предмета: меняется только невидимый коллайдер, ножек нет', () => {
+    const { scene, engine } = mkScene();
+    const tpl = new Mesh('tpl', scene);
+    CreateBoxVertexData({ size: 0.5 }).applyToMesh(tpl);
+    tpl.setEnabled(false);
+    const before = scene.meshes.length;
+    const bo = buildBabylonBlockout(scene, coverRooms(), { collisions: true, propModel: (id) => (id === 'p_bed1' || id === 'p_wardrobe' ? tpl : null) });
+    const bed = propMesh(bo, 'p_bed1');
+    expect(bed.isVisible).toBe(false);
+    expect(bed.checkCollisions).toBe(true);
+    expect(bed.metadata).toMatchObject({ cover: 'bed', clear: 0.3 });
+    expect(worldBox([bed]).min.y).toBeCloseTo(0.3, 6);
+    const kids = bed.getChildMeshes(true);
+    expect(kids.map((k) => k.name)).toEqual(['propModel:i0:p_bed1']);
+    expect(kids[0].checkCollisions).toBe(false);
+    expect((kids[0].metadata as any).cover).toBeUndefined();
+    // модель стоит на полу предмета (начало координат коллайдера — пол, не низ плиты)
+    expect(kids[0].position.y).toBe(0);
+    // шкаф с моделью — коллайдер от пола
+    expect(worldBox([propMesh(bo, 'p_wardrobe')]).min.y).toBeCloseTo(0, 6);
+    bo.dispose();
+    expect(scene.meshes.length).toBe(before);
     engine.dispose();
   });
 

@@ -5,10 +5,10 @@ import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
 import { Scene } from '@babylonjs/core/scene';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
-import { createHand, handView, stepHand, type HandInput, type HandState, type Pt } from '../locations/obshaga';
+import { createHand, handView, POKE_STAND, rectGap, stepHand, type HandInput, type HandState, type Pt, type Rect } from '../locations/obshaga';
 import {
-  HAND, HandMesh, armLook, armSection, crawlGait, fingerDefs, planAt, projectArc, roomRuns, skinTexels, solveFinger, spineSamples, trailArcs,
-  type ArmSection, type RoomRun, type SpinePt,
+  HAND, HandMesh, armLook, armSection, crawlGait, fingerDefs, floorAngle, planAt, pokeBend, projectArc, rayRect, roomRuns, skinTexels, solveFinger,
+  spineSamples, trailArcs, type ArmSection, type RoomRun, type SpinePt,
 } from './obshagaHand';
 import { PORTAL_LAYER } from './portal';
 
@@ -147,6 +147,47 @@ describe('пальцы', () => {
       crawlGait((fd.stance + 1) / 2, g, fd.stance);
       expect(g.lift).toBeGreaterThan(0.99);
     }
+  });
+
+  it('тычок под кровать: два звена доходят до начала дальних фаланг, сустав — над прямой; не достаёт — по прямой', () => {
+    const out = { a: 0, b: 0 };
+    for (const [u, v] of [[0.7, -0.5], [1.2, -0.52], [0.05, -0.5], [0.4, -0.3]]) {
+      pokeBend(0.54, 0.87, u, v, out);
+      expect(0.54 * Math.cos(out.a) + 0.87 * Math.cos(out.b)).toBeCloseTo(u, 6);
+      expect(0.54 * Math.sin(out.a) + 0.87 * Math.sin(out.b)).toBeCloseTo(v, 6);
+      expect(out.a).toBeGreaterThan(Math.atan2(v, u));
+    }
+    pokeBend(0.54, 0.87, 3, -0.5, out);
+    expect(out.a).toBeCloseTo(Math.atan2(-0.5, 3), 9);
+    expect(out.b).toBeCloseTo(out.a, 9);
+  });
+
+  it('пол: фаланга выше пола не трогается; ниже — поднимается к горизонту в свою сторону (вперёд / назад), ветвь угла та же', () => {
+    // конец и так не ниже — как есть (и через 2π)
+    expect(floorAngle(-0.5, 0.6, 0.5, 0.1)).toBe(-0.5);
+    expect(floorAngle(-0.5 - 2 * Math.PI, 0.6, 0.5, 0.1)).toBe(-0.5 - 2 * Math.PI);
+    // вперёд-вниз в пол: ровно до высоты clr, вперёд
+    let th = floorAngle(-1.2, 0.3, 0.5, 0.1);
+    expect(0.3 + 0.5 * Math.sin(th)).toBeCloseTo(0.1, 9);
+    expect(Math.cos(th)).toBeGreaterThan(0);
+    // назад-вниз: к горизонту назад (конец остаётся сзади)
+    th = floorAngle(-2.2, 0.3, 0.5, 0.1);
+    expect(0.3 + 0.5 * Math.sin(th)).toBeCloseTo(0.1, 9);
+    expect(Math.cos(th)).toBeLessThan(0);
+    // та же ветвь: −2.2 − 2π → результат − 2π
+    expect(floorAngle(-2.2 - 2 * Math.PI, 0.3, 0.5, 0.1)).toBeCloseTo(th - 2 * Math.PI, 9);
+    // начало у самого пола — фаланга торчит вверх
+    expect(floorAngle(-0.3, -0.6, 0.5, 0.1)).toBeCloseTo(Math.PI / 2, 9);
+  });
+
+  it('луч до прямоугольника плана: вход, изнутри — 0, мимо и назад — ∞', () => {
+    const r = { x0: 2, y0: -1, x1: 3, y1: 1 };
+    expect(rayRect(0, 0, 1, 0, r)).toBeCloseTo(2, 9);
+    expect(rayRect(0, 0, 0.96, 0.28, r)).toBeCloseTo(2 / 0.96, 9);
+    expect(rayRect(0, 0, Math.SQRT1_2, Math.SQRT1_2, r)).toBe(Infinity);
+    expect(rayRect(2.5, 0, 1, 0, r)).toBe(0);
+    expect(rayRect(0, 0, -1, 0, r)).toBe(Infinity);
+    expect(rayRect(0, 2, 1, 0, r)).toBe(Infinity);
   });
 
   it('кончики крайних пальцев — у стен, не в них; левая рука — зеркальна', () => {
@@ -337,6 +378,175 @@ describe('HandMesh', () => {
     expect(fc!.y).toBeLessThan(1.5);
     mesh.update(null, toWorld, t + 1);
     expect(mesh.fistCenter()).toBeNull();
+    mesh.dispose();
+    scene.dispose();
+    engine.dispose();
+  });
+
+  it('кровать известна: на подходе и в тычке ничего ниже пола и в плите кровати; над её рамкой — только указательный, ниже 0.2 м', { timeout: 60000 }, () => {
+    // кровать x 9.5… (рамка план), игрок под ней; рука ползёт к нему из коридора, механика держит кончик снаружи зоны
+    const cases: { bed: Rect; p: Pt; under: number }[] = [
+      // длинным боком к руке, игрок 0.4 вглубь (кончик встаёт на POKE_R от игрока, дальше зоны)
+      { bed: { x0: 9.5, y0: -1, x1: 10.3, y1: 0.9 }, p: { x: 9.9, y: 0, room: 'c' }, under: 0.05 },
+      // и 0.7 вглубь, вбок от оси руки
+      { bed: { x0: 9.5, y0: -1, x1: 10.3, y1: 0.9 }, p: { x: 10.2, y: 0.5, room: 'c' }, under: 0.3 },
+      // торцом: кончик — на границе зоны (POKE_STAND), игрок 0.8 вглубь
+      { bed: { x0: 9.5, y0: -0.4, x1: 11.4, y1: 0.4 }, p: { x: 10.3, y: 0, room: 'c' }, under: 0.3 },
+    ];
+    const hands = new Set<boolean>();
+    for (const seed of ['t4', 'a', 'd', 'k']) {
+      for (const c of cases) {
+        const engine = new NullEngine();
+        const scene = new Scene(engine);
+        const mesh = new HandMesh(scene);
+        const h = createHand(seed, { x: 2, y: 2.2, room: 'room' }, { x: 2, y: 0, room: 'c' });
+        const input: HandInput = { lightsOn: false, seen: false, goal: { x: 4, y: 0, room: 'c' }, players: [], lanterns: [], playerSpeed: 3 };
+        let t = run(h, input, mesh, (s) => s.tip.x >= 4 - 1e-6);
+        input.goal = c.p;
+        input.players = [{ id: 'p', p: c.p, protected: false, sees: false, sheltered: true, cover: c.bed }];
+        const m = mesh as unknown as { right: boolean; grids: { base: number; rows: number; cols: number }[] };
+        const hand = [...mesh.byRoom().get('c')!].find((x) => x.name === 'obshaga:hand')!;
+        const what = `${seed}, кровать ${JSON.stringify(c.bed)}, игрок ${c.p.x}/${c.p.y}`;
+        let pokes = 0, under = -Infinity, minY = Infinity;
+        for (let k = 0; k < 170; k++) {
+          stepHand(h, 1 / 30, input);
+          t += 1 / 30;
+          mesh.update(handView(h), toWorld, t, DOORWAY);
+          if (h.poke) pokes++;
+          expect(rectGap(h.tip, c.bed), what).toBeGreaterThanOrEqual(POKE_STAND - 1e-6);
+          const tip = mesh.pokeTip();
+          if (tip) {
+            under = Math.max(under, tip.x - c.bed.x0);
+            if (tip.x > c.bed.x0) expect(tip.y, what).toBeLessThanOrEqual(0.2);
+          }
+          if (k % 2) continue;
+          const pos = hand.getVerticesData(VertexBuffer.PositionKind)!;
+          m.grids.forEach((G, gi) => {
+            // указательный (тычущий палец) и его ноготь — сетки 1 и 1 + 5
+            const index = gi === 1 || gi === 6;
+            for (let v = G.base; v < G.base + G.rows * (G.cols + 1); v++) {
+              const x = pos[v * 3], y = pos[v * 3 + 1], py = -pos[v * 3 + 2];
+              minY = Math.min(minY, y);
+              const inBed = x > c.bed.x0 && x < c.bed.x1 && py > c.bed.y0 && py < c.bed.y1;
+              if (!inBed) continue;
+              expect(index, `${what}: сетка ${gi} над кроватью, высота ${y.toFixed(2)}`).toBe(true);
+              expect(y > 0.3 && y < 0.5, `${what}: указательный в плите кровати, высота ${y.toFixed(3)}`).toBe(false);
+            }
+          });
+        }
+        hands.add(m.right);
+        expect(minY, what).toBeGreaterThan(-0.01);
+        expect(pokes, what).toBeGreaterThan(30);
+        // палец уходит под кровать — к игроку
+        expect(under, what).toBeGreaterThan(c.under);
+        mesh.dispose();
+        scene.dispose();
+        engine.dispose();
+      }
+    }
+    // и правые, и левые руки
+    expect(hands.size).toBe(2);
+  });
+
+  it('пол: ползёт, встаёт и тычет без кровати (указательный — с разгона позы) — ни одна вершина кисти не ниже пола', { timeout: 30000 }, () => {
+    for (const [seed, d] of [['t4', 1.7], ['a', 0.6], ['d', 2.2], ['k', 1.2]] as const) {
+      const engine = new NullEngine();
+      const scene = new Scene(engine);
+      const mesh = new HandMesh(scene);
+      const h = createHand(seed, { x: 2, y: 2.2, room: 'room' }, { x: 2, y: 0, room: 'c' });
+      const input: HandInput = { lightsOn: false, seen: false, goal: { x: 9, y: 0, room: 'c' }, players: [], lanterns: [], playerSpeed: 3 };
+      const hand = () => [...mesh.byRoom().get('c')!].find((x) => x.name === 'obshaga:hand')!;
+      let minY = Infinity, t = 0;
+      const scan = () => {
+        const pos = hand().getVerticesData(VertexBuffer.PositionKind)!;
+        for (let v = 1; v < pos.length; v += 3) minY = Math.min(minY, pos[v]);
+      };
+      // ползёт (перебор пальцами, кончики и ногти у пола)
+      t = run(h, input, mesh, (s) => s.tip.x >= 5 - 1e-6);
+      for (let k = 0; k < 60 && h.tip.x < 9 - 1e-6; k++) {
+        stepHand(h, 1 / 30, input);
+        t += 1 / 30;
+        mesh.update(handView(h), toWorld, t, DOORWAY);
+        scan();
+      }
+      expect(minY, `${seed}: ползёт`).toBeGreaterThan(-0.01);
+      // встал, игрок под кроватью (кровать неизвестна) в d м: тычок — и разгон позы
+      minY = Infinity;
+      input.goal = null;
+      input.players = [{ id: 'p', p: { x: h.tip.x + d, y: 0, room: 'c' }, protected: false, sees: false, sheltered: true }];
+      const m = mesh as unknown as { yaw: number; grids: { base: number; rows: number; cols: number }[] };
+      let reach = 0, side = 0;
+      for (let k = 0; k < 70; k++) {
+        stepHand(h, 1 / 30, input);
+        t += 1 / 30;
+        mesh.update(handView(h), toWorld, t, DOORWAY);
+        scan();
+        if (k < 12) continue;
+        // поза упора: всё, кроме указательного (сетки 1 и 6), — в круге 1.2 м у кончика спереди; сзади (ладонь,
+        // запястье) — не шире 1.2 м в стороны (POKE_STAND 1.3 — запретная зона кончика у кровати)
+        const pos = hand().getVerticesData(VertexBuffer.PositionKind)!;
+        const o = toWorld(h.tip), fx = Math.cos(m.yaw), fz = Math.sin(m.yaw);
+        m.grids.forEach((G, gi) => {
+          if (gi === 1 || gi === 6) return;
+          for (let v = G.base; v < G.base + G.rows * (G.cols + 1); v++) {
+            const dx = pos[v * 3] - o.x, dz = pos[v * 3 + 2] - o.z;
+            const f = dx * fx + dz * fz, l = -dx * fz + dz * fx;
+            if (f > -0.5) reach = Math.max(reach, Math.hypot(dx, dz));
+            else side = Math.max(side, Math.abs(l));
+          }
+        });
+      }
+      expect(h.poke).toBe('p');
+      expect(minY, `${seed}: тычет в ${d} м`).toBeGreaterThan(-0.01);
+      expect(reach, `${seed}: упор`).toBeLessThan(1.2);
+      expect(side, `${seed}: ладонь`).toBeLessThan(1.2);
+      expect(reach).toBeLessThan(POKE_STAND);
+      mesh.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it('тычет под кровать: указательный под сеткой (< 0.3 м) к игроку, выпад и назад; и под взглядом; перестала — null', () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const mesh = new HandMesh(scene);
+    const h = createHand('t4', { x: 2, y: 2.2, room: 'room' }, { x: 2, y: 0, room: 'c' });
+    const bed: Pt = { x: 9, y: 0, room: 'c' };
+    const input: HandInput = { lightsOn: false, seen: false, goal: bed, players: [{ id: 'p', p: bed, protected: false, sees: false, sheltered: true }], lanterns: [], playerSpeed: 3 };
+    let t = run(h, input, mesh, (s) => s.poke !== null);
+    expect(mesh.pokeTip()).toBeNull();
+    t = run(h, input, mesh, () => false, t, 30);
+    expect(mesh.pokeTip()).not.toBeNull();
+    // смотрят — рука замерла, а палец бьёт: за полтора цикла кончик у пола, ходит вперёд-назад, на ударе — у игрока
+    input.seen = true;
+    const hand = [...mesh.byRoom().get('c')!].find((m) => m.name === 'obshaga:hand')!;
+    let minD = Infinity, maxD = 0, maxY = -Infinity, minY = Infinity;
+    const before = Float32Array.from(hand.getVerticesData(VertexBuffer.PositionKind)!);
+    for (let k = 0; k < 64; k++) {
+      stepHand(h, 1 / 30, input);
+      t += 1 / 30;
+      mesh.update(handView(h), toWorld, t, DOORWAY);
+      const p = mesh.pokeTip()!;
+      const d = Math.hypot(p.x - bed.x, p.z + bed.y);
+      minD = Math.min(minD, d);
+      maxD = Math.max(maxD, d);
+      maxY = Math.max(maxY, p.y);
+      minY = Math.min(minY, p.y);
+    }
+    expect(h.frozen).toBe(true);
+    expect(handView(h).poke).toBe('p');
+    expect(Float32Array.from(hand.getVerticesData(VertexBuffer.PositionKind)!)).not.toEqual(before);
+    expect(maxY).toBeLessThan(0.3);
+    expect(minY).toBeGreaterThan(0.05);
+    expect(minD).toBeGreaterThan(0.15);
+    expect(minD).toBeLessThan(0.6);
+    expect(maxD - minD).toBeGreaterThan(0.3);
+    // свет — рука исчезла, тычка нет
+    input.lightsOn = true;
+    stepHand(h, 1 / 30, input);
+    mesh.update(handView(h), toWorld, t + 1, DOORWAY);
+    expect(mesh.pokeTip()).toBeNull();
     mesh.dispose();
     scene.dispose();
     engine.dispose();

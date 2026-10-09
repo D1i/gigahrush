@@ -9,6 +9,7 @@
 // комнатами по бокам (src/data/roomsObshaga.ts, docs/GENERATOR-4D.md §22).
 import type { ApartmentSettings, Biome, FinishRule, Room, TunnelSettings, WalkGenSettings, WorldSettings } from '../model/types';
 import { DEFAULT_WET, normWet } from './wet';
+import { STORY_PLACEHOLDER, STORY_START, storyBiomes, storyStep } from '../game/story';
 
 /** Предел комнат в квартире (из правил заказчика). */
 export const CLUSTER_MAX = 15;
@@ -92,6 +93,59 @@ const T = (id: string, name: string, color: string, rules: FinishRule[], note: s
   return { ...rest, layout: 'tunnels', finishRules: rules, ...(tunnels ? { tunnels } : {}), ...(dark ? { dark } : {}), note: n };
 };
 
+// metro
+/** Метро — три сети (зал, переходы, служебные ходы) и эскалаторы из своих комнат (src/data/roomsMetro.ts). */
+const METRO_TAGS: [string, number][] = [['метро', 1]];
+
+/** Метро (§24): бесконечная колонная станция — пролёты зала 18 м стыкуются торцами, из путевых стен — переходы, из
+ *  переходов — служебные ходы, эскалаторы на три этажа вверх и вниз; станции поменьше в переходах, крошечные — в
+ *  служебных ходах. Отделка — по тегу помещения (правила 'метро' нет). Залы до 18×18 м и тоннель 19 м: свой предел
+ *  обзора 28 м; обзор вдаль 70 м. */
+function metroBiome(): Biome {
+  const { note, ...rest } = T('metro', 'Метро', '#b8423a', [
+    rule('зал', [['f_metro_marble', 1]], [['f_metro_granite', 1]]),
+    rule('вестибюль', [['f_metro_marble_dark', 1]], [['f_metro_granite', 1]]),
+    rule('эскалатор', [['f_metro_marble_dark', 1]], [['f_metro_granite', 1]]),
+    rule('переход', [['f_metro_tile', 1]], [['f_metro_granite', 1]]),
+    rule('служебное', [['f_metro_slu', 1]], [['f_concrete_floor', 1]]),
+    rule('сгоревший', [['f_metro_soot', 1]], [['f_metro_soot_floor', 1]]),
+  ], 'Метро: бесконечная колонная станция — белый мрамор, пилоны, гранитный пол с красно-серыми ромбами, кессоны со ' +
+    'световыми полосами, мозаичные панно на путевых стенах. Пролёты зала стыкуются без конца; из путевых стен — проходы ' +
+    'через пути в переходы, из переходов — служебные ходы и эскалаторы на три этажа вверх или вниз (с малым шансом ' +
+    'дорожка срывается). Станции внутри станций: поменьше — в переходах, крошечная — в служебных ходах. Хабы — ' +
+    'вестибюли и аванзалы с выходом в город.',
+  METRO_TAGS,
+  // залы и переходы — длинные прямые с частыми бесконечными участками (10%, 27–54 м, не ближе 30 м к вестибюлю) и
+  // кольцами из вестибюлей (30%, 40–90 м); развилка 14%, поворот 6% на кусок; вестибюль через 140–300 м; 55% дверей
+  // служебных помещений открываются
+  { hubEvery: [140, 300], turn: 0.06, branch: 0.14, storage: 0.55, ring: 0.3, ringLen: [40, 90], loop: 0.1, loopLen: [27, 54], loopMinDist: 30 });
+  // обзор 70 м (зал растворяется во тьме вдали), свой предел обзора 28 м; порядок полей — как у normBiome
+  return { ...rest, viewM: 70, sightM: 28, note };
+}
+
+// cellar
+/** Погреб — сеть земляных ходов из своих комнат (src/data/roomsCellar.ts). */
+const CELLAR_TAGS: [string, number][] = [['погреб', 1]];
+
+/** Погреб (§25): нора-лабиринт под сараем — ходы 0.6 м в чёрной земле, щели 0.4 м (только боком), крошечные камеры и
+ *  клетушки, крепь; света нет совсем (dark 1 — только фонарь). Выход — камера с дверью в снег (хаб со спец-локацией:
+ *  переходов по счётчику нет). */
+function cellarBiome(): Biome {
+  const { note, ...rest } = T('cellar', 'Погреб', '#3b2e22', [
+    rule('погреб', [['f_cel_soil', 1]], [['f_cel_floor', 5], ['f_cel_boards', 1]]),
+  ], 'Земляной погреб: узкие ходы 0.6 м в чёрной земле, крепь из старых брёвен, со свода сыплется земля; щели 0.4 м — ' +
+    'только боком; крошечные камеры и клетушки за щелями (банки, мешки, осыпи). Света нет — только фонарь, пыль. Вход — ' +
+    'люком из сарая (лаз наверх камеры); выход — камера с низкой дверью в снег (через 40–100 м ходами): за ней снег, ' +
+    'обвал засыпает, откопался — снежные тоннели.',
+  CELLAR_TAGS,
+  // нора: поворот 26%, развилка 20% на кусок, короткие кольца из камер (20%, 12–30 м) и редкие бесконечные участки;
+  // камера — через 40–100 м ходами (среди камер чаще всего — с дверью в снег); 60% щелей ведут в клетушку
+  { hubEvery: [40, 100], turn: 0.26, branch: 0.2, storage: 0.6, ring: 0.2, ringLen: [12, 30], loop: 0.02, loopLen: [8, 16], loopMinDist: 10 }, 1);
+  // свой предел обзора 6 м (клетушки крошечные; ходы и камеры — длинный обзор, им предел не мешает); порядок полей — как
+  // у normBiome
+  return { ...rest, sightM: 6, note };
+}
+
 /** Биомы по умолчанию (свежие объекты при каждом вызове). */
 export function defaultBiomes(): Biome[] {
   return [
@@ -133,6 +187,10 @@ export function defaultBiomes(): Biome[] {
       '(через 60–150 м ползком): пробить — провалишься в ангар. Вход — переходом.',
       SNOW_TAGS, { hubEvery: [60, 150], turn: 0.32, branch: 0.24, storage: 0.4, ring: 0.3, ringLen: [24, 60], loop: 0.02 }, 0.9),
     obshagaBiome(),
+    // metro
+    metroBiome(),
+    // cellar
+    cellarBiome(),
     B('rich', 'Богатая квартира', '#d06a4e', [
       ['прихожая', 1], ['кухня', 1], ['санузел', 1], ['жилая', 1.5], ['балкон', 1], ['кладовка', 1], ['коридор', 0.2],
     ], 'Сюда ведут переходы: квартира с усиленной элитностью (richBoost), выходы — в обычные квартиры биома, откуда пришли.', true),
@@ -229,6 +287,40 @@ export function cloneWorld(w: WorldSettings): WorldSettings {
   };
 }
 
+/** Тег комнат «Спуск в подвал» (выход квартиры прямо в подвал — в обход бесконечной лестницы). */
+const DESCENT_TAG = 'спуск';
+
+/**
+ * Мир сюжета (режим «Запустить без отладки», src/game/story.ts): story — true, старт — STORY_START. Биомы — только те,
+ * что нужны сюжету (storyBiomes), в его порядке: свои из w (правки автора), недостающие — из пресетов; заглушка
+ * (STORY_PLACEHOLDER: погреб — подвал) — копия биома-образца со своим id и названием шага, только если биома с этим id
+ * нет ни в w, ни в пресетах (настоящий биом заглушку заменяет; presets — пресеты, по умолчанию defaultBiomes()). Богатых квартир и прочих биомов нет — переходы ведут только по сюжету (StreamWorld: storyNext), лестничных
+ * площадок-переходов тоже (trLanding 0). У квартир нет «Спуска в подвал» (тег 'спуск'): в подвал — только бесконечной
+ * лестницей. Остальные параметры (квартиры, счётчик переходов, ходы, 4D) — из w. w не меняется.
+ */
+export function storyWorld(w: WorldSettings, presetBiomes: readonly Biome[] = defaultBiomes()): WorldSettings {
+  const base = cloneWorld(w);
+  const own = new Map(base.biomes.map((b) => [b.id, b] as const));
+  const presets = new Map(presetBiomes.map((b) => [b.id, cloneBiome(b)] as const));
+  const biomes: Biome[] = [];
+  for (const id of storyBiomes()) {
+    let b = own.get(id) ?? presets.get(id);
+    const ph = STORY_PLACEHOLDER[id];
+    if (!b && ph) {
+      const src = own.get(ph) ?? presets.get(ph);
+      if (src) {
+        b = {
+          ...cloneBiome(src), id, name: storyStep(id)?.title ?? id, color: '#7a5c3e',
+          note: `Заглушка сюжета: пока растёт комнатами и отделкой биома «${src.name}». ${src.note}`,
+        };
+      }
+    }
+    if (!b || b.rich) continue;
+    biomes.push(isTunnels(b) ? b : { ...b, tags: b.tags.filter((t) => t.tag !== DESCENT_TAG) });
+  }
+  return { ...base, story: true, startBiome: STORY_START, trLanding: 0, biomes };
+}
+
 /** Параметры квартир биома: свои (Biome.apartments) поверх общих. */
 export function aptOf(w: WorldSettings, biome: string | null | undefined): ApartmentSettings {
   const o = biome ? w.biomes.find((b) => b.id === biome)?.apartments : undefined;
@@ -251,18 +343,25 @@ export function tunOf(w: WorldSettings, biome: string | null | undefined): Tunne
 export type TunnelKind = 'hub' | 'straight' | 'turn' | 'branch' | 'storage';
 /** Проход хода подвала — метка ('basement', 1.0 м); «Спуск в подвал» — выход квартиры с этой меткой. */
 export const TUNNEL_TAG = 'basement';
+// metro: метки сетей метро (src/data/roomsMetro.ts, §24). Проходы — ось зала, переходы, служебные ходы и торцы
+// эскалатора (направленная пара: тоннель встаёт только между залами у эскалатора); дверь служебного помещения — как
+// кладовая (шанс storage); проёмы между сетями (зал ↔ переход через пути, переход ↔ служебный ход) — растут всегда
+const METRO_PASS = ['metro_hall', 'metro_per', 'metro_slu', 'esc>hall', 'hall>esc'];
+const METRO_STORE = ['room>slu'];
+const METRO_SIDE = ['slu>room'];
+const METRO_DOORS = ['hall>per', 'per>hall', 'per>slu', 'slu>per'];
 /** Проходы сетей ходов: подвал — 'basement' (1.0 м), сарай — 'barn' (1.5 м), снег — 'snow' (лаз 1.2 м), завод —
  *  'factory' (2.0 м), общага — коридоры 'obshaga' (2.0 м) и ходы затопленного подвала 'obshaga_bsm' (1.6 м). Сети друг
  *  с другом не стыкуются. */
-export const TUNNEL_PASS_TAGS: ReadonlySet<string> = new Set([TUNNEL_TAG, 'barn', 'snow', 'factory', 'obshaga', 'obshaga_bsm']);
+export const TUNNEL_PASS_TAGS: ReadonlySet<string> = new Set([TUNNEL_TAG, 'barn', 'snow', 'factory', 'obshaga', 'obshaga_bsm', ...METRO_PASS]);
 /** Дверь бокового помещения (кладовая подвала, комната общаги) — со стороны помещения: по ней кусок — «кладовая». */
-export const TUNNEL_STORE_TAGS: ReadonlySet<string> = new Set(['storage>basement', 'den>snow', 'room>obshaga']);
+export const TUNNEL_STORE_TAGS: ReadonlySet<string> = new Set(['storage>basement', 'den>snow', 'room>obshaga', ...METRO_STORE]);
 /** Дверь хода в боковое помещение (кладовая, комната общаги) — со стороны хода: за ней с шансом tunnels.storage —
  *  помещение, иначе дверь заперта (тупик). */
-export const TUNNEL_SIDE_TAGS: ReadonlySet<string> = new Set(['basement>storage', 'snow>den', 'obshaga>room']);
+export const TUNNEL_SIDE_TAGS: ReadonlySet<string> = new Set(['basement>storage', 'snow>den', 'obshaga>room', ...METRO_SIDE]);
 /** Метки кусков роста ходов (кроме хабов): проходы, двери в боковые помещения, дверь в служебку, двери коридора общаги
  *  в общее помещение (кухня, туалет, душевая, прачечная) и на лестничную клетку — растут всегда, как служебка. */
-const TUNNEL_DOORS: ReadonlySet<string> = new Set([...TUNNEL_PASS_TAGS, ...TUNNEL_SIDE_TAGS, 'corridor>service', 'obshaga>common', 'obshaga>stairs']);
+const TUNNEL_DOORS: ReadonlySet<string> = new Set([...TUNNEL_PASS_TAGS, ...TUNNEL_SIDE_TAGS, 'corridor>service', 'obshaga>common', 'obshaga>stairs', ...METRO_DOORS]);
 
 /** Вид комнаты в сети ходов: хаб (тег «хаб»), кладовая (дверь к ходу 'storage>basement'), прямой (два
  *  прохода на противоположных стенах), поворот (на соседних), развилка (три и больше); null — не кусок хода. */
@@ -324,6 +423,8 @@ export function normBiome(v: unknown): Biome | null {
     ...(fin(o.dark) && o.dark > 0 ? { dark: clampN(o.dark, 0, 1) } : {}),
     ...(normWet(o.wet) ? { wet: normWet(o.wet)! } : {}),
     ...(fin(o.viewM) && o.viewM > 0 ? { viewM: clampN(o.viewM, 1, 200) } : {}),
+    // свой предел обзора: 0 — без предела (в отличие от viewM ноль — значение, а не «нет поля»)
+    ...(fin(o.sightM) && o.sightM >= 0 ? { sightM: clampN(o.sightM, 0, 200) } : {}),
     note: typeof o.note === 'string' ? o.note : '',
   };
 }
@@ -424,6 +525,8 @@ export function normWorld(v: unknown): WorldSettings {
     startBiome: start && biomes.some((b) => b.id === start) ? start : null,
     tunnels: normTunnels(o.tunnels),
     walk: normWalkGen(o.walk),
+    // сюжет — только если включён (мир «Прогулки» без поля — прежний)
+    ...(o.story === true ? { story: true } : {}),
   };
 }
 
@@ -438,6 +541,32 @@ export function biomeMul(b: Biome, room: Room): number {
   let m = 0;
   for (const t of b.tags) if (room.tags.includes(t.tag) && t.mul > m) m = t.mul;
   return m;
+}
+
+/** Предел обзора биома, м (Biome.sightM): нет поля — общий sightM мира (WalkGenSettings.sightM); 0 — без предела. */
+export function biomeSightM(b: Biome | null | undefined, sightM: number): number {
+  return b && fin(b.sightM) && b.sightM >= 0 ? b.sightM : sightM;
+}
+
+/** Есть ли в мире биом со своим пределом обзора, отличным от общего (нет — пул и рост в точности прежние). */
+export const ownSightBiomes = (w: WorldSettings | null | undefined, sightM: number): boolean =>
+  !!w && w.biomes.some((b) => biomeSightM(b, sightM) !== sightM);
+
+/**
+ * Предел обзора комнаты в мире, м (0 — без предела): самый мягкий из пределов мест, где она растёт, — биомов, где её
+ * множитель > 0 (biomeMul; свой Biome.sightM или общий), и общего sightM, если комната не «только в биоме» (она растёт
+ * и запасным ростом «из всех комнат»). Комната «только в биоме», не растущая ни в одном биоме, — общий предел. У биомов
+ * без своего предела — общий sightM у всех комнат (как раньше).
+ */
+export function roomSightLimit(w: WorldSettings, room: Room, sightM: number): number {
+  let lim = room.tags.includes(ONLY_TAG) ? -1 : sightM;
+  for (const b of w.biomes) {
+    if (biomeMul(b, room) <= 0) continue;
+    const v = biomeSightM(b, sightM);
+    if (!(v > 0)) return 0;
+    lim = lim < 0 ? v : lim === 0 ? 0 : Math.max(lim, v);
+  }
+  return lim < 0 ? sightM : lim;
 }
 
 /** Обычные (не «богатые») биомы — квартирные и подвалы. */

@@ -21,6 +21,7 @@ import '@babylonjs/core/Collisions/collisionCoordinator';
 import { buildBabylonBlockout, type BabylonBlockout, type BlockoutMeta } from '../blockout/babylon';
 import { PropModels } from './propModels';
 import { Posture, type Pose } from './posture';
+import { Sprint } from './sprint';
 import type { BlockoutModel, DeadEnd, Rect } from '../blockout/types';
 
 export type CamMode = 'orbit' | 'fps';
@@ -84,6 +85,8 @@ export class BlockoutViewer {
   readonly fps: UniversalCamera;
   /** поза от первого лица: стоя / скрючившись / на четвереньках (C) — src/view3d/posture.ts */
   readonly posture: Posture;
+  /** бег (Shift) и выносливость от первого лица — src/view3d/sprint.ts; enabled ставит страница («Прогулка») */
+  readonly sprint: Sprint;
   mode: CamMode = 'orbit';
   /** части сцены; bo и model — первая часть (для одной модели — она сама) */
   parts: ViewPartBuilt[] = [];
@@ -168,6 +171,8 @@ export class BlockoutViewer {
     fps.applyGravity = true;
     this.posture = new Posture(scene, fps, () => this.mode === 'fps' && !this.overlay);
     this.posture.onChange = (p, note) => this.cb.onPosture?.(p, note);
+    // бег — после позы: её наблюдатель кадра раньше (cam.speed позы → ×бег)
+    this.sprint = new Sprint(scene, fps, this.posture, () => this.mode === 'fps' && !this.overlay);
     window.addEventListener('keydown', this.onPoseKey);
 
     scene.activeCamera = orbit;
@@ -559,6 +564,7 @@ export class BlockoutViewer {
     this.disposed = true;
     document.removeEventListener('pointerlockchange', this.onLock);
     window.removeEventListener('keydown', this.onPoseKey);
+    this.sprint.dispose();
     this.posture.dispose();
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
     this.ro.disconnect();

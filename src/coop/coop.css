@@ -19,3 +19,7 @@
 /* HUD прогулки: игроки лобби и «рядом — медленнее» */
 .coop-hud { top: 84px; left: 10px; display: flex; gap: 12px; font-size: 12px; pointer-events: none; padding: 4px 10px; align-items: center; }
 .coop-hud .coop-slow { color: var(--accent); }
+/* форма лобби без модалки (CoopLobbyForm: меню «Запустить без отладки», src/play/) */
+.coop-form { display: flex; flex-direction: column; gap: 12px; }
+.coop-form-h { font-family: var(--font-c); font-weight: 600; font-size: 15px; }
+.coop-form-f { display: flex; justify-content: flex-end; gap: 8px; }

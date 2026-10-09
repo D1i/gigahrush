@@ -115,6 +115,8 @@ export function serializeRoom(r: Room, cellM: number): RoomJSON {
     ...(r.location !== undefined ? { location: cloneLocation(r.location) } : {}),
     // лестница с перепадом высоты (src/model/stairs.ts): тоже только если задана
     ...(r.stair ? { stair: cloneStair(r.stair) } : {}),
+    // своя высота потолка (залы метро): тоже только если задана
+    ...(r.ceilM !== undefined ? { ceilM: r.ceilM } : {}),
   };
 }
 
@@ -292,6 +294,8 @@ function parseRoomWith(json: unknown, ctx: RefCtx | null, roomId: string): Room 
     // спец-локация: нет поля — обычная комната; некорректная — null, диапазоны нормализуются
     ...('location' in o ? { location: parseLocation(o.location) } : {}),
     ...(parseStair(o.stair) ? { stair: parseStair(o.stair) } : {}),
+    // своя высота потолка, м: мусор и неположительное — нет поля (wallHeightM)
+    ...(typeof o.ceilM === 'number' && Number.isFinite(o.ceilM) && o.ceilM > 0 ? { ceilM: Math.min(50, o.ceilM) } : {}),
   };
 }
 

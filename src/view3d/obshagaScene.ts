@@ -7,8 +7,8 @@
 //    (одна, ближайшая видимая: у материалов предел 4 источника; модель — у аватара, src/coop/presence.ts).
 //  • Вода по пояс в затопленных помещениях: мутная полупрозрачная плоскость на 0.9 м над полом комнаты, рябь.
 //  • Темнота за запертой дверью: распахнутая (рукой) дверь на глухой стене — чёрный проём.
-//  • Рука-заглушка (пока нет src/view3d/obshagaHand.ts): трубки по следу и кисть; невидимые коллайдеры по следу —
-//    рука занимает весь проход.
+//  • Рука-заглушка (пока нет src/view3d/obshagaHand.ts): трубки по следу и кисть (тычет под кровать — палец у пола к
+//    игроку); невидимые коллайдеры по следу — рука занимает весь проход.
 // Всё, что стоит в мире «Прогулки», рисуется портальным рендером вместе со своей комнатой (PortalRenderer.extraProviders,
 // слой PORTAL_LAYER): меши по комнатам — byRoom.
 import type { Scene } from '@babylonjs/core/scene';
@@ -26,7 +26,7 @@ import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { PointLight } from '@babylonjs/core/Lights/pointLight';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { LANTERN_LIGHT_R, type HandView, type Pt } from '../locations/obshaga';
+import { LANTERN_LIGHT_R, pokeReach, type HandView, type Pt } from '../locations/obshaga';
 import { PORTAL_LAYER } from './portal';
 import type { ObshDoor } from './obshagaNav';
 import { hash01 } from '../locations/stairLoop';
@@ -146,11 +146,18 @@ export class HeldLantern {
   }
 
   private build() {
-    const tpl = this.template();
     const node = (this.node = new TransformNode('obsh:heldLantern', this.scene));
     node.parent = this.cam;
     node.position.copyFrom(HOLD);
-    if (tpl) {
+    this.attach();
+  }
+
+  /** Модель в руку — как только есть шаблон (лампа в руке с первого кадра после загрузки, модели предметов ещё
+   *  грузятся — пробует каждый кадр, пока не появится). */
+  private attach() {
+    const node = this.node;
+    const tpl = node ? this.template() : null;
+    if (node && tpl) {
       const m = (this.model = tpl.clone('obsh:heldLanternModel', node, false));
       if (m) {
         m.setEnabled(true);
@@ -171,6 +178,7 @@ export class HeldLantern {
   /** Кадр: покачивание на ходу, дрожь пламени, свет — у глаза. */
   update(dt: number, moving: number) {
     if (!this.on) return;
+    if (!this.model) this.attach();
     const t = performance.now() / 1000;
     // ход: фаза по пройденному пути
     const p = this.cam.globalPosition;
@@ -362,6 +370,8 @@ export interface HandRender {
   colliders?(on: boolean, colliding: (room: string) => boolean): void;
   /** куда ставить схваченного (мир Babylon), null — по кончику */
   grip?(): Vector3 | null;
+  /** кончик пальца, что тычет под кровать (мир Babylon; QA), null — не тычет */
+  pokeTip?(): Vector3 | null;
   /** сколько коллайдеров у руки сейчас (QA) */
   colliderCount?(): number;
   dispose(): void;
@@ -392,6 +402,10 @@ export class HandMeshRender implements HandRender {
 
   grip(): Vector3 | null {
     return this.hm.fistCenter();
+  }
+
+  pokeTip(): Vector3 | null {
+    return this.hm.pokeTip();
   }
 
   colliderCount(): number {
@@ -515,12 +529,23 @@ export class HandPlaceholder implements HandRender {
     this.palm.setEnabled(true);
     this.palm.computeWorldMatrix(true);
     this.put(room, this.palm);
-    const twitch = v.frozen ? 0 : 0.08 * Math.sin(t * 3 + v.variant * 10);
+    const twitch = v.frozen || v.poke ? 0 : 0.08 * Math.sin(t * 3 + v.variant * 10);
+    // тычок под кровать: палец 0 — от кисти к игроку на 0.15 м над полом, выпад — pokeReach (удар — на 0.3 м не доходя)
+    const pk = v.poke && v.pokeAt ? v.pokeAt : null;
     for (let i = 0; i < 5; i++) {
       const thumb = i === 4;
       const spread = thumb ? 1.15 : -0.42 + i * 0.28;
       const a = h + spread;
       const base = new Vector3(tip.x + fx * 0.55 + Math.cos(a) * 0.15, tip.y - 0.2, tip.z + fz * 0.55 - Math.sin(a) * 0.15);
+      if (i === 0 && pk) {
+        const floor = ctx.zOf(pk.room ?? room ?? undefined);
+        const from = new Vector3(base.x, floor + 0.3, base.z);
+        const to = new Vector3(pk.x, floor + 0.15, -pk.y).subtract(from);
+        const reach = Math.max(0.2, to.length() - 0.3) * (0.65 + 0.35 * pokeReach(v.poke01));
+        this.orient(this.fingers[i], from, from.add(to.normalize().scale(reach)), 0.075);
+        this.put(room, this.fingers[i]);
+        continue;
+      }
       const L = thumb ? 0.55 : 0.85 + 0.1 * Math.sin(i * 2.1);
       const end = base.add(new Vector3(Math.cos(a) * L, -0.25 - twitch * (i % 2 ? 1 : -1), -Math.sin(a) * L));
       this.orient(this.fingers[i], base, end, thumb ? 0.09 : 0.075);

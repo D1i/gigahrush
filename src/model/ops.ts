@@ -86,6 +86,7 @@ export function duplicateRoom(p: Project, roomId: string): Room {
     finish: { wall: r.finish?.wall ?? null, floor: r.finish?.floor ?? null },
     ...(r.location !== undefined ? { location: cloneLocation(r.location) } : {}),
     ...(r.stair ? { stair: cloneStair(r.stair) } : {}),
+    ...(r.ceilM !== undefined ? { ceilM: r.ceilM } : {}),
   };
   p.rooms.splice(i + 1, 0, copy);
   return copy;

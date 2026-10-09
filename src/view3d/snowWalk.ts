@@ -41,11 +41,13 @@ import { createThaw, strikeThaw, type HangarRoll, type ThawState } from '../loca
 import { puffTexture } from '../locations/liftTextures';
 import { isSnowRoom, snowMaterials, thawPatchOf } from './snowView';
 import { SnowAudio } from './snowAudio';
-import { ROOM_CROUCH, type Posture } from './posture';
+import { ROOM_CROUCH, ROOM_STAND, type Posture } from './posture';
 
 const SOUND_KEY = 'room-forge/snow-sound';
 
 const THAW_NEAR = 1.1;
+/** после снега встать — пробовать столько с (пока не выключатся коллайдеры снега над головой) */
+const STAND_WAIT = 2;
 /** раскопка: ближе стольких метров к проёму с завалом */
 const PLUG_NEAR = 1.2;
 const COLD = new Color3(0.88, 0.93, 1);
@@ -117,6 +119,10 @@ export class SnowWalk {
   private pendingChunks: { site: CollapseSite; y: number }[] = [];
   private colliders: AbstractMesh[] = [];
   private collidersAt = 0;
+  /** ушёл из снега облётом — встать, когда поза снова действует не в снегу */
+  private standLater = false;
+  /** сколько с пробует встать после снега (стоячие коллайдеры лаза/берлоги ещё включены — ждать, а не бросать) */
+  private standTry = 0;
 
   constructor(
     private readonly scene: Scene,
@@ -161,6 +167,20 @@ export class SnowWalk {
     if (live && !r) return;
     const snow = !!r && isSnowRoom(r.inst);
     if (snow !== this.on) (snow ? this.enter() : this.leave());
+    // встать после снега: в «Прогулке» этажи по высоте не разведены — комната за воротами ангара стоит в том же месте
+    // 3D, что и берлога над ней, и первые кадры коллайдер купола ещё включён (над головой «низко»). Не бросать: пробовать
+    // до STAND_WAIT с, потом — как выйдет (скрючившись или так и ползти)
+    if (this.standLater && live && !snow) {
+      this.standTry += dt;
+      const room = this.posture.headroom();
+      if (room >= ROOM_STAND) {
+        this.standLater = false;
+        this.posture.set('stand');
+      } else if (this.standTry > STAND_WAIT) {
+        this.standLater = false;
+        if (room >= ROOM_CROUCH) this.posture.set('crouch');
+      }
+    }
     this.audio.setInSnow(snow);
     this.chunksStep(dt);
     if (!snow || !r) {
@@ -188,8 +208,10 @@ export class SnowWalk {
       this.last = null;
     }
     if (P.pose !== 'crawl') {
+      // свод впереди — только на ходу: стоя лицом к низкому лазу C давала бы «скрючился — снова на четвереньки» без конца
+      const go = this.last ? Math.hypot(c.x - this.last.x, c.z - this.last.z) : 0;
       const fwd = this.cam.getDirection(Vector3.Forward());
-      const ahead = this.ceiling(c.x + fwd.x * 0.45, P.feet, c.z + fwd.z * 0.45);
+      const ahead = go > 0.003 ? this.ceiling(c.x + fwd.x * 0.45, P.feet, c.z + fwd.z * 0.45) : Infinity;
       if (ahead < ROOM_CROUCH || this.ceiling(c.x, P.feet, c.z) < ROOM_CROUCH) P.set('crawl');
     }
     const crouch = P.pose !== 'crawl';
@@ -291,8 +313,11 @@ export class SnowWalk {
     return best;
   }
 
+  /** Встать по месту над головой: ещё под сводом лаза — насколько хватает (мало — как есть: C, выползши). */
+
   private enter() {
     this.on = true;
+    this.standLater = false;
     const c = this.cam, s = this.scene;
     this.saved = { fog: s.fogMode, fogStart: s.fogStart, fogEnd: s.fogEnd, fogColor: s.fogColor.clone() };
     // вошёл в снег — на четвереньки (эллипсоид сразу низкий, глаз опускается плавно)
@@ -332,10 +357,16 @@ export class SnowWalk {
     this.on = false;
     const s = this.scene, sv = this.saved;
     if (!sv) return;
-    // ушёл из снега (ангар, другой биом, облёт) — встаёт
+    // ушёл из снега (другой биом, облёт) — встаёт: пешком — сразу; облёт — когда поза снова действует не в снегу
+    // (вернулся в тот же лаз — так и ползёт: иначе поза мгновенно встала бы и глаз спускался бы сквозь свод)
     this.posture.frozen = false;
     this.posture.roll = 0;
-    if (this.posture.pose !== 'stand') this.posture.set('stand');
+    if (this.posture.pose !== 'stand') {
+      // всегда через повтор (frame): пока сцена ангара на экране, кадры «Прогулки» не идут — о выходе из снега снег
+      // узнаёт уже за воротами, в комнате завода, где первые кадры ещё включён коллайдер купола берлоги над головой
+      this.standLater = true;
+      this.standTry = 0;
+    }
     if (this.lampObs) s.onBeforeCameraRenderObservable.remove(this.lampObs);
     this.lampObs = null;
     s.fogMode = sv.fog;

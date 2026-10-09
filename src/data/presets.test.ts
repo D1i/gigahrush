@@ -13,6 +13,7 @@ import { isFlatProp, variantFloorProps, walkCheck, walkMessage } from '../gen/wa
 import { DEFAULT_STAIRWELL } from '../locations/stairwell';
 import { DEFAULT_LIFT, LIFT_SHAFT_X, LIFT_SHAFT_Z } from '../locations/lift';
 import { DEFAULT_LAIR } from '../locations/lair';
+import { SNOWDOOR_CONN } from '../locations/storyDoors';
 
 const p: Project = createDefaultProject();
 const M = p.settings.cellM;
@@ -44,7 +45,7 @@ function coveredCells(rc: { x0: number; x1: number; y0: number; y1: number }, sh
   return out;
 }
 
-const GROUPS = ['лестница', 'коридор', 'лифт', 'подвал', 'сарай', 'снег', 'завод', 'общага', 'служебное', 'общежитие', 'прихожая', 'кухня', 'санузел', 'жилая', 'балкон', 'кладовка'];
+const GROUPS = ['лестница', 'коридор', 'лифт', 'подвал', 'сарай', 'снег', 'завод', 'общага', 'служебное', 'общежитие', 'прихожая', 'кухня', 'санузел', 'жилая', 'балкон', 'кладовка', 'метро'];
 // на полу (ковёр, лужа, доска) и под потолком (лампа, труба): проёмы и проход не загораживают
 const isFloorProp = (propId: string) => propById.get(propId)!.tags.includes('пол') || isFlatProp(propById.get(propId)!);
 
@@ -64,7 +65,8 @@ describe('стартовый проект', () => {
     ids.push(...p.props.map((x) => x.id), ...p.items.map((x) => x.id));
     for (const r of p.rooms) {
       ids.push(r.id);
-      ids.push(...r.doors.map((x) => x.id), ...r.connectors.map((x) => x.id));
+      // метка двери в снег (переход сюжета) — id SNOWDOOR_CONN у каждой такой комнаты: вид ищет дверь по нему
+      ids.push(...r.doors.map((x) => x.id), ...r.connectors.filter((x) => x.id !== SNOWDOOR_CONN).map((x) => x.id));
       ids.push(...r.decor.map((x) => x.id), ...r.spots.map((x) => x.id), ...r.loot.map((x) => x.id));
       for (const g of r.spotGroups) ids.push(g.id, ...g.variants.map((v) => v.id));
     }
@@ -286,8 +288,11 @@ describe('стартовый проект', () => {
     expect(r.gen.max).toBe(1);
     expect(p.economy.tiers.filter((t) => r.elite.some((e) => e.tierId === t.id)).every((t) => t.level >= 8)).toBe(true);
     // кроме спец-локаций «Бесконечная лестница», «Ржавый лифт», «Логово босса», «Ангар» (подтаявшая берлога снежных
-    // ходов) и «Болото на крыше» (финал, завод) в пресетах их нет
-    expect(p.rooms.filter((x) => x.location).map((x) => x.id)).toEqual(['snow_thaw', 'fac_swamp_roof', 'stair_loop', 'lift_rusty', 'lift_carriage', 'boss_lair']);
+    // ходов), «Болото на крыше» (финал, завод) и переходов сюжета («Люк в погреб», «Дверь в снег» погреба и общаги) в
+    // пресетах их нет
+    expect(p.rooms.filter((x) => x.location).map((x) => x.id)).toEqual([
+      'snow_thaw', 'fac_swamp_roof', 'stair_loop', 'lift_rusty', 'lift_carriage', 'boss_lair', 'barn_hatch', 'cellar_snowdoor', 'obsh_snowdoor',
+    ]);
   });
 
   const levels = (r: Room) => p.economy.tiers.filter((t) => r.elite.some((e) => e.tierId === t.id)).map((t) => t.level);
@@ -399,7 +404,7 @@ describe('стартовый проект', () => {
 
     it('dado — только у стен, на существующую стеновую отделку, высота 1–1.6 м', () => {
       const two = p.finishes.filter((f) => f.dado);
-      expect(two.map((f) => f.id).sort()).toEqual(['f_obsh_corridor', 'f_two_bath', 'f_two_entrance', 'f_two_kitchen']);
+      expect(two.map((f) => f.id).sort()).toEqual(['f_metro_slu', 'f_metro_tile', 'f_obsh_corridor', 'f_two_bath', 'f_two_entrance', 'f_two_kitchen']);
       for (const f of two) {
         expect(f.surface).toBe('wall');
         expect(fin.get(f.dado!.finishId)?.surface, f.id).toBe('wall');

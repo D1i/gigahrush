@@ -75,7 +75,7 @@ engine.runRenderLoop(() => scene.render());
 | `walls` | меши объёмов: при `merge` — до 4 штук (`wall`, `partition`, `lintel`, `column`). |
 | `floors` | `floor:<inst>` — пол каждого экземпляра + один `portalFloor` (пол всех проёмов). |
 | `ceilings` | `ceiling:<inst>` + `portalCeiling` (если ядро положило плиту над проёмом). |
-| `props` | `prop:<inst>:<propId>` — по мешу на предмет; верх с текстурой — дочерний меш `propTop:…`. |
+| `props` | `prop:<inst>:<propId>` — по мешу на предмет (он же коллайдер); верх с текстурой — дочерний меш `propTop:…`; у укрытия (§7) без модели видимая болванка — дочерний `propBox:…`. |
 | `deadEnds` | панели тупиков: при `merge` — один меш `deadEnds`, иначе `deadEnd:<inst>:<connector>`. |
 | `materials` | общие `StandardMaterial` по ключам `colors` — можно перекрасить или заменить текстуру. |
 | `facings` | облицовка стен: по мешу на отделку (`facing:<finishId>`), без коллизий. |
@@ -93,7 +93,8 @@ engine.runRenderLoop(() => scene.render());
        | 'portalCeiling' | 'prop' | 'propTop' | 'deadEnd' | 'facing',
   inst?: string,      // экземпляр комнаты (пол, потолок, мебель, тупик при merge: false)
   finishId?: string,  // отделка: у облицовки и у пола с отделкой
-  propId?: string, name?: string, connector?: string }
+  propId?: string, name?: string, connector?: string,
+  cover?: 'bed' | 'table', clear?: number }  // укрытие — только у коллайдера предмета (§7)
 ```
 
 Комната по клику:
@@ -210,6 +211,17 @@ for (const m of level.floors) if (m.metadata.kind === 'floor') m.material = lino
 - Капсула игрока `0.3 / 0.85 / 0.3` с `ellipsoidOffset.y = 0.1` даёт глаза на 1.6 м и рост 1.7 м;
   в дверь 0.8 × 2.1 м проходит с запасом. `scene.gravity = (0, −9.81/60, 0)` — смещение за кадр.
 - Мебель тоже твёрдая: в узком проходе между шкафом и стеной (< 0.6 м) не протиснуться — так и задумано.
+- **Укрытия: под кровать и под стол.** Таблица `PROP_COVER` в `src/blockout/core.ts` (по `propId`, отдельно от
+  высот `PROP_HEIGHTS`; `propCover(id)`) даёт предмету `PropBox.cover = 'bed' | 'table'` и просвет `PropBox.clear`:
+  кровать **0.30 м** (`BED_CLEAR_M`), стол **0.62 м** (`TABLE_CLEAR_M`). Коллайдер такого предмета — не бокс от пола,
+  а **плита от `clear` до `h`** (над полом предмета, `PropBox.z` учитывается), и у этого меша
+  `metadata.cover` / `metadata.clear`. Стоя (0…1.7 м) и присев (0.2…1.1) игрок в плиту упирается, на четвереньках
+  (0.18…0.59) проходит под столом, лёжа (0.05…0.25) — и под кроватью; поза (`src/view3d/posture.ts`) ищет укрытие
+  по `metadata.cover` среди коллайдеров. Коллайдер укрытия **всегда невидим**: с моделью предмета видна модель, без неё —
+  дочерний меш `propBox:<inst>:<propId>` «плита + 4 ножки 5 см» без коллизий (вызов отрисовки — один, как у бокса).
+  Сейчас: кровати `p_bed1`, `p_bed2`, `p_cot`, `p_obsh_bed`; столы `p_table_kitchen`, `p_table_round`,
+  `p_obsh_table`. Сплошные до пола (тахта, диван, матрас, тумбовые столы, верстаки) — не укрытия. **Новая кровать или
+  стол на ножках — допишите id в `PROP_COVER`.**
 
 ## 8. Производительность
 
