@@ -44,6 +44,7 @@ import { buildBabylonBlockout, createBlockoutShared, type BabylonBlockout, type 
 import { buildPiece, pieceFloorRects, piecePortals, type PiecePortal } from '../blockout/pieces';
 import type { BlockoutModel, BlockoutOptions, DoorSlot, Rect, RunExport } from '../blockout/types';
 import { snowPieceFor, snowPrefetch } from './snowView';
+import { StairSupport } from './stairWalk';
 
 /** Слой мешей кусков: камеры его не рисуют — куски рисует только портальный рендер. */
 export const PORTAL_LAYER = 0x10000000;
@@ -238,7 +239,12 @@ export class PieceCache {
         m.isVisible = false;
         m.checkCollisions = false;
       }
-      for (const m of [snow.shell, snow.collider, ...snow.extra]) m.parent = bo.root;
+      // оболочка снега строится на отметке 0 — комната за лестницами выше/ниже (RunInstance.z, кусок уже поднят)
+      const z = Number(this.run.instances.find((i) => i.id === id)?.z) || 0;
+      for (const m of [snow.shell, snow.collider, ...snow.extra]) {
+        m.parent = bo.root;
+        if (z) m.position.y += z;
+      }
     }
     const all = bo.root.getChildMeshes(false) as Mesh[];
     // рисуются только видимые (невидимые — коллайдеры, например бокс под моделью предмета)
@@ -320,12 +326,12 @@ export class PieceCache {
    *  глаз у самого проёма) и тонкая (MASK_E); без ближней грани. План (x, y↓) → Babylon (X = x, Y = z, Z = −y). */
   private portalDef(p: PiecePortal, openLo = false, openHi = false): PortalDef {
     const h = p.h;
-    // в Babylon: ось прохода и направление
+    // в Babylon: ось прохода и направление; отметка пола проёма — p.z (комнаты за лестницами выше/ниже)
     const u = p.axis === 'x' ? new Vector3(p.dir, 0, 0) : new Vector3(0, 0, -p.dir);
-    const p0 = p.axis === 'x' ? new Vector3(p.at, 0, 0) : new Vector3(0, 0, -p.at);
-    // углы квадрата проёма в плоскости: (поперёк, высота)
+    const p0 = p.axis === 'x' ? new Vector3(p.at, p.z, 0) : new Vector3(0, p.z, -p.at);
+    // углы квадрата проёма в плоскости: (поперёк, высота над полом проёма)
     const at = (t: number, y: number, off: number): Vector3 =>
-      p.axis === 'x' ? new Vector3(p.at + p.dir * off, y, -t) : new Vector3(t, y, -(p.at + p.dir * off));
+      p.axis === 'x' ? new Vector3(p.at + p.dir * off, p.z + y, -t) : new Vector3(t, p.z + y, -(p.at + p.dir * off));
     const corners = [at(p.lo, 0, 0), at(p.hi, 0, 0), at(p.hi, h, 0), at(p.lo, h, 0)];
     const center = at((p.lo + p.hi) / 2, h / 2, 0);
     // Коробка чуть шире проёма (на MASK_E в откосы, пол и перемычку): её боковые грани утоплены ВНУТРЬ
@@ -467,6 +473,11 @@ export class PortalRenderer {
   /** свои меши комнаты сверх куска (аватары игроков кооп-лобби, src/coop/presence.ts): рисуются вместе с ней — в её
    *  области стенсила, с её отсечением и сдвигом; слой мешей — PORTAL_LAYER (камера сама их не рисует) */
   extras: ((room: string) => readonly Mesh[] | undefined) | null = null;
+  /** ещё поставщики своих мешей комнаты (общага: рука, вода, темнота за дверью — src/view3d/obshagaWalk.ts) — так же, как
+   *  extras; прозрачные материалы (вода) рисуются со смешиванием */
+  readonly extraProviders = new Set<(room: string) => readonly Mesh[] | undefined>();
+  /** опора игрока на марше лестницы текущей комнаты (./stairWalk.ts) */
+  readonly stairs: StairSupport;
 
   constructor(
     readonly scene: Scene,
@@ -474,6 +485,7 @@ export class PortalRenderer {
     readonly cache: PieceCache,
     opts: PortalRendererOptions,
   ) {
+    this.stairs = new StairSupport(scene, camera, () => (this.active && this.current ? this.cache.peek(this.current)?.model.stairs : undefined));
     this.engine = scene.getEngine();
     this.horizonM = opts.horizonM;
     this.onCross = opts.onCross;
@@ -642,6 +654,13 @@ export class PortalRenderer {
     }
     const ex = this.extras?.(p.id);
     if (ex) for (const m of ex) for (const sm of m.subMeshes ?? []) m.render(sm, false);
+    for (const f of this.extraProviders) {
+      for (const m of f(p.id) ?? []) {
+        const blend = !!m.material?.needAlphaBlendingForMesh(m);
+        for (const sm of m.subMeshes ?? []) m.render(sm, blend);
+        if (blend) e.setAlphaMode(Constants.ALPHA_DISABLE);
+      }
+    }
     this.stats.rooms++;
     this.lastRooms.add(p.id);
   }
@@ -653,6 +672,24 @@ export class PortalRenderer {
     const sm = m.subMeshes?.[0];
     if (sm) m.render(sm, false);
   }
+
+  /** Горизонт кадра, м: horizonM, а в комнате биома с дальним обзором (RunExport.viewByTag: тег → м, Biome.viewM —
+   *  длинные прямые коридоры общаги) — не меньше его. Пересчёт — при смене комнаты или прогона. */
+  private horizonNow(): number {
+    const run = this.cache.run, room = this.current;
+    if (run !== this.hzRun || room !== this.hzRoom) {
+      this.hzRun = run;
+      this.hzRoom = room;
+      const by = (run as { viewByTag?: Record<string, number> }).viewByTag;
+      let m = 0;
+      if (by && room) for (const t of run.instances.find((i) => i.id === room)?.roomTags ?? []) m = Math.max(m, by[t] ?? 0);
+      this.hzExtra = m;
+    }
+    return this.horizonM > 0 ? Math.max(this.horizonM, this.hzExtra) : this.horizonM;
+  }
+  private hzRun: RunExport | null = null;
+  private hzRoom: string | null = null;
+  private hzExtra = 0;
 
   /** Проёмы комнаты задания j (её область — стенсил j.ref): комнаты за ними рисуются сейчас, их проёмы —
    *  в очередь. Назад сквозь проём, которым вошли (j.came), не смотрим (оттуда видна своя же сторона). */
@@ -669,7 +706,8 @@ export class PortalRenderer {
       // туман (если включён) непрозрачен дальше fogEnd — проём целиком там закрыт им полностью
       if (this.fogM > 0 && dist >= this.fogM) continue;
       const m = dist < MASK_NEAR ? q.mask : q.thin;
-      if (this.eligible(q, m, clip, planes, eye, level)) cands.push({ q, m, v: 0, far: (this.horizonM > 0 && dist >= this.horizonM) || level >= MAX_LEVEL });
+      const hz = this.horizonNow();
+      if (this.eligible(q, m, clip, planes, eye, level)) cands.push({ q, m, v: 0, far: (hz > 0 && dist >= hz) || level >= MAX_LEVEL });
     }
     if (!cands.length) return;
     // а) маски — только глубина: ближний проём выигрывает пиксель
@@ -836,6 +874,7 @@ export class PortalRenderer {
 
   dispose() {
     this.setActive(false);
+    this.stairs.dispose();
     this.fill.dispose(false, false);
     this.fillMat.dispose(true, false);
   }
@@ -871,10 +910,10 @@ function movePlanes(planes: Plane[], d: Vector3): Plane[] {
 
 /** Расстояние от точки до прямоугольника проёма (в его плоскости), м. */
 function rectDistance(q: PortalDef, eye: Vector3): number {
-  // проём: поперёк — [lo, hi] (план), высота [0, h], плоскость at
+  // проём: поперёк — [lo, hi] (план), высота [z, z + h], плоскость at
   const t = q.axis === 'x' ? -eye.z : eye.x;
   const dt = Math.max(0, q.lo - t, t - q.hi);
-  const dy = Math.max(0, -eye.y, eye.y - q.h);
+  const dy = Math.max(0, q.z - eye.y, eye.y - q.z - q.h);
   const dn = q.axis === 'x' ? eye.x - q.at : -eye.z - q.at;
   return Math.hypot(dt, dy, dn);
 }

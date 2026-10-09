@@ -118,6 +118,10 @@ export interface WorldSave {
   sealed: number[];
   /** завалы снежных ходов: индексы связей-дверей (они же в sealed) */
   collapsed?: number[];
+  /** раскопка завалов: [индекс связи, доля 0…1) — ещё не раскопанные до конца */
+  dug?: [number, number][];
+  /** общага: взятые керосиновые лампы — «inst/spotId» (спот лампы больше не ставит её) */
+  lamps?: string[];
   /** комнаты, где игрок уже был */
   visited: string[];
   tr: { count: number; resets: number; pending: boolean };
@@ -247,6 +251,15 @@ export interface StreamWorld {
   /** снежные ходы: обвал навсегда заваливает проём (связь двери instId/connectorId): doorState обеих меток —
    *  'collapsed', в Run.links связь sealed. false — метка не связана (нечего заваливать) */
   collapse(instId: string, connectorId: string): boolean;
+  /** снежные ходы: раскопать завал у метки — прибавить работу amount (доля, 0…1). Набралось 1 — проём снова открыт
+   *  (связь — обычная дверь). Возвращает долю после (1 — раскопан), null — у метки нет завала */
+  digThrough(instId: string, connectorId: string, amount: number): number | null;
+  /** доля раскопки завала у метки 0…1; null — завала нет */
+  collapseProgress(instId: string, connectorId: string): number | null;
+  /** общага: игрок взял керосиновую лампу со спота spotId экземпляра instId — навсегда (сохраняется). false — уже взята */
+  takeLamp(instId: string, spotId: string): boolean;
+  /** взята ли лампа со спота */
+  lampTaken(instId: string, spotId: string): boolean;
   /** выход лифта (docs/LOCATIONS.md, «Ржавый лифт»): один раз и детерминированно по адресу создаёт комнату за
    *  выходом side на этаже floor(лифта) + floor (floor — −roll.down…−1 или 1…roll.floors: ниже или выше входа) и
    *  связь kind 'lift' (floors, side); если это логово по розыгрышу (roll.lair) — комнату с location.kind 'lair'.
@@ -411,7 +424,9 @@ export function childAddr(parent: string, connId: string): string {
 export function roomPrint(room: Room): string {
   const cells = [...room.cells].sort();
   const conns = room.connectors.map((c) => [c.id, c.cx, c.cy, c.side, c.len, c.tag, c.shift ?? 'auto'].join(','));
-  return `${room.cells.size}:${hex8(hashSeed(`${cells.join(';')}|${conns.join(';')}`))}`;
+  // лестница меняет высоты комнат за ней (Instance.z) — у комнат без лестницы отпечаток прежний
+  const st = room.stair ? `|${JSON.stringify(room.stair)}` : '';
+  return `${room.cells.size}:${hex8(hashSeed(`${cells.join(';')}|${conns.join(';')}${st}`))}`;
 }
 
 const now = (): number => (globalThis.performance ? globalThis.performance.now() : Date.now());
@@ -604,6 +619,10 @@ class Stream implements StreamWorld {
   private readonly sealed = new Set<number>();
   /** завалы снежных ходов: индексы lay.links (они же в sealed) */
   private readonly collapsedL = new Set<number>();
+  /** раскопка завалов: индекс связи → доля 0…1 */
+  private readonly dugL = new Map<number, number>();
+  /** общага: взятые керосиновые лампы «inst/spotId» */
+  private readonly lampsT = new Set<string>();
   /** комнаты, где игрок уже был (order) */
   private readonly visited = new Set<number>();
   private tr = { count: 0, resets: 0, pending: false };
@@ -1511,6 +1530,51 @@ class Stream implements StreamWorld {
     return true;
   }
 
+  /** Связь завала у метки (индекс lay.links) или −1. */
+  private collapsedAt(instId: string, connectorId: string): number {
+    for (const li of this.collapsedL) {
+      const l = this.lay.links[li];
+      if ((l.a.inst === instId && l.a.connector === connectorId) || (l.b.inst === instId && l.b.connector === connectorId)) return li;
+    }
+    return -1;
+  }
+
+  digThrough(instId: string, connectorId: string, amount: number): number | null {
+    const li = this.collapsedAt(instId, connectorId);
+    if (li < 0) return null;
+    const v0 = this.version;
+    const p = Math.min(1, (this.dugL.get(li) ?? 0) + Math.max(0, Number.isFinite(amount) ? amount : 0));
+    if (p >= 1 - 1e-9) {
+      // раскопан: проём снова открыт (связь — обычная дверь)
+      this.collapsedL.delete(li);
+      this.sealed.delete(li);
+      this.dugL.delete(li);
+    } else this.dugL.set(li, p);
+    this.version++;
+    const l = this.lay.links[li];
+    this.notify([l.a.inst, l.b.inst], v0);
+    return p >= 1 - 1e-9 ? 1 : p;
+  }
+
+  collapseProgress(instId: string, connectorId: string): number | null {
+    const li = this.collapsedAt(instId, connectorId);
+    return li < 0 ? null : this.dugL.get(li) ?? 0;
+  }
+
+  takeLamp(instId: string, spotId: string): boolean {
+    const k = `${instId}/${spotId}`;
+    if (!this.byId.has(instId) || this.lampsT.has(k)) return false;
+    const v0 = this.version;
+    this.lampsT.add(k);
+    this.version++;
+    this.notify([instId], v0);
+    return true;
+  }
+
+  lampTaken(instId: string, spotId: string): boolean {
+    return this.lampsT.has(`${instId}/${spotId}`);
+  }
+
   /**
    * Вырастить квартиру от её входной комнаты (уже поставлена). Поток ГСЧ квартиры C = root.sub("cluster:" + адрес входа):
    * N = C.int(clusterRooms), K = C.int(clusterExits). Открытые двери комнат квартиры — две очереди по порядку постановки:
@@ -2381,13 +2445,17 @@ class Stream implements StreamWorld {
     return [];
   }
 
-  /** Детали колец биома (кэш): шаги кусков — пробной стыковкой к образцу двери по каждому курсу. */
-  private ringKit(biome: string): RingKit | null {
-    if (this.kits.has(biome)) return this.kits.get(biome)!;
+  /** Детали колец биома для сети с проходами tag (кэш): шаги кусков — пробной стыковкой к образцу двери по каждому
+   *  курсу. Только куски, все проходы которых — tag (в общаге коридоры 'obshaga' и ходы подвала 'obshaga_bsm' — одна
+   *  сеть биома), и без лестниц: марш меняет высоту пола (Room.stair), кольцо и шов замыкаются в плане. */
+  private ringKit(biome: string, tag: string): RingKit | null {
+    const key = `${biome}|${tag}`;
+    if (this.kits.has(key)) return this.kits.get(key)!;
     const g = this.settings.gap;
     const passes = (info: Info) => info.room.connectors.map((c, k) => (c.len >= 1 && TUNNEL_PASS_TAGS.has(c.tag) ? k : -1)).filter((k) => k >= 0);
+    const fits = (info: Info) => !info.room.tags.includes('лестница') && passes(info).every((k) => info.room.connectors[k].tag === tag);
     // сначала куски ходов (тег «ход»), из них — меньшие (проходы во всю ширину хода 1 м: тройник 1×2, поворот 1×1)
-    const own = (list: Info[]) => [...list].sort((x, y) => Number(y.room.tags.includes('ход')) - Number(x.room.tags.includes('ход')) || x.room.cells.size - y.room.cells.size);
+    const own = (list: Info[]) => list.filter(fits).sort((x, y) => Number(y.room.tags.includes('ход')) - Number(x.room.tags.includes('ход')) || x.room.cells.size - y.room.cells.size);
     const piece = (info: Info, a: number, b: number): RingPiece | null => {
       const len = info.room.connectors[a].len;
       if (info.room.connectors[b].len !== len) return null;
@@ -2439,7 +2507,7 @@ class Stream implements StreamWorld {
       if (tee) break;
     }
     const kit = straights.length ? { straights, right, left, tee } : null;
-    this.kits.set(biome, kit);
+    this.kits.set(key, kit);
     return kit;
   }
 
@@ -2501,7 +2569,9 @@ class Stream implements StreamWorld {
    * ходом (его проходы растут дальше), проход b — тоже.
    */
   private buildRing(H: Node, a: number, b: number, cl: Cluster, R: Rng): Node[] {
-    const kit = this.ringKit(cl.biome);
+    // кольцо — из прохода в проход той же сети (метка одна)
+    if (H.conns[a].tag !== H.conns[b].tag) return [];
+    const kit = this.ringKit(cl.biome, H.conns[a].tag);
     const T = tunOf(this.W!, cl.biome);
     if (!kit || (!kit.right && !kit.left)) return [];
     const g = this.settings.gap;
@@ -2584,7 +2654,7 @@ class Stream implements StreamWorld {
    * (сдвиг, при котором они стоят лицом к лицу): идёшь вдоль — и снова тот же тройник с проходом, откуда пришёл.
    */
   private buildWrapLoop(P: Node, ci: number, cl: Cluster, R: Rng): Node[] {
-    const kit = this.ringKit(cl.biome);
+    const kit = this.ringKit(cl.biome, P.conns[ci].tag);
     const T = tunOf(this.W!, cl.biome);
     if (!kit?.tee) return [];
     const tee = kit.tee;
@@ -2756,6 +2826,8 @@ class Stream implements StreamWorld {
       ...(this.twet.some((x) => x) ? { twet: lay.nodes.map((n) => this.wetSave(this.twet[n.inst.order])) } : {}),
       sealed: [...this.sealed].sort((a, b) => a - b),
       ...(this.collapsedL.size ? { collapsed: [...this.collapsedL].sort((a, b) => a - b) } : {}),
+      ...(this.dugL.size ? { dug: [...this.dugL].sort((a, b) => a[0] - b[0]).map(([li, p]) => [li, Math.round(p * 1e4) / 1e4] as [number, number]) } : {}),
+      ...(this.lampsT.size ? { lamps: [...this.lampsT].sort() } : {}),
       visited: [...this.visited].sort((a, b) => a - b).map((i) => lay.instances[i].id),
       tr: { ...this.tr },
     };
@@ -2823,7 +2895,7 @@ class Stream implements StreamWorld {
     // PVS и соседи — те же, что были в живом мире
     for (const inst of run.instances) {
       const parent = inst.parent ? this.byId.get(inst.parent) ?? null : null;
-      const n = place(ctx, lay, this.byRoom.get(inst.roomId)!, inst.rot, inst.dx, inst.dy, inst.w ?? 0, parent, inst.floor ?? 0);
+      const n = place(ctx, lay, this.byRoom.get(inst.roomId)!, inst.rot, inst.dx, inst.dy, inst.w ?? 0, parent, inst.floor ?? 0, inst.z ?? 0);
       this.byId.set(n.inst.id, n);
     }
     const parentConn = new Map<string, string>();
@@ -2969,6 +3041,10 @@ class Stream implements StreamWorld {
       this.collapsedL.add(li);
       this.sealed.add(li);
     }
+    for (const e of Array.isArray(ws.dug) ? ws.dug : []) {
+      if (Array.isArray(e) && this.collapsedL.has(e[0]) && Number.isFinite(e[1])) this.dugL.set(e[0], Math.min(0.999, Math.max(0, e[1])));
+    }
+    for (const k of Array.isArray(ws.lamps) ? ws.lamps : []) if (typeof k === 'string') this.lampsT.add(k);
     for (const id of ws.visited) { const i = order(id); if (i !== null) this.visited.add(i); }
     ws.clusterOf.forEach((_, i) => (this.tdist[i] = Array.isArray(ws.tdist) && typeof ws.tdist[i] === 'number' ? ws.tdist[i] : -1));
     ws.clusterOf.forEach((_, i) => {

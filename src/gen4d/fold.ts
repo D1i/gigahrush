@@ -25,6 +25,7 @@ import { compatible, OUT_SIGN, segLine } from '../gen/geom';
 import { runMeters, SIGHT_DIRS, sightLimits } from '../gen/sight';
 import { walkWarning } from '../gen/walk';
 import { runWorld } from '../gen/world';
+import { connDz } from '../model/stairs';
 import {
   ATTEMPTS, buildPool, doorPoint, failWhy, longSight, growFrom, GROW_BONUS, growOthers, layerKey, LEAF_BONUS, LIMIT, localCells, newLay, normFold, place,
   pickWeighted, PVS_TOL_M, RESERVE, RESERVE_MAX, RESERVE_STEP, SUPPLY_FACTOR, tryLink,
@@ -727,6 +728,10 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
   let shifted = 0;
   const vlinks: VLink[] = [];
   const floorOf = (id: string) => byId.get(id)?.inst.floor ?? 0;
+  const connDzOf = (roomId: string, cid: string): number => {
+    const r = p.rooms.find((x) => x.id === roomId);
+    return r?.stair ? connDz(r, r.connectors.findIndex((c) => c.id === cid)) : 0;
+  };
   for (const l of run.links) {
     const name = `связь ${l.a.inst}/${l.a.connector} – ${l.b.inst}/${l.b.connector}`;
     const wa = byId.get(l.a.inst), wb = byId.get(l.b.inst);
@@ -789,6 +794,9 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
       err(`${name}: метки не стоят лицом к лицу через зазор ${gap}`);
     }
     // дверь в переход (бесконечный мир) — метки любые
+    // лестницы (Room.stair): полы у двух меток проёма на одной высоте
+    const za = (wa.inst.z ?? 0) + connDzOf(wa.inst.roomId, A.id), zb = (wb.inst.z ?? 0) + connDzOf(wb.inst.roomId, B.id);
+    if (Math.abs(za - zb) > 1e-6) err(`${name}: пол у меток на разной высоте (${za} и ${zb} м)`);
     if (!l.loose && match !== 'len' && !tagsCompatible(A.tag, B.tag)) err(`${name}: теги ${A.tag} / ${B.tag} несовместимы`);
     if (!l.loose && match !== 'tag' && A.len !== B.len) err(`${name}: длины ${A.len} / ${B.len} различаются`);
     const exp = wOf(l.b.inst) - wOf(l.a.inst);

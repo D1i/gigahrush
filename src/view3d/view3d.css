@@ -149,3 +149,19 @@
   background: radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0) 45%, rgba(10, 12, 16, 0.85) 100%);
   z-index: 4;
 }
+
+/* общага (src/view3d/obshagaWalk.ts): тащит рука — красная виньетка; утащили — чёрный экран, потом «Ещё раз» */
+.v3-obsh-drag {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 50%, rgba(0, 0, 0, 0) 30%, rgba(70, 4, 2, 0.75) 80%, rgba(20, 0, 0, 0.95) 100%);
+  z-index: 4;
+}
+.v3-obsh-black { position: absolute; inset: 0; pointer-events: none; background: #000; z-index: 5; }
+.v3-obsh-dead { z-index: 6; background: #000; }
+.v3-obsh-hint {
+  left: 50%; bottom: 84px; transform: translateX(-50%); max-width: 520px; text-align: center; pointer-events: none;
+  font-size: 13px; line-height: 1.45; color: #d8c9a8; animation: v3-dead 0.8s ease-out;
+}
+.v3-walkhud .v3-obsh-sound { pointer-events: auto; padding: 0 7px; height: 18px; font-size: 11px; line-height: 16px; }

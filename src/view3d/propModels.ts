@@ -22,6 +22,8 @@ import '@babylonjs/loaders/glTF/2.0/Extensions/ExtrasAsMetadata';
 import basementUrl from './assets/basement_props.glb?url';
 import barnUrl from './assets/barn_props.glb?url';
 import factoryUrl from './assets/factory_props.glb?url';
+// общага из примитивов (tools/make-obshaga-props.mjs, p_obsh_*)
+import obshagaUrl from './assets/obshaga_props.glb?url';
 
 /** Поля PBR-материала glTF, которые переносятся (без импорта класса — он тянет весь PBR). */
 interface PbrLike extends Material {
@@ -43,7 +45,7 @@ export class PropModels {
   readonly loaded: Promise<void>;
   private disposed = false;
 
-  constructor(readonly scene: Scene, urls: string[] = [basementUrl, barnUrl, factoryUrl]) {
+  constructor(readonly scene: Scene, urls: string[] = [basementUrl, barnUrl, factoryUrl, obshagaUrl]) {
     this.loaded = (async () => {
       for (const u of urls) {
         try {

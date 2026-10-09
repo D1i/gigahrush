@@ -1,12 +1,13 @@
-// Кооп (docs/COOP.md) во вкладке «3D»: раздел «Онлайн» слева (кнопка «Подключить онлайн») и модалка лобби — создать
-// (новый UUID, мир — текущие настройки прогулки и проект) или подключиться по UUID; в лобби — код, игроки, выход.
-import { useState } from 'react';
+// Кооп (docs/COOP.md) во вкладке «3D»: раздел «Онлайн» слева (кнопка «Подключить онлайн») и модалка лобби. Главный путь —
+// Steam: мост (tools/steam-bridge.mjs) на этом компьютере, хост — «Создать лобби через Steam», игрок — «Подключиться
+// через Steam» (код лобби — из данных лобби Steam). Без Steam — свой сервер: создать (новый UUID) или подключиться по UUID.
+import { useEffect, useState } from 'react';
 import { Btn, Modal, Section } from '../ui/kit';
 import { notify } from '../model/ui';
 import type { Project } from '../model/types';
 import type { WalkOptions } from '../view3d/walk';
 import { coopLeave, coopStart, newLobbyId, PLAYER_COLORS, readProfile, writeProfile, type CoopProfile } from './store';
-import { defaultServerUrl, isLobbyId, normServerUrl } from './protocol';
+import { bridgeWsUrl, defaultServerUrl, isLobbyId, normServerUrl, steamBridgeBases, type SteamBridgeStatus } from './protocol';
 import type { CoopSession, CoopStatus } from './session';
 import './coop.css';
 
@@ -95,7 +96,101 @@ export function CoopSection(props: { co: CoopSession | null; onOpen: () => void 
   );
 }
 
-/** Модалка лобби: создать / подключиться по UUID; в лобби — код, игроки, мир. */
+/** Мост Steam на этом компьютере: опрос GET /steam раз в 3 с, пока модалка открыта (null — не найден); server — поле
+ *  «Сервер». Моста нет — браузер пишет в консоль «ERR_CONNECTION_REFUSED» на каждый опрос: это ожидаемо. */
+function useSteamBridge(on: boolean, server: string): { base: string; st: SteamBridgeStatus } | null {
+  const [found, setFound] = useState<{ base: string; st: SteamBridgeStatus } | null>(null);
+  useEffect(() => {
+    if (!on) return;
+    let alive = true;
+    const probe = async () => {
+      for (const base of steamBridgeBases(server)) {
+        try {
+          const ctl = new AbortController();
+          const t = setTimeout(() => ctl.abort(), 1200);
+          const r = await fetch(base + '/steam', { signal: ctl.signal, cache: 'no-store' });
+          clearTimeout(t);
+          const st = (await r.json()) as SteamBridgeStatus;
+          if (st?.app === 'room-forge-steam') {
+            if (alive) setFound({ base, st });
+            return;
+          }
+        } catch {}
+      }
+      if (alive) setFound(null);
+    };
+    void probe();
+    const timer = setInterval(probe, 3000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [on, server]);
+  return found;
+}
+
+/** Блок «Steam»: мост найден — кнопка хоста / игрока; нет — как запустить. */
+function SteamBox(props: { bridge: { base: string; st: SteamBridgeStatus } | null; onCreate: (url: string) => void; onJoin: (url: string, lobby: string) => void }) {
+  const b = props.bridge;
+  if (!b) {
+    return (
+      <div className="coop-box coop-steam">
+        <div className="cap">Steam (Spacewar) — до 4 игроков</div>
+        <div className="hint">
+          Мост Steam на этом компьютере не найден. Запустите Steam (вход в аккаунт) и мост рядом с игрой:
+          <br />
+          сервер — <span className="mono">npm run steam -- host</span> (покажет id лобби Steam для друзей);
+          <br />
+          игрок — <span className="mono">npm run steam -- join &lt;id лобби Steam&gt;</span> или <span className="mono">npm run steam -- join</span> и «Присоединиться к игре» у
+          хоста в списке друзей Steam.
+          <br />
+          Связь — прямым туннелем через сеть Steam: порты открывать не нужно. Мост не на 8787 (<span className="mono">--port N</span>) — впишите{' '}
+          <span className="mono">localhost:N</span> в поле «Сервер» ниже.
+        </div>
+      </div>
+    );
+  }
+  const { st } = b;
+  const url = bridgeWsUrl(b.base);
+  const members = `${st.steam.members}/${st.steam.max}`;
+  return (
+    <div className="coop-box coop-steam">
+      <div className="cap">Steam (Spacewar) — до {st.steam.max} игроков</div>
+      {st.error && <div className="v3-err">{st.error}</div>}
+      {st.role === 'host' ? (
+        <>
+          <div>
+            Вы — сервер. Лобби Steam <span className="mono">{st.steam.lobby ?? '…'}</span> · в нём {members}
+          </div>
+          <div className="hint">
+            Друзьям: <span className="mono">npm run steam -- join {st.steam.lobby ?? '<id>'}</span> или «Присоединиться к игре» у вас в списке друзей Steam. Создайте
+            игровое лобби — его код уйдёт им через Steam сам.
+          </div>
+          <Btn variant="primary" onClick={() => props.onCreate(url)} disabled={!st.ready}>
+            Создать лобби через Steam
+          </Btn>
+        </>
+      ) : !st.ready ? (
+        <div className="hint">Мост ждёт лобби Steam: в Steam — список друзей → хост → «Присоединиться к игре» (или перезапустите мост с id лобби).</div>
+      ) : st.game.lobby ? (
+        <>
+          <div>
+            Хост — <b>{st.steam.host ?? '?'}</b> · лобби Steam {members}
+          </div>
+          <Btn variant="primary" onClick={() => props.onJoin(url, st.game.lobby!)}>
+            Подключиться через Steam
+          </Btn>
+        </>
+      ) : (
+        <div className="hint">
+          Вы в лобби Steam хоста <b>{st.steam.host ?? '?'}</b> ({members}). Ждём, когда он создаст игровое лобби…
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Модалка лобби: Steam / создать / подключиться по UUID; в лобби — код, игроки, мир. */
 export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; project: Project; biomeName: string | null; onClose: () => void }) {
   const { co } = props;
   const err = co?.status === 'error' ? co.error : null;
@@ -113,7 +208,9 @@ export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; pr
     if (!isLobbyId(id)) return;
     coopStart({ url, lobby: id, profile, local: () => props.project });
   };
-  const create = () => coopStart({ url, lobby: newLobbyId(), profile, local: () => props.project, create: { walk: props.walk, project: props.project } });
+  const create = (u = url) => coopStart({ url: u, lobby: newLobbyId(), profile, local: () => props.project, create: { walk: props.walk, project: props.project } });
+  const bridge = useSteamBridge(true, prof.server);
+  const viaSteam = !!bridge && !!co && co.url === bridgeWsUrl(bridge.base);
 
   if (coopActive(co)) {
     return (
@@ -133,7 +230,14 @@ export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; pr
               {co.status === 'online' && <span className="muted"> · операций мира {co.lastSeq}</span>}
             </span>
             <span>сервер</span>
-            <span className="mono">{co.url}</span>
+            {viaSteam ? (
+              <span>
+                Steam · лобби <span className="mono">{bridge!.st.steam.lobby}</span> · {bridge!.st.role === 'host' ? 'вы — сервер' : `хост — ${bridge!.st.steam.host ?? '?'}`} ·{' '}
+                {bridge!.st.steam.members}/{bridge!.st.steam.max}
+              </span>
+            ) : (
+              <span className="mono">{co.url}</span>
+            )}
             {co.meta && (
               <>
                 <span>мир</span>
@@ -147,8 +251,11 @@ export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; pr
           <div className="cap">Игроки</div>
           <Players co={co} />
           <div className="hint">
-            Друзья открывают игру с того же сервера (или указывают его адрес), вкладка «3D» → «Подключить онлайн» → вставляют код. Мир общий: двери, которые
-            открывает кто-то один, открываются у всех. Сквозь друг друга можно пройти, но рядом с другим игроком оба идут на 75% медленнее.
+            {viaSteam
+              ? 'Друзья запускают мост Steam (npm run steam -- join <id лобби Steam> или «Присоединиться к игре» в Steam) и в игре нажимают «Подключиться через Steam» — код придёт сам.'
+              : 'Друзья открывают игру с того же сервера (или указывают его адрес), вкладка «3D» → «Подключить онлайн» → вставляют код.'}{' '}
+            Мир общий: двери, которые открывает кто-то один, открываются у всех. Сквозь друг друга можно пройти, но рядом с другим игроком оба идут на 75%
+            медленнее. До 4 игроков.
           </div>
         </div>
       </Modal>
@@ -172,6 +279,9 @@ export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; pr
             </div>
           </div>
         </div>
+        <SteamBox bridge={bridge} onCreate={(u) => create(u)} onJoin={(u, lobby) => coopStart({ url: u, lobby, profile, local: () => props.project })} />
+
+        <div className="cap">Без Steam — свой сервер</div>
         <div className="field">
           <label>Сервер</label>
           <input className="input num" value={prof.server} placeholder={defaultServerUrl()} onChange={(e) => setProf({ server: e.target.value })} />
@@ -190,7 +300,6 @@ export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; pr
               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
               onChange={(e) => setCode(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && join()}
-              autoFocus
             />
             <Btn variant="primary" onClick={join} disabled={!isLobbyId(code)}>
               Подключиться
@@ -206,7 +315,7 @@ export function CoopModal(props: { co: CoopSession | null; walk: WalkOptions; pr
             {props.walk.clusters ? ` · квартиры и биомы${props.biomeName ? ` · старт: ${props.biomeName}` : ''}` : ' · прежний рост'}. Проект (комнаты, отделка) — ваш: у
             кого он другой, скачают ваш. Мир начинается заново с сида — ваша одиночная прогулка не меняется.
           </div>
-          <Btn onClick={create}>Создать лобби</Btn>
+          <Btn onClick={() => create()}>Создать лобби</Btn>
         </div>
 
         {err && <div className="v3-err">{err}</div>}

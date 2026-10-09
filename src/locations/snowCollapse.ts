@@ -2,7 +2,8 @@
 // stairwell.ts / lift.ts: розыгрыш по ключу, состояние, шаг → события.
 //
 // Правило для игрока (collapseRule): «Затрещало и сыплется снег — уползай от места, где сыплется: через 2 с свод
-// рухнет и навсегда завалит этот лаз. Не успел — засыпало: откапывайся (E), напарник откопает быстрее».
+// рухнет и завалит этот лаз. Не успел — засыпало: откапывайся (E), напарник откопает быстрее. Завал можно раскопать (E у
+// пробки; в коопе нажатия всех складываются) — лаз снова открыт».
 //
 //  • Обвалы — только в лазах (не в берлогах): через каждые everyM метров, проползённых в лазах (порог — бросок на
 //    каждый обвал, поток makeRng(seed + "/c" + n)). Дошёл до порога — движок выбирает место (проём текущего куска,
@@ -27,9 +28,11 @@ export interface CollapseSpec {
   digMate: number;
   /** места нет (завал запер бы игрока) — следующая попытка через столько метров */
   retryM: number;
+  /** нажатий E, чтобы раскопать завал и снова открыть лаз (в коопе нажатия всех игроков складываются) */
+  clear: number;
 }
 
-export const DEFAULT_COLLAPSE: CollapseSpec = { everyM: [45, 110], warnS: 2, buryM: 1.1, digSelf: 12, digMate: 4, retryM: 6 };
+export const DEFAULT_COLLAPSE: CollapseSpec = { everyM: [45, 110], warnS: 2, buryM: 1.1, digSelf: 12, digMate: 4, retryM: 6, clear: 20 };
 
 export type CollapsePhase = 'calm' | 'warn' | 'buried';
 
@@ -83,6 +86,7 @@ export function normCollapse(v: unknown): CollapseSpec {
     digSelf: fin(o.digSelf) ? clamp(Math.round(o.digSelf), 1, 200) : D.digSelf,
     digMate: fin(o.digMate) ? clamp(Math.round(o.digMate), 1, 200) : D.digMate,
     retryM: fin(o.retryM) ? clamp(o.retryM, 1, 1000) : D.retryM,
+    clear: fin(o.clear) ? clamp(Math.round(o.clear), 1, 500) : D.clear,
   };
 }
 
@@ -165,7 +169,8 @@ export function digCollapse(spec: CollapseSpec, s: CollapseState, by: 'self' | '
 /** Правило для игрока с числами настроек. */
 export function collapseRule(spec: CollapseSpec = DEFAULT_COLLAPSE): string {
   return `Затрещало и сыплется снег — уползай от места, где сыплется: через ${spec.warnS} с свод рухнет и навсегда завалит этот лаз. ` +
-    `Не успел — засыпало: откапывайся (E, ~${spec.digSelf} раз), напарник откопает быстрее (~${spec.digMate}).`;
+    `Не успел — засыпало: откапывайся (E, ~${spec.digSelf} раз), напарник откопает быстрее (~${spec.digMate}). ` +
+    `Завал можно раскопать: E у пробки, ~${spec.clear} раз (вдвоём — вдвое быстрее), — лаз снова открыт.`;
 }
 
 // ───────────────────────── место обвала (по JSON прогона «Прогулки») ─────────────────────────

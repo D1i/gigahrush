@@ -74,6 +74,25 @@ const BARN_FINISHES: FinishDef[] = [
   { id: 'f_snow_floor', name: 'Снег: пол лаза (пол)', surface: 'floor', color: '#d6dde8', tileW: 0.8, tileH: 0.8, tags: ['снег'], tex: WHITEWASH },
 ];
 
+/** Отделки общаги (src/data/roomsObshaga.ts): коридоры — бежевый кафель 15×15 с тёмно-зелёным нижним рядом и
+ *  светло-зелёным бордюром в полплитки до 1.425 м (9.5 рядов), выше побелка; комнаты — масляная краска (бежевая,
+ *  серо-зелёная); пол — коричневый крапчатый линолеум. В биоме «Общага» — свои правила по тегу помещения
+ *  (src/gen4d/biomes.ts), у проекта — правила тегов, которых нет у других групп (комната, вахта, туалет, душ…). */
+const OBSHAGA_FINISHES: FinishDef[] = [
+  {
+    id: 'f_obsh_tile_panel', name: 'Общага: кафельная панель 1.425 м (бежевый, зелёный ряд и бордюр)', surface: 'wall', color: '#d4c39c',
+    tileW: 0.6, tileH: 1.425, tags: ['кафель', 'общага'],
+    tex: { kind: 'tile_panel', w: 256, h: 608, opts: { base: '#d9c7a0', accent: '#8e8a7c', low: '#5e8a6e', high: '#7fa37a', n: 4 } },
+  },
+  {
+    id: 'f_obsh_corridor', name: 'Общага: кафель до 1.4 м + побелка', surface: 'wall', color: '#d8d0b5', tileW: 1, tileH: 1,
+    tags: ['общага', 'двухцветная'], tex: { kind: 'whitewash', w: 256, h: 256, opts: { base: '#d8d0b5' } }, dado: { finishId: 'f_obsh_tile_panel', heightM: 1.425 },
+  },
+  { id: 'f_obsh_paint_beige', name: 'Общага: масляная краска бежевая', surface: 'wall', color: '#cfc3a0', tileW: 1, tileH: 1, tags: ['краска', 'общага'], tex: { kind: 'paint', w: 256, h: 256, opts: { base: '#cfc3a0' } } },
+  { id: 'f_obsh_paint_green', name: 'Общага: масляная краска серо-зелёная', surface: 'wall', color: '#a9b79a', tileW: 1, tileH: 1, tags: ['краска', 'общага'], tex: { kind: 'paint', w: 256, h: 256, opts: { base: '#a9b79a' } } },
+  { id: 'f_obsh_lino_brown', name: 'Общага: линолеум коричневый крапчатый', surface: 'floor', color: '#6e3f2e', tileW: 1, tileH: 1, tags: ['линолеум', 'общага'], tex: { kind: 'lino_speckle', w: 256, h: 256, opts: { base: '#6e3f2e' } } },
+];
+
 export const FINISH_DEFS: FinishDef[] = [
   // ── Стены: обои ──
   { id: 'f_wp_damask', name: 'Обои «Дамаск», зелёные', surface: 'wall', color: DAMASK.color, tileW: DAMASK.tileW, tileH: DAMASK.tileH, tags: ['обои', 'жилая'], tex: 'damask' },
@@ -114,6 +133,7 @@ export const FINISH_DEFS: FinishDef[] = [
   { id: 'f_tile_floor', name: 'Кафель (пол) 20×20', surface: 'floor', color: '#b2aa99', tileW: 0.6, tileH: 0.6, tags: ['кафель', 'санузел'], tex: { kind: 'tile_floor', w: 384, h: 384, opts: { base: '#b7ae9c', accent: '#6f685d', n: 3 } } },
   ...BASEMENT_FINISHES,
   ...BARN_FINISHES,
+  ...OBSHAGA_FINISHES,
 ];
 
 /** Правила по тегу (первому тегу комнаты из групп спавна): варианты стен и пола с весами. */
@@ -143,6 +163,14 @@ const RULES: [string, [string, number][], [string, number][]][] = [
   ['сыро', [['f_bsm_brick', 3], ['f_bsm_damp', 2]], [['f_bsm_concrete', 2], ['f_bsm_damp_floor', 1]]],
   ['течь', [['f_bsm_damp', 4], ['f_bsm_brick', 1]], [['f_bsm_damp_floor', 3], ['f_bsm_water', 1]]],
   ['топь', [['f_bsm_damp', 1]], [['f_bsm_water', 3], ['f_bsm_damp_floor', 1]]],
+  // общага — по тегу помещения (тег после 'общага'; правила 'общага' нет — иначе оно бы победило): здесь — теги, которых
+  // нет у других групп; коридор, кухня, лестница, подвал общаги в биоме «Общага» — по правилам биома (biomes.ts)
+  ['комната', [['f_obsh_paint_beige', 3], ['f_obsh_paint_green', 2], ['f_wp_rogozhka', 1]], [['f_obsh_lino_brown', 3], ['f_boards', 2], ['f_lino_gray', 1]]],
+  ['вахта', [['f_obsh_corridor', 3], ['f_two_entrance', 1]], [['f_metlakh', 3], ['f_obsh_lino_brown', 1]]],
+  ['вахтёрская', [['f_obsh_paint_green', 2], ['f_obsh_paint_beige', 1]], [['f_obsh_lino_brown', 1]]],
+  ['туалет', [['f_two_bath', 1]], [['f_metlakh', 1]]],
+  ['душ', [['f_tile_white', 2], ['f_tile_blue', 1]], [['f_tile_floor', 2], ['f_metlakh', 1]]],
+  ['прачечная', [['f_two_bath', 2], ['f_obsh_paint_green', 1]], [['f_metlakh', 2], ['f_tile_floor', 1]]],
 ];
 
 function texOf(d: FinishDef): string | null {

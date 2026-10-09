@@ -15,6 +15,8 @@
 //    в снежных лазах игрок ползёт (аватар лежит), в берлоге — скрючен (аватар ниже); и «засыпан обвалом».
 //  • Засыпанный напарник рядом (ближе DIG_RADIUS_M) — nearBuried: страница показывает «E — откапывать» и шлёт ему
 //    действие dig (CoopSession.act); у него — SnowWalk.mateDig.
+//  • Общага (src/view3d/obshagaWalk.ts): держит лампу — у аватара в руке керосиновая лампа (свет у неё ставит общага);
+//    погиб — аватар не виден. Свои флаги — PlayerState.lamp / dead (геттеры flags).
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
@@ -65,6 +67,8 @@ interface Avatar {
   head: Mesh;
   visor: Mesh;
   label: Mesh;
+  /** керосиновая лампа в руке (общага) — клон модели p_obsh_lantern, создаётся, когда понадобилась */
+  lamp: Mesh | null;
   meshes: Mesh[];
   mats: StandardMaterial[];
   tex: DynamicTexture;
@@ -119,6 +123,8 @@ export class CoopPresence {
     private readonly inLoc: () => string | null,
     /** свой игрок засыпан обвалом (снежные ходы) */
     private readonly buried: () => boolean = () => false,
+    /** общага: свой игрок держит лампу / погиб (PlayerState.lamp / dead) */
+    private readonly flags: { lamp?: () => boolean; dead?: () => boolean } = {},
   ) {
     this.scene = v.scene;
     this.obs = this.scene.onBeforeRenderObservable.add(() => this.update());
@@ -160,9 +166,10 @@ export class CoopPresence {
       const s = this.co.players.get(a.id)?.state ?? null;
       a.visible = false;
       const room = s?.room ?? null;
-      // в спец-локации (своя сцена) или в комнате, которой в копии мира ещё нет, — не виден
-      if (!s || s.loc || !room || (rx && !this.hasRoom(rx, room))) {
+      // в спец-локации (своя сцена), погиб или в комнате, которой в копии мира ещё нет, — не виден
+      if (!s || s.loc || s.dead || !room || (rx && !this.hasRoom(rx, room))) {
         for (const m of a.meshes) m.setEnabled(false);
+        a.lamp?.setEnabled(false);
         continue;
       }
       // плавно к последнему положению; скачок — сразу
@@ -184,6 +191,7 @@ export class CoopPresence {
       }
       a.room = room;
       this.pose(a, cam);
+      const lamp = this.lampOf(a, !!s.lamp && fps);
       // рядом ли (та же комната или сосед через общий проём, не шов хода; по высоте — ноги)
       const here = fps && !!me && (room === me || !!near?.has(room)) && Math.abs(a.y - a.eye - myFeet) < SLOW_DY_M;
       const dist = Math.hypot(a.x - cam.x, a.z - cam.z);
@@ -199,6 +207,10 @@ export class CoopPresence {
           m.layerMask = PORTAL_LAYER;
         }
         this.addTo(room, a);
+        if (lamp) {
+          lamp.layerMask = PORTAL_LAYER;
+          this.byRoom.get(room)!.push(lamp);
+        }
         // у проёма — и с соседом за ним (тело, вышедшее за плоскость проёма, не обрезается)
         const piece = portal.cache.peek(room);
         for (const q of piece?.portals ?? []) {
@@ -213,6 +225,10 @@ export class CoopPresence {
           m.layerMask = SCENE_LAYER;
         }
         a.visible = on;
+        if (lamp) {
+          lamp.layerMask = SCENE_LAYER;
+          lamp.setEnabled(on);
+        }
       }
     }
     this.slowed = slow;
@@ -261,6 +277,35 @@ export class CoopPresence {
     // лицевая сторона плоскости — −Z: развернуть её к камере
     a.label.rotation.y = Math.atan2(-(cam.x - a.x), -(cam.z - a.z));
     for (const m of a.meshes) m.computeWorldMatrix(true);
+  }
+
+  /** Лампа в руке аватара (общага): справа у бедра, по взгляду; null — не держит (или модели ещё нет). */
+  private lampOf(a: Avatar, on: boolean): Mesh | null {
+    if (!on) {
+      a.lamp?.setEnabled(false);
+      return null;
+    }
+    if (!a.lamp) {
+      const tpl = this.v.props.get('p_obsh_lantern');
+      const m = tpl?.clone(`coop:lamp:${a.id}`, null, false) ?? null;
+      if (!m) return null;
+      m.isPickable = false;
+      m.checkCollisions = false;
+      m.metadata = { coop: a.id };
+      a.lamp = m;
+    }
+    const m = a.lamp;
+    const feet = a.y - a.eye;
+    const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
+    // правая рука: вправо от взгляда (Babylon: (cos yaw, −sin yaw)) и чуть вперёд; лёжа — у головы
+    const low = a.eye < CRAWL_EYE;
+    const side = low ? 0.2 : 0.3, fwd = low ? 0.55 : 0.22;
+    m.position.set(a.x + fz * side + fx * fwd, feet + (low ? 0.02 : 0.55), a.z - fx * side + fz * fwd);
+    m.rotation.y = a.yaw;
+    m.setEnabled(true);
+    m.isVisible = true;
+    m.computeWorldMatrix(true);
+    return m;
   }
 
   /** Соседи комнаты через проёмы (без швов бесконечного хода — там сосед на своём месте, не рядом). */
@@ -318,9 +363,11 @@ export class CoopPresence {
     const eye = round(eyeOf(c));
     if (Math.abs(eye - EYE) > 0.01) s.eye = eye;
     if (this.buried()) s.buried = true;
+    if (this.flags.lamp?.()) s.lamp = 1;
+    if (this.flags.dead?.()) s.dead = 1;
     const o = this.sent;
     const same =
-      o && o.room === s.room && o.loc === s.loc && o.fps === s.fps && o.eye === s.eye && o.buried === s.buried &&
+      o && o.room === s.room && o.loc === s.loc && o.fps === s.fps && o.eye === s.eye && o.buried === s.buried && o.lamp === s.lamp && o.dead === s.dead &&
       Math.abs(o.p[0] - s.p[0]) < 0.01 && Math.abs(o.p[1] - s.p[1]) < 0.01 && Math.abs(o.p[2] - s.p[2]) < 0.01 && Math.abs(o.yaw - s.yaw) < 0.01;
     if (same && t - this.sentAt < HEARTBEAT_MS) return;
     this.co.sendState(s);
@@ -391,11 +438,12 @@ export class CoopPresence {
       m.setEnabled(false);
       m.metadata = { coop: p.id };
     }
-    return { id: p.id, name: p.name, color: p.color, body, head, visor, label, meshes, mats: [mBody, mHead, mVisor, mLabel], tex, room: null, x: 0, y: 0, z: 0, eye: EYE, yaw: 0, has: false, visible: false };
+    return { id: p.id, name: p.name, color: p.color, body, head, visor, label, meshes, mats: [mBody, mHead, mVisor, mLabel], tex, lamp: null, room: null, x: 0, y: 0, z: 0, eye: EYE, yaw: 0, has: false, visible: false };
   }
 
   private drop(a: Avatar) {
     for (const m of a.meshes) m.dispose(false, false);
+    a.lamp?.dispose(false, false);
     for (const m of a.mats) m.dispose(false, false);
     a.tex.dispose();
   }

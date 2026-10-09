@@ -46,7 +46,7 @@ const CHECKPOINT_MS = 20000;
 /** Отпечатки мира по seq — столько последних (сверка с чекпойнтом хоста). */
 const FP_KEEP = 400;
 /** Ошибки сервера, после которых не переподключаемся. */
-const FATAL = new Set(['version', 'bad', 'exists', 'no-lobby', 'replaced']);
+const FATAL = new Set(['version', 'bad', 'exists', 'no-lobby', 'replaced', 'full']);
 
 /** Проект в JSON — так же, как его видит лобби (хэш — по этой строке). */
 export const projectJSON = (p: Project): string => JSON.stringify(serializeProject(p));
@@ -76,6 +76,8 @@ export class CoopSession {
   readonly afterOp = new Set<(e: CoopOpEvent, res: string | null) => void>();
   /** другой игрок сделал что-то со мной (act: dig — откапывает засыпанного) */
   readonly onAct = new Set<(from: string, a: PlayerAct) => void>();
+  /** временное событие от другого игрока (fx): k — вид, d — данные (JSON ≤ 2 КБ) */
+  readonly onFx = new Set<(from: string, k: string, d: unknown) => void>();
 
   private ws: WebSocket | null = null;
   private readonly WS: typeof WebSocket;
@@ -221,6 +223,9 @@ export class CoopSession {
       case 'act':
         for (const f of this.onAct) f(m.from, m.a);
         return;
+      case 'fx':
+        for (const f of this.onFx) f(m.from, m.k, m.d);
+        return;
       case 'join':
         this.players.set(m.player.id, m.player);
         this.changed();
@@ -364,6 +369,12 @@ export class CoopSession {
   /** Действие над другим игроком (dig — откапывать засыпанного); без связи — не уходит. */
   act(to: string, a: PlayerAct) {
     if (this.status === 'online') this.raw({ t: 'act', to, a });
+  }
+
+  /** Временное событие всем остальным в лобби (без журнала мира и без досылки опоздавшим): k ≤ 16 символов, d — JSON
+   *  ≤ 2 КБ (больше — сервер отбросит). Без связи — не уходит. */
+  fx(k: string, d: unknown) {
+    if (this.status === 'online') this.raw({ t: 'fx', k, d });
   }
 
   /** Положение своего игрока (ретранслируется остальным). */

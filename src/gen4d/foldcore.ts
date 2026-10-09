@@ -2,6 +2,7 @@
 // Им пользуются прогон фиксированного размера (fold.ts) и бесконечный потоковый мир (stream.ts).
 // Порядок бросков ГСЧ и проверки — docs/GENERATOR-4D.md §4 (движок повторяет дословно).
 import { OPPOSITE } from '../model/cells';
+import { connDz } from '../model/stairs';
 import type { Rng } from '../model/rng';
 import type { Connector, FoldSettings, GeneratorSettings, Instance, Link, Project, Room, Rot, ShiftMode } from '../model/types';
 import { analyzeGrowth } from '../gen/generate';
@@ -24,7 +25,9 @@ export const LONG_SIGHT_TAGS: readonly string[] = ['ход', 'хаб'];
 /** Длинный обзор: ходы и хабы подвала, а также переходы — лестница и лифт (встают без предела обзора: внутри своя
  *  сцена, длинный марш или шахта не должны мешать им встать за дверью). */
 export const longSight = (room: Room): boolean =>
-  room.tags.some((t) => LONG_SIGHT_TAGS.includes(t)) || room.location?.kind === 'stairwell' || room.location?.kind === 'lift';
+  room.tags.some((t) => LONG_SIGHT_TAGS.includes(t)) || room.location?.kind === 'stairwell' || room.location?.kind === 'lift' ||
+  // зал с маршем (Room.stair): двери на разной высоте — прямой линии вдоль зала нет, длинный зал не упирается в предел
+  !!room.stair;
 
 // Константы роста — те же, что у евклидова генератора (§4.2 GENERATOR.md).
 export const ATTEMPTS = 6;
@@ -223,9 +226,10 @@ export function pickWeighted(rng: Rng, weights: number[]): number {
   return i < 0 ? 0 : i;
 }
 
-/** Поставить экземпляр в слой w этажа floor (по умолчанию — этаж родителя, у старта 0). */
+/** Поставить экземпляр в слой w этажа floor (по умолчанию — этаж родителя, у старта 0). z — высота низа комнаты, м
+ *  (по умолчанию — как у родителя; у комнаты за дверью её задаёт link по лестнице, src/model/stairs.ts). */
 export function place(ctx: Ctx, lay: Lay, info: Info, rot: Rot, dx: number, dy: number, w: number, parent: Node | null,
-  floor: number = parent ? parent.floor : 0): Node {
+  floor: number = parent ? parent.floor : 0, z: number = parent?.inst.z ?? 0): Node {
   const sh = ctx.shapes.get(info.room, rot);
   const n = lay.instances.length;
   const inst: Instance = {
@@ -235,6 +239,8 @@ export function place(ctx: Ctx, lay: Lay, info: Info, rot: Rot, dx: number, dy: 
     w,
     // этаж пишется, только если не 0 (прогоны без спец-локаций не меняются)
     ...(floor ? { floor } : {}),
+    // высота — тоже, только если не 0 (прогоны без лестниц не меняются)
+    ...(z ? { z } : {}),
   };
   const node: Node = {
     inst, info, sh, body: { sh, dx, dy }, w, floor,
@@ -266,7 +272,17 @@ export function place(ctx: Ctx, lay: Lay, info: Info, rot: Rot, dx: number, dy: 
   return node;
 }
 
+/** Высота пола у метки ci экземпляра n (низ комнаты + лестница), м. */
+export const doorZ = (n: Node, ci: number): number => (n.inst.z ?? 0) + connDz(n.info.room, ci);
+
 export function link(lay: Lay, a: Node, ai: number, b: Node, bi: number): void {
+  // b только что поставлен за дверью (первая связь) — его высота такая, что полы у двух меток вровень (лестница
+  // поднимает/опускает всё, что за ней). У петли высоты уже совпадают (tryLink)
+  if (!b.nb.length) {
+    const z = Math.round((doorZ(a, ai) - connDz(b.info.room, bi)) * 1e6) / 1e6;
+    if (z) b.inst.z = z;
+    else delete b.inst.z;
+  }
   a.linked[ai] = true;
   b.linked[bi] = true;
   a.nb.push(b);
@@ -593,6 +609,8 @@ export function loopLocalOk(ctx: Ctx, A: Node, ai: number, B: Node, bi: number):
 export function tryLink(ctx: Ctx, lay: Lay, a: Node, ai: number, b: Node, bi: number, pvs?: { reach: number; tol: number } | null): boolean {
   const A = a.conns[ai], B = b.conns[bi];
   if (!compatible(A, B, ctx.s.match) || !facing(A, B, ctx.gap)) return false;
+  // полы у меток на разной высоте (за лестницей мир выше/ниже) — не проём
+  if (Math.abs(doorZ(a, ai) - doorZ(b, bi)) > 1e-6) return false;
   if (!shiftOk(ctx.f, shiftModeOf(A.shift, B.shift), b.w - a.w)) return false;
   if (!loopLocalOk(ctx, a, ai, b, bi)) return false;
   let upd: Map<number, Set<number>> | null = null;

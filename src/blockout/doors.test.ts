@@ -142,8 +142,8 @@ describe('модели дверей', () => {
               const fill = g.frame.filter((p) => ext(p, 1)[0] >= top - 1e-6 && ext(p, 0)[0] <= -W / 2 && ext(p, 0)[1] >= W / 2);
               expect(Math.max(...fill.map((p) => ext(p, 1)[1]))).toBeGreaterThanOrEqual(H);
             }
-            // заколоченная — доски перед полотном
-            if (role === 'dead') expect(g.frame.some((p) => p.rz && p.s[0] > W)).toBe(true);
+            // заколоченная — доски перед полотном (самозакрывающаяся общаги заперта без досок: её распахивает рука)
+            if (role === 'dead') expect(g.frame.some((p) => p.rz && p.s[0] > W)).toBe(!style.selfClosing);
           }
         }
       }

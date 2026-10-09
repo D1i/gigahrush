@@ -18,7 +18,7 @@ import { CreateLineSystem } from '@babylonjs/core/Meshes/Builders/linesBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import type { Observer } from '@babylonjs/core/Misc/observable';
 import type { Scene } from '@babylonjs/core/scene';
-import { BoxBatch } from '../blockout/babylon';
+import { BoxBatch, type DoorPose } from '../blockout/babylon';
 import { buildBlockoutModel } from '../blockout/core';
 import { mergePieces } from '../blockout/pieces';
 import { PieceCache, PortalRenderer, type PortalFrameStats } from './portal';
@@ -143,6 +143,8 @@ export class FoldDriver {
   portal: PortalRenderer | null = null;
   /** анимация открытия дверей (портальный рендер; в наборе PVS двери открываются сразу) */
   doors: DoorAnimator | null = null;
+  /** поза дверей сверх анимации открытия (общага: двери комнат закрываются сами — src/view3d/obshagaWalk.ts); null — из слота */
+  doorPose: ((slot: DoorSlot) => DoorPose | null) | null = null;
   /** горизонт портального рендера, м (viewHorizonM: проёмы открываются, пока видны; дальше — без рекурсии) */
   readonly horizonM: number;
 
@@ -326,7 +328,8 @@ export class FoldDriver {
       return true;
     }
     if (inst !== this.center) this.onPortalCross(this.center ?? inst, inst);
-    const z = piece.model.floors.find((f) => f.inst === inst)?.z ?? 0;
+    // отметка пола проёма (у лестницы — своя у каждой метки)
+    const z = q.z;
     const p = q.center.subtract(q.u.scale(0.8));
     const c = this.v.fps;
     c.position.set(p.x, z + this.v.posture.eye + 0.05, p.z);
@@ -362,7 +365,7 @@ export class FoldDriver {
     const floor = piece.model.floors.find((f) => f.inst === inst);
     const [x1, y1, x2, y2] = d.line;
     // план (x вправо, y вниз) → Babylon (x, −y); высота пола комнаты → y
-    const center = new Vector3((x1 + x2) / 2, floor?.z ?? 0, -(y1 + y2) / 2);
+    const center = new Vector3((x1 + x2) / 2, d.z ?? floor?.z ?? 0, -(y1 + y2) / 2);
     const u = new Vector3(d.normal[0], 0, -d.normal[1]);
     // глубина комнаты от проёма (до противоположной стены) — по прямоугольникам её пола
     let depth = 0;
@@ -498,7 +501,7 @@ export class FoldDriver {
       this.pieces = new PieceCache(this.v.scene, this.rx, {
         blockout: this.partOpts('vis'), propTextures: this.build.propTextures, finishes: this.build.finishes, openCut: this.openCut,
         propModel: (id) => this.v.props.get(id),
-        doorPose: (slot) => this.doors?.pose(slot) ?? null,
+        doorPose: (slot) => this.doors?.pose(slot) ?? this.doorPose?.(slot) ?? null,
       });
       this.doors = new DoorAnimator(this.v.scene, this.v.fps, (inst, connector) => this.pieces?.peek(inst)?.bo.doorLeaves.get(`${inst}/${connector}`) ?? null);
     }

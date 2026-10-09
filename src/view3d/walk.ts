@@ -26,8 +26,18 @@ import {
 } from '../gen4d/stream';
 import { exportRunJSON } from '../gen/world';
 import { startBiomeOf } from '../gen4d/biomes';
+
+/** Дальний обзор биомов для портального рендера: тег группы биома → Biome.viewM, м (RunExport.viewByTag). */
+function viewByTag(w: WorldSettings | null | undefined): { viewByTag?: Record<string, number> } {
+  const out: Record<string, number> = {};
+  for (const b of w?.biomes ?? []) if (b.viewM) for (const t of b.tags) if (t.mul > 0) out[t.tag] = Math.max(out[t.tag] ?? 0, b.viewM);
+  return Object.keys(out).length ? { viewByTag: out } : {};
+}
 import type { LiftSide, Project, WorldSettings } from '../model/types';
 import type { RunExport, RunFinish, RunInstance } from '../blockout/types';
+
+/** Подпись метки-завала по четвертям раскопки (0, ¼, ½, ¾): сменилась — кусок пересобирается (пробка меньше). */
+const DUG = 'Cckq';
 
 /** Операция, меняющая мир прогулки. Детерминирована: тот же мир + та же операция → тот же мир. */
 export type WorldOp =
@@ -40,7 +50,11 @@ export type WorldOp =
   /** выход лифта → id комнаты за выходом */
   | { k: 'ascend'; id: string; floor: number; side: LiftSide }
   /** обвал снежного хода у метки (src/locations/snowCollapse.ts) → inst, если завалило */
-  | { k: 'collapse'; inst: string; conn: string };
+  | { k: 'collapse'; inst: string; conn: string }
+  /** раскопка завала снежного хода: работа amount (доля 0…1, от любого игрока) → inst, когда раскопан до конца */
+  | { k: 'dig'; inst: string; conn: string; amount: number }
+  /** общага: керосиновую лампу взяли со спота spot экземпляра inst → inst, если взял этот запрос (уже взята — null) */
+  | { k: 'lamp'; inst: string; spot: string };
 
 /** Мир не из localStorage (кооп): снимок лобби, открытые двери; key — ключ позиции игрока в localStorage. */
 export interface WalkSource {
@@ -226,6 +240,12 @@ export class WalkSession {
     });
   }
 
+  /** Дальность раскрытия мира из комнаты id, м: горизонт портального рендера, в биоме с дальним обзором (Biome.viewM,
+   *  общага) — не меньше его. */
+  private reachM(id: string): number {
+    return Math.max(viewHorizonM(this.world.settings.sightM), this.world.clusterAt(id)?.biome?.viewM ?? 0);
+  }
+
   /** Игрок в комнате id: раскрыть двери вперёд и всё, что из неё может попасть в кадр (после кадра):
    *  дальность — горизонт портального рендера (viewHorizonM), тумана нет — нераскрытая дверь в кадре была
    *  бы дырой в пустоту. */
@@ -238,7 +258,7 @@ export class WalkSession {
     setTimeout(() => {
       if (this.disposed) return;
       this.world.ensureAround(id);
-      this.world.ensureVisible(id, viewHorizonM(this.world.settings.sightM));
+      this.world.ensureVisible(id, this.reachM(id));
     }, 0);
     // режим квартир: счётчик переходов (впервые в комнате — +1, после trAfter — бросок)
     const r = this.world.enter(id);
@@ -283,7 +303,7 @@ export class WalkSession {
           // раскрытие — синхронно: отложенное легло бы между операциями других игроков по-разному у разных копий
           const r = this.world.enter(op.id);
           this.world.ensureAround(op.id);
-          this.world.ensureVisible(op.id, viewHorizonM(this.world.settings.sightM));
+          this.world.ensureVisible(op.id, this.reachM(op.id));
           if (r.counted) this.scheduleSave();
           return null;
         }
@@ -295,6 +315,10 @@ export class WalkSession {
           return this.world.ascend(op.id, op.floor, op.side);
         case 'collapse':
           return this.world.collapse(op.inst, op.conn) ? op.inst : null;
+        case 'dig':
+          return this.world.digThrough(op.inst, op.conn, op.amount) === 1 ? op.inst : null;
+        case 'lamp':
+          return this.world.takeLamp(op.inst, op.spot) ? op.inst : null;
       }
     } catch (e) {
       console.error(e);
@@ -378,20 +402,25 @@ export class WalkSession {
       for (const k of e.connectors) {
         const to = linkBy.get(`${i.id}/${k.id}`);
         const st = to || k.len < 1 ? null : this.world.doorState(i.id, k.id);
-        sig += to ? (this.opened.has(`${i.id}/${k.id}`) ? 'O' : 'L') : st === 'pending' ? 'P' : st === 'exit' ? 'X' : st === 'collapsed' ? 'C' : arrival.has(`${i.id}/${k.id}`) ? 'A' : 'D';
+        sig += to ? (this.opened.has(`${i.id}/${k.id}`) ? 'O' : 'L') : st === 'pending' ? 'P' : st === 'exit' ? 'X' : st === 'collapsed' ? DUG[Math.min(3, Math.floor((this.world.collapseProgress(i.id, k.id) ?? 0) * 4 + 1e-6))] : arrival.has(`${i.id}/${k.id}`) ? 'A' : 'D';
       }
+      // общага: взятые керосиновые лампы (WorldOp 'lamp') — их споты пусты, кусок пересобирается без лампы
+      const lamps = e.spots.some((s) => s.id.endsWith('_s_lantern')) ? e.spots.filter((s) => this.world.lampTaken(i.id, s.id)).map((s) => s.id) : [];
+      if (lamps.length) sig += '|' + lamps.length;
       if (this.sig.get(i.id) !== sig) {
         changed.push(i.id);
         e = {
           ...e,
+          spots: lamps.length ? e.spots.map((s) => (lamps.includes(s.id) ? { ...s, content: null, variantId: null } : s)) : e.spots,
           connectors: e.connectors.map((k, n) => {
             const to = linkBy.get(`${i.id}/${k.id}`) ?? null;
-            const { cut: _c, exit: _x, arrival: _a, opened: _o, collapsed: _k, ...rest } = k;
+            const { cut: _c, exit: _x, arrival: _a, opened: _o, collapsed: _k, dug: _g, ...rest } = k;
             if (sig[n] === 'P') return { ...rest, linkedTo: null, cut: true };
             if (sig[n] === 'X') return { ...rest, linkedTo: null, exit: true };
             if (sig[n] === 'A') return { ...rest, linkedTo: null, arrival: true };
             // завал снежного лаза (StreamWorld.collapse): тупик навсегда, у оболочки снега — пробка
-            if (sig[n] === 'C') return { ...rest, linkedTo: null, collapsed: true };
+            const q = DUG.indexOf(sig[n]);
+            if (q >= 0) return { ...rest, linkedTo: null, collapsed: true, ...(q ? { dug: q / 4 } : {}) };
             if (sig[n] === 'O') return { ...rest, linkedTo: to ? { ...to } : null, opened: true };
             return { ...rest, linkedTo: to ? { ...to } : null };
           }),
@@ -416,6 +445,8 @@ export class WalkSession {
       fold: run.fold ?? null,
       sight: run.sight,
       pvs: run.pvs ?? null,
+      // дальний обзор биомов (Biome.viewM) по тегу группы — портальный рендер в такой комнате (./portal.ts)
+      ...viewByTag(this.world.settings.world),
     };
     return { rx, changed };
   }
@@ -465,6 +496,8 @@ export class WalkSession {
         localStorage.removeItem(key);
         localStorage.removeItem(playerKey(key));
         localStorage.removeItem(doorsKey(key));
+        // общага: лампа в руке (src/view3d/obshagaWalk.ts)
+        localStorage.removeItem(key + '/obsh-lamp');
       } catch {}
     }
   }

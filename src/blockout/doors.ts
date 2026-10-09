@@ -23,7 +23,7 @@ export type { DoorRole };
 /** Ручка — то, что двигается перед распахом: нажимная ручка, круглая ручка, штурвал, засов, щеколда-вертушка. */
 export type HandleKind = 'lever' | 'knob' | 'wheel' | 'bolt' | 'latch' | 'none';
 
-export type DoorGroup = 'хрущёвка' | 'подвал' | 'сарай' | 'погреб' | 'снег' | 'завод';
+export type DoorGroup = 'хрущёвка' | 'общага' | 'подвал' | 'сарай' | 'погреб' | 'снег' | 'завод';
 
 /** Вид полотна — какой построитель модели. */
 export type DoorLook = 'dermantin' | 'panel' | 'flat' | 'glazed' | 'metal' | 'planks' | 'slats' | 'hermetic' | 'corrugated';
@@ -47,6 +47,9 @@ export interface DoorStyle {
   rest: number;
   /** открытие: ручка, сколько длится отпирание и распах, с */
   anim: { handle: HandleKind; unlatchS: number; swingS: number };
+  /** дверь закрывается сама (общага): полотно подвижно у всех ролей и твёрдое (коллайдер) — позу задаёт игра
+   *  (BabylonBlockoutOptions.doorPose); иначе подвижны только выходы */
+  selfClosing?: true;
   /** цвета полотна по вариантам (вариант — по месту двери) */
   colors: string[];
   /** наличник (или коробка-уголок у железных): ширина, толщина, цвет; null — без */
@@ -142,6 +145,15 @@ export const DOOR_STYLES: DoorStyle[] = [
     casing: { w: 0.05, t: 0.03, color: '#3c443d' },
     model: 'крашеный стальной лист с рамкой, табличка, проушины с навесным замком',
   },
+  // ── общага ──
+  {
+    id: 'obshaga_room', name: 'Дверь комнаты общаги', group: 'общага', look: 'flat', leaves: 1, thick: 0.04,
+    where: 'коридор общаги → комната, кухня, туалет, душевая, прачечная, вахтёрская: room>obshaga, common>obshaga, ' +
+      'vahter>hall (полотно в комнате); закрытые двери комнат общаги', rest: 90,
+    anim: { handle: 'lever', unlatchS: 0.3, swingS: 1.0 }, colors: ['#7a3e22', '#b5832f', '#d6c9a0'], selfClosing: true,
+    casing: { w: 0.07, t: 0.02, color: '#5f4632' },
+    model: 'гладкая фанерная крашеная, жестяной номерок со стороны коридора, накладной замок, нажимная ручка',
+  },
   // ── подвал ──
   {
     id: 'basement_metal', name: 'Подвальная железная', group: 'подвал', look: 'metal', leaves: 1, thick: 0.06,
@@ -224,6 +236,12 @@ const LEAF_SIDE: Record<string, boolean> = {
   'corridor>service': true, 'service>corridor': false,
   'storage>basement': true, 'basement>storage': false,
   'stall>barn': true, 'barn>stall': false,
+  // общага: комнаты и общие помещения — внутрь (у коридора только наличник)
+  'room>obshaga': true, 'obshaga>room': false,
+  'common>obshaga': true, 'obshaga>common': false,
+  'vahter>hall': true, 'hall>vahter': false,
+  // проём на лестничную клетку — без полотна (закрытый — тамбурная со стороны клетки)
+  'stairs>obshaga': true, 'obshaga>stairs': false,
   // снежные ходы: боковой лаз в тупиковую берлогу — открытый без двери (стиля по метке нет), закрытый — обледенелая
   // дверь со стороны берлоги
   'den>snow': true, 'snow>den': false,
@@ -245,6 +263,9 @@ const STYLE_BY_TAG: Record<string, string[]> = {
   'corridor>service': ['service_metal'], 'service>corridor': ['service_metal'],
   'basement>storage': ['storage_lattice'], 'storage>basement': ['storage_lattice'],
   'barn>stall': ['barn_gate'], 'stall>barn': ['barn_gate'],
+  'obshaga>room': ['obshaga_room'], 'room>obshaga': ['obshaga_room'],
+  'obshaga>common': ['obshaga_room'], 'common>obshaga': ['obshaga_room'],
+  'hall>vahter': ['obshaga_room'], 'vahter>hall': ['obshaga_room'],
 };
 
 /** Локация комнаты по её тегам (особые биомы — раньше квартирных тегов). */
@@ -254,12 +275,13 @@ export function doorContext(roomTags: readonly string[]): DoorGroup {
   if (roomTags.includes('погреб')) return 'погреб';
   if (roomTags.includes('сарай')) return 'сарай';
   if (roomTags.includes('подвал')) return 'подвал';
+  if (roomTags.includes('общага')) return 'общага';
   return 'хрущёвка';
 }
 
 /** Закрытая дверь локации, если по метке не определилась (марши, ходы, неизвестные метки, особые биомы). */
 const CLOSED_BY_CONTEXT: Record<DoorGroup, string> = {
-  'хрущёвка': 'int_dg', 'подвал': 'basement_metal', 'сарай': 'barn_plank', 'погреб': 'cellar_low', 'снег': 'snow_iced', 'завод': 'factory_hermetic',
+  'хрущёвка': 'int_dg', 'общага': 'obshaga_room', 'подвал': 'basement_metal', 'сарай': 'barn_plank', 'погреб': 'cellar_low', 'снег': 'snow_iced', 'завод': 'factory_hermetic',
 };
 
 /** Полотно этой метки висит в её комнате (у прохода с меткой tag, если он не выход). */
@@ -303,6 +325,9 @@ export function doorStyleFor(tag: string, roomTags: readonly string[], closed: b
     else if (tag === 'corridor') id = ctx === 'хрущёвка' ? 'tambour' : CLOSED_BY_CONTEXT[ctx];
     else if (tag === 'basement') id = 'basement_metal';
     else if (tag === 'barn') id = 'barn_plank';
+    // общага: закрытый конец коридора — тамбурная двустворчатая, хода подвала — железная
+    else if (tag === 'obshaga' || tag === 'obshaga>stairs' || tag === 'stairs>obshaga') id = 'tambour';
+    else if (tag === 'obshaga_bsm') id = 'basement_metal';
     else id = CLOSED_BY_CONTEXT[ctx];
   }
   if (!id) return null;
@@ -644,7 +669,14 @@ function buildLeaf(st: DoorStyle, w: number, h: number, seed: string, k: number)
     }
     case 'flat': {
       L.box(0, 0, 0, w, h, t, col);
-      if (st.id === 'int_bath') {
+      if (st.id === 'obshaga_room') {
+        // общага: жестяной номерок со стороны коридора (обратная сторона полотна в комнате), накладной замок изнутри
+        L.number(1.6, 'back', seed);
+        const xl = w - 0.08;
+        L.front(xl - 0.045, 1.08, xl + 0.035, 1.2, 0.025, '#6b6b66');
+        L.keyhole(1.0, 'back');
+        L.lever(0.98, ALU);
+      } else if (st.id === 'int_bath') {
         // вентрешётка внизу (с обеих сторон), шпингалет с обратной стороны (в ванной)
         const gx0 = w / 2 - 0.15, gx1 = w / 2 + 0.15;
         L.both(gx0, 0.1, gx1, 0.22, 0.004, '#a6aba6');
@@ -986,8 +1018,9 @@ export function doorGeometry(inp: DoorGeometryInput): DoorGeometry {
       r.parts.push(P(-lw - 0.004, 0.01, -0.006, -lw + 0.03, r.height - 0.01, 0, shade(st.colors[0], 0.9)));
     } else leaves.push(mk(inp.hinge, 0));
   }
-  // ── заколоченная (тупик): доски наискось поверх полотна и наличника — на брусках, гвозди ──
-  if (inp.role === 'dead') {
+  // ── заколоченная (тупик): доски наискось поверх полотна и наличника — на брусках, гвозди. Самозакрывающаяся (общага)
+  // не заколочена — просто заперта: её распахивает рука, полотно ходит ──
+  if (inp.role === 'dead' && !st.selfClosing) {
     const rnd = rngOf(inp.seed + '#boards');
     // перед самой выступающей деталью полотна (ручка, штурвал)
     let front = zf;

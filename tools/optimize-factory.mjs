@@ -30,7 +30,8 @@ const src = resolve(process.argv[2] ?? 'tmp/factory/factory-3d');
 const outGlb = fileURLToPath(new URL('../src/view3d/assets/factory_props.glb', import.meta.url));
 mkdirSync(fileURLToPath(new URL('../src/view3d/assets/', import.meta.url)), { recursive: true });
 
-/** id prop → файл набора и правка: rot — доп. поворот вокруг Y, град (после «перед → −Z»); ceil — подвесной; scale. */
+/** id prop → файл набора и правка: rot — доп. поворот вокруг Y, град (после «перед → −Z»); ceil — подвесной; scale;
+ *  flip — вверх ногами (перевёрнутое болото: камыш и грязь свисают с потолка). */
 const PROPS = [
   // ── машинный цех: всё крутится ──
   ['p_fac_gear_large', 'gear_large_24T'],
@@ -65,6 +66,9 @@ const PROPS = [
   ['p_fac_reeds', 'reeds_cluster'],
   ['p_fac_tree', 'dead_tree', { scale: 0.8 }],
   ['p_fac_boardwalk', 'swamp_boardwalk_2m'],
+  // ── перевёрнутое болото: свисает с потолка мокрых цехов (финал — вверх, в болото над головой)
+  ['p_fac_reeds_hang', 'reeds_cluster', { flip: true, ceil: true, scale: 0.75 }],
+  ['p_fac_mud_hang', 'mud_island', { flip: true, ceil: true, scale: 0.8 }],
 ];
 
 /** Сколько выборок движения за период (у неравномерных: пресс, капли, ковш…). */
@@ -114,6 +118,10 @@ const mul = (a, b) => {
 const rotY = (deg) => {
   const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
   return [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1];
+};
+const rotX = (deg) => {
+  const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+  return [1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1];
 };
 const scaleM = (k) => [k, 0, 0, 0, 0, k, 0, 0, 0, 0, k, 0, 0, 0, 0, 1];
 const transM = (x, y, z) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
@@ -351,7 +359,7 @@ for (const [id, file, o = {}] of PROPS) {
   const moving = [...new Set(anims.flatMap((a) => a.listChannels().map((c) => c.getTargetNode())))];
   const stop = new Set(moving);
   const tops = root.listScenes()[0].listChildren();
-  let R = mul(rotY(180 + (o.rot ?? 0)), scaleM(o.scale ?? 1));
+  let R = mul(rotY(180 + (o.rot ?? 0)), mul(o.flip ? rotX(180) : scaleM(1), scaleM(o.scale ?? 1)));
   const staticB = bake(tops.flatMap((t) => [...subtree(t, stop)]), R);
   const movB = moving.map((m) => bake([...subtree(m, new Set(moving.filter((x) => x !== m)))], R));
   let { lo, hi } = bounds([staticB, ...movB]);

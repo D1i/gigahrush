@@ -3,6 +3,7 @@
 import type { Assign, Finish, FinishRule, FinishSurface, Item, Project, Prop, Room, SpotGroup, Variant } from './types';
 import { areaM2, rectCells } from './cells';
 import { cloneLocation } from '../locations/stairwell';
+import { cloneStair } from './stairs';
 
 let uidCounter = 0;
 
@@ -84,6 +85,7 @@ export function duplicateRoom(p: Project, roomId: string): Room {
     note: r.note,
     finish: { wall: r.finish?.wall ?? null, floor: r.finish?.floor ?? null },
     ...(r.location !== undefined ? { location: cloneLocation(r.location) } : {}),
+    ...(r.stair ? { stair: cloneStair(r.stair) } : {}),
   };
   p.rooms.splice(i + 1, 0, copy);
   return copy;

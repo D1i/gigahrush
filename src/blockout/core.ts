@@ -414,7 +414,9 @@ export function buildBlockoutModel(run: RunExport, opts?: Partial<BlockoutOption
       if (k.linkedTo && !failed.has(key) && !transit.has(key)) {
         issues.push(`Метка ${key} указывает связь с ${k.linkedTo.inst}/${k.linkedTo.connector}, но в links её нет — закрыта как тупик`);
       }
-      dead.push({ ii, seg: k, source: 'connector', mode: k.exit || k.arrival || arrive.has(key) ? 'panel' : k.cut && o.cutEnds ? o.cutEnds : o.deadEnds });
+      // запертая дверь, что закрывается сама (общага: за ней не выросла комната), — закрытое полотно и при глухих тупиках
+      const locked = !k.cut && !!o.doors && o.deadEnds !== 'open' && doorStyleFor(k.tag, inst.roomTags ?? [], true, key)?.selfClosing === true;
+      dead.push({ ii, seg: k, source: 'connector', mode: k.exit || k.arrival || arrive.has(key) || locked ? 'panel' : k.cut && o.cutEnds ? o.cutEnds : o.deadEnds });
     }
     for (const d of inst.doors ?? []) {
       if (!(d.len >= 1) || ks.some((k) => overlapSeg(k, d))) continue;
@@ -1573,14 +1575,17 @@ export function validateBlockout(model: BlockoutModel): string[] {
   // точка на стыке двух объёмов считается закрытой: при владении (ownership) масса режется и по
   // полуклеткам — стык попадает ровно на середину клетки, где лежат точки проверки края пола
   const onRect = (r: Rect, x: number, y: number): boolean => x >= r.x0 - 1e-9 && x <= r.x1 + 1e-9 && y >= r.y0 - 1e-9 && y <= r.y1 + 1e-9;
-  const closedAt = (x: number, y: number): boolean => {
+  // высоты — от пола (у кусков портального рендера комнаты бывают на своей высоте, src/blockout/stairs.ts)
+  const closedAt = (x: number, y: number, z0 = 0): boolean => {
     let ok = false;
     si.query(x, y, x, y, (i) => {
       const s = solids[i];
-      if (!ok && s.kind !== 'lintel' && s.z0 <= EPS && s.z1 >= wallH - EPS && onRect(s.rect, x, y)) ok = true;
+      if (!ok && s.kind !== 'lintel' && s.z0 <= z0 + EPS && s.z1 >= z0 + wallH - EPS && onRect(s.rect, x, y)) ok = true;
     });
     return ok;
   };
+  const baseOf = new Map<string, number>();
+  for (const s of model.floors) if (s.inst !== null && !baseOf.has(s.inst)) baseOf.set(s.inst, s.z);
   const openingAt = (x: number, y: number): boolean => model.openings.some((op) => inside(op.rect, x, y));
 
   // Облицовка: индекс по плану (тонкие прямоугольники вдоль линий).
@@ -1638,15 +1643,15 @@ export function validateBlockout(model: BlockoutModel): string[] {
         const qx = px + nx * delta, qy = py + ny * delta;
         // перегородка (gap = 0) стоит на ребре; при владении она поделена по ребру на половины — у края
         // пола своя половина внутри пола, чужая снаружи: смотрим по обе стороны ребра
-        const inner = closedAt(px - nx * delta, py - ny * delta);
+        const inner = closedAt(px - nx * delta, py - ny * delta, surf.z);
         const other = floorAt(qx, qy);
         if (other === s) continue;
         if (other >= 0) {
           const o = model.floors[other];
           if (o.inst === null || surf.inst === null || o.inst === surf.inst) continue;
-          if (closedAt(px, py) || inner || closedAt(qx, qy)) closedEdge(surf.inst, px, py, nx, ny, len / n);
+          if (closedAt(px, py, surf.z) || inner || closedAt(qx, qy, surf.z)) closedEdge(surf.inst, px, py, nx, ny, len / n);
           else if (!openingAt(px, py)) report(`Полы ${surf.inst} и ${o.inst} соприкасаются у (${f2(px)}; ${f2(py)}) без перегородки`);
-        } else if (closedAt(qx, qy) || inner) {
+        } else if (closedAt(qx, qy, surf.z) || inner) {
           closedEdge(surf.inst, px, py, nx, ny, len / n);
         } else if (!(openMode && (surf.inst === null || openingAt(px, py)))) {
           // открытый край допустим только в режиме 'open': пол проёма наружу или (gap = 0) ребро проёма,
@@ -1660,12 +1665,15 @@ export function validateBlockout(model: BlockoutModel): string[] {
   // 3. Проёмы: ниже высоты двери ни одного твёрдого объёма.
   for (const op of model.openings) {
     const r = op.rect;
-    const z1 = Math.min(op.heightM, wallH);
+    // пол проёма — его половины (inst = null) в нём
+    let z0 = 0;
+    for (const f of model.floors) if (f.inst === null && f.rects.some((q) => Math.min(q.x1, r.x1) - Math.max(q.x0, r.x0) > EPS && Math.min(q.y1, r.y1) - Math.max(q.y0, r.y0) > EPS)) z0 = Math.max(z0, f.z);
+    const z1 = z0 + Math.min(op.heightM, wallH);
     si.query(r.x0, r.y0, r.x1, r.y1, (i) => {
       const s = solids[i];
       const ox = Math.min(r.x1, s.rect.x1) - Math.max(r.x0, s.rect.x0);
       const oy = Math.min(r.y1, s.rect.y1) - Math.max(r.y0, s.rect.y0);
-      const oz = Math.min(z1, s.z1) - Math.max(0, s.z0);
+      const oz = Math.min(z1, s.z1) - Math.max(z0, s.z0);
       if (ox > EPS && oy > EPS && oz > EPS) {
         report(`Проём ${op.a.inst}/${op.a.connector} ↔ ${op.b.inst}/${op.b.connector} перекрыт ниже двери: ${s.kind} #${i} ${rectName(s.rect)}`);
       }
@@ -1706,7 +1714,8 @@ export function validateBlockout(model: BlockoutModel): string[] {
     for (const [a, b] of cov) if (a <= reach + EPS && b > reach) reach = b;
     if (reach < c1 - EPS) report(`${name} не лежит на грани твёрдого объёма (покрыто до ${f2(reach)})`);
     // стена на всю высоту не может стоять поперёк проёма
-    if (f.part === 'wall' && f.z0 < doorH - EPS) {
+    const fb = baseOf.get(f.inst) ?? 0;
+    if (f.part === 'wall' && f.z0 < fb + doorH - EPS) {
       oi.query(r.x0, r.y0, r.x1, r.y1, (i) => {
         const op = model.openings[i].rect;
         const lo = horiz ? op.y0 : op.x0, hi = horiz ? op.y1 : op.x1;
@@ -1718,7 +1727,7 @@ export function validateBlockout(model: BlockoutModel): string[] {
     const list = lines.get(key) ?? [];
     list.push([c0, c1]);
     lines.set(key, list);
-    if (f.part === 'wall' && f.z0 <= EPS) {
+    if (f.part === 'wall' && f.z0 <= fb + EPS) {
       faceLen.set(f.inst, (faceLen.get(f.inst) ?? 0) + len);
       if (!onGrid(at) || !onGrid(c0) || !onGrid(c1)) offGrid.set(f.inst, (offGrid.get(f.inst) ?? 0) + 1);
     }
@@ -1795,6 +1804,10 @@ const PROP_HEIGHTS: [string[], number][] = [
   [['ступен'], 0.9],
   [['банка', 'банки'], 0.3],
   [['двер'], 1.8],
+  // общага: настенное (окно, часы, доски, огнетушитель, лейка душа) и накладное (марш-декорация поверх пола, пока нет
+  // настоящей лестницы) — коллайдер в 1 см, модель висит на своей высоте; керосиновая лампа — невысокая находка
+  [['настенн', 'накладн'], 0.01],
+  [['керосин'], 0.35],
 ];
 
 /** Высота болванки мебели по тегам/имени prop, м (шкаф 2.0, стол 0.75, кровать 0.5 …). */

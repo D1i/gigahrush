@@ -44,7 +44,7 @@ function coveredCells(rc: { x0: number; x1: number; y0: number; y1: number }, sh
   return out;
 }
 
-const GROUPS = ['лестница', 'коридор', 'лифт', 'подвал', 'сарай', 'снег', 'завод', 'служебное', 'общежитие', 'прихожая', 'кухня', 'санузел', 'жилая', 'балкон', 'кладовка'];
+const GROUPS = ['лестница', 'коридор', 'лифт', 'подвал', 'сарай', 'снег', 'завод', 'общага', 'служебное', 'общежитие', 'прихожая', 'кухня', 'санузел', 'жилая', 'балкон', 'кладовка'];
 // на полу (ковёр, лужа, доска) и под потолком (лампа, труба): проёмы и проход не загораживают
 const isFloorProp = (propId: string) => propById.get(propId)!.tags.includes('пол') || isFlatProp(propById.get(propId)!);
 
@@ -228,7 +228,8 @@ describe('стартовый проект', () => {
 
     it('площадь соответствует типу помещения', () => {
       const a = r.cells.size * M * M;
-      if (r.tags.includes('кухня')) expect(a).toBeGreaterThanOrEqual(4.5), expect(a).toBeLessThanOrEqual(7.6);
+      // общая кухня общаги — на этаж, больше квартирной
+      if (r.tags.includes('кухня') && r.tags[0] !== 'общага') expect(a).toBeGreaterThanOrEqual(4.5), expect(a).toBeLessThanOrEqual(7.6);
       if (r.tags.includes('санузел')) expect(a).toBeGreaterThanOrEqual(1.0), expect(a).toBeLessThanOrEqual(4.0);
       if (r.tags.includes('жилая')) expect(a).toBeGreaterThanOrEqual(6), expect(a).toBeLessThanOrEqual(19);
       if (r.tags.includes('прихожая')) expect(a).toBeGreaterThanOrEqual(2), expect(a).toBeLessThanOrEqual(7);
@@ -398,7 +399,7 @@ describe('стартовый проект', () => {
 
     it('dado — только у стен, на существующую стеновую отделку, высота 1–1.6 м', () => {
       const two = p.finishes.filter((f) => f.dado);
-      expect(two.map((f) => f.id).sort()).toEqual(['f_two_bath', 'f_two_entrance', 'f_two_kitchen']);
+      expect(two.map((f) => f.id).sort()).toEqual(['f_obsh_corridor', 'f_two_bath', 'f_two_entrance', 'f_two_kitchen']);
       for (const f of two) {
         expect(f.surface).toBe('wall');
         expect(fin.get(f.dado!.finishId)?.surface, f.id).toBe('wall');

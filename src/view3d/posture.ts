@@ -10,8 +10,9 @@
 //    рядом), ноги — на пол (вниз — плавно, падение до 3 м/с; вверх по склону — сразу), коллизии — только стены. Гравитация
 //    Babylon — постоянные −16 см за кадр к шагу: на наклонном полу (чаша берлоги, горки лаза) она стаскивает низкий
 //    эллипсоид по склону сильнее, чем шаг ползком (4–10 мм за кадр при 60–144 к/с), — игрок не мог проползти.
-//  • Камера Babylon: центр эллипсоида = позиция − ellipsoid.y + ellipsoidOffset; глаз над ногами eye ⇒
-//    ellipsoidOffset.y = 2·ellipsoid.y − eye (низ эллипсоида — у ног).
+//  • Камера Babylon: центр эллипсоида = позиция − ellipsoid.y + ellipsoidOffset; глаз над ногами eye, низ эллипсоида
+//    на lift над ногами ⇒ ellipsoidOffset.y = lift + 2·ellipsoid.y − eye. Стоя lift = 0 (пол — гравитацией Babylon);
+//    низко lift ≈ 0.2 м — как «шаг» у контроллера персонажа: эллипсоид не цепляет пол, горки и склоны до ~40° не мешают.
 import type { Scene } from '@babylonjs/core/scene';
 import type { UniversalCamera } from '@babylonjs/core/Cameras/universalCamera';
 import type { Observer } from '@babylonjs/core/Misc/observable';
@@ -27,14 +28,16 @@ export interface PoseDef {
   eye: number;
   /** полуоси эллипсоида коллизий */
   ell: [number, number, number];
+  /** «шаг»: низ эллипсоида над ногами, м (низко — пол держит своя опора, эллипсоид касается только стен) */
+  lift: number;
   /** скорость камеры (UniversalCamera.speed) */
   speed: number;
 }
 
 export const POSES: Record<Pose, PoseDef> = {
-  stand: { eye: 1.6, ell: [0.3, 0.85, 0.3], speed: 0.22 },
-  crouch: { eye: 1.1, ell: [0.28, 0.6, 0.28], speed: 0.11 },
-  crawl: { eye: 0.5, ell: [0.25, 0.28, 0.25], speed: 0.075 },
+  stand: { eye: 1.6, ell: [0.3, 0.85, 0.3], lift: 0, speed: 0.22 },
+  crouch: { eye: 1.1, ell: [0.28, 0.45, 0.28], lift: 0.2, speed: 0.11 },
+  crawl: { eye: 0.5, ell: [0.25, 0.2, 0.25], lift: 0.18, speed: 0.075 },
 };
 
 /** Над головой нужно (от ног) — встать во весь рост / скрючившись, м. */
@@ -109,7 +112,7 @@ export class Posture {
     this.pose = pose;
     const d = POSES[pose];
     this.cam.ellipsoid.set(d.ell[0], d.ell[1], d.ell[2]);
-    this.cam.ellipsoidOffset.y = 2 * d.ell[1] - this.eye;
+    this.cam.ellipsoidOffset.y = d.lift + 2 * d.ell[1] - this.eye;
     this.last = null;
     this.onChange?.(pose, note);
   }
@@ -158,14 +161,14 @@ export class Posture {
     if (own) {
       const floor = this.floorAt();
       const feet = c.y - eye;
-      if (floor === null) c.y -= 3 * dt;
-      else {
+      // пола под собой не видно (кусок ещё не собран, коллайдеры соседа не включены) — стоять, а не падать сквозь снег
+      if (floor !== null) {
         const target = floor + 0.012;
         if (feet > target) c.y -= Math.min(feet - target, 3 * dt);
         else c.y += target - feet;
       }
     }
-    this.cam.ellipsoidOffset.y = 2 * this.cam.ellipsoid.y - eye;
+    this.cam.ellipsoidOffset.y = d.lift + 2 * this.cam.ellipsoid.y - eye;
     this.cam.speed = this.frozen ? 0 : d.speed;
     // покачивание плеч (крен) — только ползком; тряска (обвал) — поверх, от снега (roll)
     this.sway = k * 0.03 * Math.sin(this.phase);

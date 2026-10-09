@@ -16,7 +16,8 @@ export interface CoopHub {
   lobbies: Map<string, any>;
 }
 
-export declare function createCoopHub(o?: { now?: () => number; ttlMs?: number; log?: (s: string) => void }): CoopHub;
+export declare const MAX_PLAYERS: number;
+export declare function createCoopHub(o?: { now?: () => number; ttlMs?: number; log?: (s: string) => void; maxPlayers?: number; onLobby?: (lobby: any) => void }): CoopHub;
 export declare function attachCoopRelay(server: Server, o?: { path?: string; hub?: CoopHub; log?: (s: string) => void }): CoopHub;
 
 export declare function startCoopServer(o?: { port?: number; host?: string; log?: (s: string) => void }): Promise<{

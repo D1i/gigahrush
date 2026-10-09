@@ -81,6 +81,11 @@ describe('снежная оболочка куска', () => {
     const g = snowField(c).f;
     expect(g(0.6, 2.95, 0.4)).toBeGreaterThan(0);
     expect(g(0.6, 1.0, 0.4)).toBeLessThan(0);
+    // раскопан на ¾ — пробка меньше и ниже: сверху щель
+    expect(g(0.6, 2.75, 0.75)).toBeGreaterThan(0);
+    c.doors[1].dug = 0.75;
+    const h = snowField(c).f;
+    expect(h(0.6, 2.75, 0.75)).toBeLessThan(0);
   });
 
   it('поворот, развилка и берлога строятся быстро', () => {

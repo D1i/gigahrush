@@ -22,6 +22,7 @@ import { LiftLayer, type LiftRequest } from './LiftLayer';
 import { SwampLayer, type SwampRequest } from './SwampLayer';
 import { HangarLayer, type HangarRequest } from './HangarLayer';
 import { SnowWalk, type SnowHud } from './snowWalk';
+import { ObshagaWalk, type ObshagaHud } from './obshagaWalk';
 import { collapseSite } from '../locations/snowCollapse';
 import { LairDecor } from './lairDecor';
 import { BiomeMood } from './biomeMood';
@@ -187,6 +188,9 @@ export default function View3DPage() {
   const [walkWet, setWalkWet] = useState<WetInfo | null>(null);
   /** снежные ходы: засыпан / треск / подсказка у подтаявшего снега (src/view3d/snowWalk.ts) */
   const [snowHud, setSnowHud] = useState<SnowHud | null>(null);
+  /** общага: подсказка у двери / лампы, волочение, смерть, звук (src/view3d/obshagaWalk.ts) */
+  const [obshHud, setObshHud] = useState<ObshagaHud | null>(null);
+  const obshRef = useRef<ObshagaWalk | null>(null);
   const walkRef = useRef<WalkSession | null>(null);
   const setWalkOpt = <K extends keyof WalkOptions>(k: K, v: WalkOptions[K]) => {
     const next = { ...walkOpts, [k]: v };
@@ -489,6 +493,11 @@ export default function View3DPage() {
       collapse: (site) => {
         void session?.request({ k: 'collapse', inst: site.inst, conn: site.connector });
       },
+      // раскопка завала: прогресс — из мира; работа — операция мира (кооп: нажатия всех игроков складываются)
+      digProgress: (inst, conn) => session?.world.collapseProgress(inst, conn) ?? null,
+      dig: (inst, conn, amount) => {
+        void session?.request({ k: 'dig', inst, conn, amount });
+      },
       thawOf: (id) => {
         const L = session?.world.locationOf(id);
         return L?.kind === 'hangar' ? L.roll : null;
@@ -498,6 +507,28 @@ export default function View3DPage() {
       live: () => !v.hasOverlay && v.mode === 'fps',
     }, walkRun.seed, v.posture);
     if (import.meta.env.DEV) (window as any).__rfSnow = snow; // для QA-скриптов
+    // общага: двери, что закрываются сами, отключения света, рука, керосиновая лампа, вода в подвале (src/view3d/obshagaWalk.ts)
+    const obsh = new ObshagaWalk(v.scene, v.fps, {
+      rx: () => session?.rx ?? null,
+      driver: () => d,
+      key: () => session?.key ?? null,
+      live: () => !v.hasOverlay && v.mode === 'fps',
+      // лампа взята — операция мира (кооп: кто первый — того и лампа)
+      takeLamp: async (inst, spot) => !!(await session?.request({ k: 'lamp', inst, spot })),
+      light: (mul, tint) => mood.light(mul, tint),
+      flash: (text, color, ms = 1300) => {
+        const seq = Date.now();
+        setFlash({ seq, text, color });
+        setTimeout(() => setFlash((f) => (f?.seq === seq ? null : f)), ms);
+      },
+      onHud: setObshHud,
+      busy: () => !!door || !!presence?.nearBuried,
+      propModel: (id) => v.props.get(id),
+      co,
+      presence: () => presence,
+    }, walkRun.seed, v.posture);
+    obshRef.current = obsh;
+    if (import.meta.env.DEV) (window as any).__rfObshaga = obsh.qa(); // для QA-скриптов
     /** Подтаявший снег пробит — сцена ангара (падение); ворота цеха — world.descend (этажи ниже: завод или другой биом). */
     const enterHangar = (id: string) => {
       const s = session;
@@ -544,7 +575,7 @@ export default function View3DPage() {
           spec: L.spec,
           seedKey: locKey(s, id),
           roll: L.roll,
-          title: inst?.roomName || 'Лестница на крышу',
+          title: inst?.roomName || 'Под перевёрнутым болотом',
           mode: 'walk',
           onExit: (kind) => {
             if (kind === 'new') {
@@ -800,6 +831,8 @@ export default function View3DPage() {
         setWalkRx(nrx);
         setWalkStatus(s.status());
       };
+      // двери комнат общаги закрываются сами: поза полотна при постройке куска — от общаги
+      d.doorPose = (slot) => obsh.doorPose(slot);
       d.apply(true);
       if (player) {
         v.fps.position.set(...player.pos);
@@ -808,7 +841,7 @@ export default function View3DPage() {
       }
       if (co) {
         // другие игроки: аватары, своё положение для них, «рядом — медленнее»
-        presence = new CoopPresence(v, co, () => d, () => locRef.current?.kind ?? null, () => snow.collapse.phase === 'buried');
+        presence = new CoopPresence(v, co, () => d, () => locRef.current?.kind ?? null, () => snow.collapse.phase === 'buried', { lamp: () => obsh.holding && !obsh.dead, dead: () => obsh.dead });
         co.onAct.add(onAct);
         co.beforeOp.add(beforeOp);
         co.afterOp.add(afterOp);
@@ -885,6 +918,10 @@ export default function View3DPage() {
       snow.dispose();
       setSnowHud(null);
       if (import.meta.env.DEV) delete (window as any).__rfSnow;
+      obsh.dispose();
+      obshRef.current = null;
+      setObshHud(null);
+      if (import.meta.env.DEV) delete (window as any).__rfObshaga;
       savePlayer();
       clearInterval(coopTimer);
       setCoopSlow(false);
@@ -910,6 +947,11 @@ export default function View3DPage() {
       }
     };
   }, [source, walkRun, effOpts, view.finishes, coopOn, coopWalk]);
+
+  // общага: утащили — отпустить мышь (кнопка «Ещё раз»)
+  useEffect(() => {
+    if (obshHud?.dead && document.pointerLockElement) document.exitPointerLock();
+  }, [obshHud?.dead]);
 
   // вспышка «W 2 → 3» при переходе через порог со сдвигом
   const crossSeq = fs?.cross?.seq ?? 0;
@@ -1306,7 +1348,7 @@ export default function View3DPage() {
                     {selRoom.location.kind === 'stairwell'
                       ? 'Спец-локация «Бесконечная лестница». В «Прогулке» вход — через дверь комнаты, выход вниз ведёт на этаж ниже.'
                       : selRoom.location.kind === 'swamp'
-                      ? 'Финал игры «Болото на крыше». В «Прогулке» сюда выводит мокрый ход завода; встань на зуб шестерни — конец игры, назад — люк.'
+                      ? 'Финал игры «Болото на крыше». В «Прогулке» сюда выводит мокрый ход завода; встань на зуб шестерни — он поднимет тебя в перевёрнутое болото над головой: конец игры. Назад — дверь.'
                       : selRoom.location.kind === 'hangar'
                       ? 'Спец-локация «Ангар». В «Прогулке» — подтаявшая берлога снежных ходов: пробил пятно в полу — падение сквозь крышу в ангар; ворота цеха ведут дальше (этажами ниже). Здесь — стоя у кучи, без падения.'
                       : 'Спец-локация «Ржавый лифт». В «Прогулке» вход — через дверь шахты, выходы прямо и направо ведут на этажи выше и ниже, к лифту — назад к той же стене.'}
@@ -1560,7 +1602,7 @@ export default function View3DPage() {
           <div className="hint">
             <b>Облёт:</b> ЛКМ — вращать, ПКМ / Ctrl+ЛКМ — сдвиг, колесо — масштаб, клик по полу — подпись комнаты.
             <br />
-            <b>От первого лица:</b> клик — захват мыши, WASD / стрелки — ходьба, Esc — отпустить мышь. Коллизии и гравитация, глаза на 1.6 м.
+            <b>От первого лица:</b> клик — захват мыши, WASD / стрелки — ходьба, C — на четвереньки / встать, Esc — отпустить мышь. Коллизии и гравитация, глаза на 1.6 м (на четвереньках — 0.5 м).
           </div>
         </Section>
       </aside>
@@ -1679,6 +1721,15 @@ export default function View3DPage() {
                 {WET_TAGS[walkWet.level]} {Math.round(walkWet.w * 100)}%{walkWet.dir > 0 ? ' ↑' : ' ↓'}
               </span>
             )}
+            {obshHud?.on && (
+              <>
+                {obshHud.lamp && <span style={{ color: '#e8b050' }} title="Керосиновая лампа в руке: рука не подойдёт ближе 3 м ни к тебе, ни к тем, кто рядом">лампа</span>}
+                {obshHud.dark && <span className="v3-err" title="Свет отключили: из дверей лезет рука — смотри на неё">темно</span>}
+                <button className="btn sm v3-obsh-sound" onClick={() => obshRef.current?.setSound(!obshHud.sound)} title="Звук общаги (WebAudio). Esc — отпустить мышь, чтобы нажать">
+                  звук: {obshHud.sound ? 'вкл' : 'выкл'}
+                </button>
+              </>
+            )}
             {coopOn ? (
               <span className={coop.status === 'online' ? 'muted' : 'v3-err'} title="мир лобби хранится на сервере">
                 онлайн · {COOP_STATUS[coop.status]}
@@ -1696,6 +1747,21 @@ export default function View3DPage() {
         {source === 'walk' && mode === 'fps' && !loc && snowHud?.buried != null && <div className="v3-snow-buried" style={{ opacity: 0.94 - 0.55 * snowHud.buried }} />}
         {source === 'walk' && mode === 'fps' && !loc && snowHud?.crack != null && <div className="v3-snow-crack" style={{ opacity: 0.25 + 0.5 * snowHud.crack }} />}
         {source === 'walk' && mode === 'fps' && !loc && snowHud?.prompt && <div className="float hud v3-lift-prompt">{snowHud.prompt}</div>}
+        {source === 'walk' && mode === 'fps' && !loc && obshHud?.prompt && !doorAt && !coopDig && <div className="float hud v3-lift-prompt">{obshHud.prompt}</div>}
+        {source === 'walk' && mode === 'fps' && !loc && obshHud?.hint && !obshHud.dead && <div className="float hud v3-obsh-hint">{obshHud.hint}</div>}
+        {source === 'walk' && mode === 'fps' && !loc && obshHud?.drag != null && <div className="v3-obsh-drag" style={{ opacity: 0.5 + 0.5 * obshHud.drag }} />}
+        {source === 'walk' && mode === 'fps' && !loc && !!obshHud?.black && <div className="v3-obsh-black" style={{ opacity: obshHud.black }} />}
+        {source === 'walk' && mode === 'fps' && !loc && obshHud?.dead && (
+          <div className="v3-loc-dead v3-obsh-dead">
+            <div>
+              <h2>Тебя утащили за дверь</h2>
+              <p className="hint">Рука ползёт, только пока её не видно. Смотри на неё — замрёт; керосиновая лампа держит её на 3 м.</p>
+              <button className="btn primary" onClick={() => obshRef.current?.retry()}>
+                Ещё раз
+              </button>
+            </div>
+          </div>
+        )}
         {flash && mode === 'fps' && !loc && (
           <div key={flash.seq} className="v3-flash" style={{ color: flash.color }}>
             {flash.text}

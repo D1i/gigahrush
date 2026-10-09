@@ -162,8 +162,45 @@ export const PROP_DEFS: PropDef[] = [
   { id: 'p_fac_reeds', name: 'Камыш', w: 0.98, h: 0.81, color: '#6a7a3a', tags: ['камыш', 'растение', 'болото'], kind: 'plant' },
   { id: 'p_fac_tree', name: 'Сухое дерево', w: 1.52, h: 0.28, color: '#4a3a2a', tags: ['дерево', 'болото'], kind: 'plant' },
   { id: 'p_fac_boardwalk', name: 'Деревянный настил по воде, 2 м', w: 1.16, h: 2.0, color: '#5e4a36', tags: ['настил', 'доска', 'болото'], kind: 'rug' },
+  // перевёрнутое болото: свисает с потолка мокрых цехов (финал — вверх, в болото над головой)
+  { id: 'p_fac_reeds_hang', name: 'Камыш вниз головой, свисает с потолка', w: 0.73, h: 0.61, color: '#6a7a3a', tags: ['камыш', 'потолок', 'болото'], kind: 'plant' },
+  { id: 'p_fac_mud_hang', name: 'Ком грязи на потолке', w: 1.67, h: 1.2, color: '#4a4026', tags: ['грязь', 'потолок', 'болото'], kind: 'rug' },
   { id: 'p_fac_column', name: 'Колонна-двутавр у стены', w: 0.2, h: 0.2, color: '#2c2e30', tags: ['колонна', 'завод'], kind: 'boiler_tank' },
   { id: 'p_fac_lamp', name: 'Лампа-«тарелка» под потолком', w: 0.6, h: 0.6, color: '#f2b45a', tags: ['лампа', 'потолок', 'свет', 'завод'], kind: 'pipe' },
+  // ── Общага (src/data/roomsObshaga.ts; модели — src/view3d/assets/obshaga_props.glb, tools/make-obshaga-props.mjs:
+  //    имя узла = id). Настенное (окно, часы, доски, огнетушитель, лейка душа, трубы) — тег «настенное»: болванка-коллайдер
+  //    в 1 см (src/blockout/core.ts, PROP_HEIGHTS), модель висит на своей высоте. Свет — тег «потолок» и «свет»:
+  //    плафон и лампа ЛДС (их гасит отключение света — src/locations/obshaga.ts) ──
+  { id: 'p_obsh_bed', name: 'Кровать железная с панцирной сеткой', w: 1.9, h: 0.8, color: '#7d8a8c', tags: ['кровать', 'спальное', 'мебель', 'общага'], kind: 'bed_single' },
+  { id: 'p_obsh_nightstand', name: 'Тумбочка казённая', w: 0.4, h: 0.4, color: '#a07a4c', tags: ['тумбочка', 'мебель', 'общага'], kind: 'nightstand' },
+  { id: 'p_obsh_table', name: 'Стол казённый', w: 1.2, h: 0.7, color: '#a8875a', tags: ['стол', 'мебель', 'общага'], kind: 'table_rect' },
+  { id: 'p_obsh_stool', name: 'Табурет', w: 0.35, h: 0.35, color: '#b58f5c', tags: ['табурет', 'сиденье', 'общага'], kind: 'stool' },
+  { id: 'p_obsh_wardrobe', name: 'Шкаф платяной казённый', w: 0.8, h: 0.5, color: '#8a6440', tags: ['шкаф', 'одежда', 'хранение', 'общага'], kind: 'wardrobe' },
+  { id: 'p_obsh_radiator', name: 'Батарея чугунная под окном', w: 0.8, h: 0.12, color: '#cfcac0', tags: ['батарея', 'отопление', 'общага'], kind: 'radiator' },
+  { id: 'p_obsh_window', name: 'Окно с облупленной рамой', w: 1.4, h: 0.1, color: '#9fb4c2', tags: ['окно', 'настенное', 'общага'], kind: 'pipe' },
+  { id: 'p_obsh_stove', name: 'Плита электрическая общей кухни', w: 0.5, h: 0.6, color: '#d8d6cf', tags: ['плита', 'кухня', 'общага'], kind: 'stove' },
+  { id: 'p_obsh_sink', name: 'Раковина-умывальник на кронштейнах', w: 0.55, h: 0.45, color: '#e3e8ea', tags: ['раковина', 'умывальник', 'вода', 'общага'], kind: 'washbasin' },
+  { id: 'p_obsh_fridge', name: 'Холодильник общей кухни', w: 0.6, h: 0.6, color: '#e8e6df', tags: ['холодильник', 'кухня', 'еда', 'общага'], kind: 'fridge' },
+  { id: 'p_obsh_washer', name: 'Стиральная машина «Сибирь»', w: 0.5, h: 0.5, color: '#e6eaec', tags: ['стиральная', 'техника', 'прачечная', 'общага'], kind: 'washing_machine' },
+  { id: 'p_obsh_tub', name: 'Корыто-мойка на подставке', w: 0.6, h: 0.4, color: '#a9b1b4', tags: ['мойка', 'корыто', 'вода', 'прачечная', 'общага'], kind: 'sink_kitchen' },
+  { id: 'p_obsh_toilet', name: 'Чаша «Генуя» с высоким бачком', w: 0.5, h: 0.6, color: '#f0f0ea', tags: ['унитаз', 'туалет', 'общага'], kind: 'toilet' },
+  { id: 'p_obsh_partition', name: 'Перегородка кабинки, кафель, 1.8 м', w: 0.05, h: 1.5, color: '#9fb39a', tags: ['перегородка', 'кафель', 'общага'], kind: 'coat_hooks' },
+  { id: 'p_obsh_shower', name: 'Душ: лейка на стене и поддон с трапом', w: 0.9, h: 0.9, color: '#cfe0e6', tags: ['душ', 'настенное', 'вода', 'общага'], kind: 'shower' },
+  { id: 'p_obsh_bench', name: 'Скамья', w: 1.0, h: 0.3, color: '#8d6a43', tags: ['скамья', 'сиденье', 'общага'], kind: 'bench' },
+  { id: 'p_obsh_vahter_desk', name: 'Стол вахтёра: телефон, лампа, журнал', w: 1.2, h: 0.6, color: '#7a5a3a', tags: ['стол', 'вахта', 'общага'], kind: 'office_desk' },
+  { id: 'p_obsh_keyboard', name: 'Щит с ключами от комнат', w: 0.6, h: 0.08, color: '#6e4d31', tags: ['ключи', 'настенное', 'вахта', 'общага'], kind: 'coat_hooks' },
+  { id: 'p_obsh_noticeboard', name: 'Доска объявлений', w: 1.0, h: 0.05, color: '#b8a070', tags: ['объявления', 'настенное', 'общага'], kind: 'coat_hooks' },
+  { id: 'p_obsh_sofa', name: 'Диван дерматиновый', w: 1.8, h: 0.8, color: '#5a3a2a', tags: ['диван', 'мебель', 'общага'], kind: 'sofa' },
+  { id: 'p_obsh_chair', name: 'Стул казённый', w: 0.45, h: 0.45, color: '#a3794a', tags: ['стул', 'сиденье', 'общага'], kind: 'chair' },
+  { id: 'p_obsh_tv', name: 'Телевизор «Рекорд» на тумбе', w: 0.5, h: 0.45, color: '#4a3a2c', tags: ['телевизор', 'тумба', 'техника', 'общага'], kind: 'tv_stand' },
+  { id: 'p_obsh_clock', name: 'Часы настенные', w: 0.35, h: 0.06, color: '#e8e2d0', tags: ['часы', 'настенное', 'общага'], kind: 'coat_hooks' },
+  { id: 'p_obsh_fire_ext', name: 'Огнетушитель на стене', w: 0.2, h: 0.15, color: '#b8322a', tags: ['огнетушитель', 'настенное', 'общага'], kind: 'pipe' },
+  { id: 'p_obsh_bucket', name: 'Ведро оцинкованное', w: 0.3, h: 0.3, color: '#9aa3a6', tags: ['ведро', 'общага'], kind: 'trash' },
+  { id: 'p_obsh_pipes', name: 'Трубопровод по стене подвала, 2 м', w: 2.0, h: 0.25, color: '#5a3a24', tags: ['трубопровод', 'настенное', 'подвал', 'общага'], kind: 'pipes' },
+  { id: 'p_obsh_plafond', name: 'Плафон под потолком', w: 0.3, h: 0.3, color: '#f2e6c0', tags: ['лампа', 'потолок', 'свет', 'общага'], kind: 'pipe' },
+  { id: 'p_obsh_tube', name: 'Светильник ЛДС под потолком', w: 1.2, h: 0.15, color: '#e8f0f0', tags: ['лампа', 'потолок', 'свет', 'общага'], kind: 'pipe' },
+  { id: 'p_obsh_stair_flight', name: 'Марш лестницы с перилами (декорация)', w: 1.2, h: 3.0, color: '#8c867c', tags: ['марш', 'накладное', 'лестница', 'общага'], kind: 'boxes' },
+  { id: 'p_obsh_lantern', name: 'Керосиновая лампа «летучая мышь»', w: 0.25, h: 0.25, color: '#c8963c', tags: ['керосиновая', 'лампа', 'свет', 'находка', 'общага'], kind: 'bottle_crate' },
 ];
 
 export const PROP_BY_ID: Record<string, PropDef> = Object.fromEntries(PROP_DEFS.map((p) => [p.id, p]));

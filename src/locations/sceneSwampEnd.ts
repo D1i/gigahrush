@@ -1,18 +1,20 @@
 // Сцена финала «Болото на крыше» (Babylon) — своя Scene в движке вкладки «3D» (BlockoutViewer.setOverlay), как
 // sceneHangar.ts. Механика — ./swampEnd.ts: сценарий камеры (endPose), розыгрыш (номер войсковой части), титры.
 //
-//  • Крыша цеха 32 × 36 м заросла болотом: грязь по колено (пол — −0.22 м), лужи (вода набора), грязевые островки,
-//    камыш, сухие деревья, гнилой настил от люка к шестерне; парапет, вентиляторы и шестерни в грязи крутятся
-//    (src/view3d/propAnim.ts), труба-дымоход с отсветом, морось, туман. Модели — набор пользователя «завод → болото»
+//  • Зал цеха: пол затоплен (вода по щиколотку, по воде — гнилой настил от двери к шестерне), а вместо потолка — болото
+//    вверх ногами на высоте END_CEIL_M: грязь, лужи, островки, свисающий камыш и сухие деревья, перевёрнутый настил; с
+//    него капает грязью. Ржавые двутавры уходят в грязь; по краям в воде — вентиляторы, насосы, шестерни (крутятся,
+//    src/view3d/propAnim.ts), бочки, металлолом; туман. Модели — набор пользователя «завод → болото»
 //    (src/view3d/assets/factory_props.glb через PropModels).
-//  • Посреди — огромная шестерня (24 зуба набора ×5: Ø 9 м, толщина 1.6 м), ось вдоль x, центр чуть над грязью;
-//    проворачивается рывками на зуб за spec.toothS, ближняя сторона уходит в грязь. Зона «встать на зуб» — у самой
-//    грязи перед шестернёй: вошёл — сценарий (endPose), управление — нет.
-//  • Сценарий: шестерня дёргается, сверху опускается зуб, давит, глаз уходит под грязь (бурая муть, темнота, сердце);
-//    в темноте сцена переходит к болоту у военной части (тот же Scene, другое место): всплываешь, капли на глазах,
-//    ползёшь к берегу; за камышом — забор ПО-2 с колючей спиралью, ворота со звёздами, КПП, табличка «Войсковая часть
-//    N», вышка с прожектором, фонари. Прожектор находит тебя — слепит — титры (HUD слоя).
-//  • Назад — люк лестницы за спиной в начале (onExit('back')).
+//  • Посреди — огромная шестерня (24 зуба набора ×4: Ø 7.3 м), поднимается из воды, верхние зубья почти касаются грязи;
+//    рядом малая в зацеплении. Проворачивается рывками на зуб за spec.toothS, правая сторона идёт вверх. Зона «встать
+//    на зуб» — у правого края, где зуб чуть над водой: вошёл — сценарий (endPose), управления нет.
+//  • Сценарий: шестерня дёргается, зуб рывками поднимает по дуге вверх (камера — на ободе, смотрит вверх, на грязь,
+//    мимо свисающего камыша), вдавливает в грязь (бурая муть, темнота, сердце); в темноте сцена переходит к болоту у
+//    военной части (тот же Scene, другое место): выныриваешь, капли на глазах, ползёшь к берегу; за камышом — забор
+//    ПО-2 с колючей спиралью, ворота со звёздами, КПП, табличка «Войсковая часть N», вышка с прожектором, фонари.
+//    Прожектор находит тебя — слепит — титры (HUD слоя).
+//  • Назад — дверь за спиной в начале (onExit('back')).
 import { Scene } from '@babylonjs/core/scene';
 import { UniversalCamera } from '@babylonjs/core/Cameras/universalCamera';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
@@ -36,10 +38,12 @@ import type { Engine } from '@babylonjs/core/Engines/engine';
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { PropModels } from '../view3d/propModels';
 import factoryUrl from '../view3d/assets/factory_props.glb?url';
+// сырой бетон с плесенью набора пользователя (как стены «топи» в цехах завода)
+import dampUrl from '../data/assets/basement/concrete_damp.jpg?url';
 import { collide2, type Box2 } from './stairLoop';
 import { SwampAudio } from './swampAudio';
 import {
-  END_EMERGE_S, END_LOOK_S, END_PRESS_S, END_STEP_S, END_SWITCH_S, END_TITLE_S, END_UNDER_S,
+  END_CEIL_M, END_EMERGE_S, END_LIFT_S, END_LOOK_S, END_STEP_S, END_SWITCH_S, END_TITLE_S, END_UNDER_S,
   endPose, endTitles, rollSwamp, type EndPhase, type EndPose, type SwampRoll, type SwampSpec,
 } from './swampEnd';
 
@@ -49,7 +53,7 @@ export interface SwampHud {
   started: boolean;
   locked: boolean;
   phase: 'walk' | 'end' | 'exit';
-  /** фаза сценария (null — ходишь по крыше) */
+  /** фаза сценария (null — ходишь по залу) */
   end: EndPhase | null;
   /** титры 0…1 */
   title: number;
@@ -64,7 +68,7 @@ export interface SwampSceneOptions {
   /** звук (QA — без него) */
   audio?: boolean;
   onHud?(h: SwampHud): void;
-  /** 'back' — вернулся в люк (на завод) */
+  /** 'back' — вернулся в дверь (на завод) */
   onExit?(kind: 'back'): void;
 }
 
@@ -76,24 +80,29 @@ interface Input {
 
 // ───────────────────────── размеры (мир сцены, м) ─────────────────────────
 
-/** крыша: x ∈ [−RX, RX], z ∈ [RZ0, RZ1]; поверхность грязи — y = 0 */
-const RX = 16;
-const RZ0 = -6;
-const RZ1 = 30;
-/** будка люка: x ∈ [−1.4, 1.4], z ∈ [−3.2, −0.2], проём к +z шириной 1.2 */
-const HATCH = { x: 1.4, z0: -3.2, z1: -0.2, door: 0.6, h: 2.6 };
-/** большая шестерня: центр, масштаб набора, зубьев */
-const GEAR = { y: 0.4, z: 18, scale: 5, teeth: 24 };
+/** зал: x ∈ [−HX, HX], z ∈ [HZ0, HZ1]; вода — y = 0 (пол под ней — WATER_Y), над головой — грязь на высоте CEIL */
+const HX = 13;
+const HZ0 = -4;
+const HZ1 = 24;
+const CEIL = END_CEIL_M;
+const WATER_Y = -0.12;
+/** стена с дверью, откуда пришёл (завод): по z = DOOR.z, проём |x| < DOOR.w высотой DOOR.h; за ней — темнота */
+const DOOR = { z: -0.2, w: 0.6, h: 2.1 };
+/** большая шестерня: масштаб набора, зубьев; центр — чтобы верхние зубья почти касались грязи */
+const GEAR_SCALE = 4;
 /** радиус по зубьям (набор: Ø 1.814 м) и толщина (0.32 м) */
-const GEAR_R = (1.814 / 2) * GEAR.scale;
-const GEAR_T = 0.32 * GEAR.scale;
-/** где правый край шестерни уходит в грязь (x): зубья с этой стороны идут вниз */
-const GEAR_EDGE = Math.sqrt(GEAR_R * GEAR_R - GEAR.y * GEAR.y);
-/** зона «встать на зуб»: круг у правого края, где зуб вровень с грязью */
+const GEAR_R = (1.814 / 2) * GEAR_SCALE;
+const GEAR_T = 0.32 * GEAR_SCALE;
+const GEAR = { y: CEIL - GEAR_R - 0.3, z: 13, teeth: 24 };
+/** зуб, на который встаёшь: верх — чуть над водой, справа (+x) — там зубья идут вверх; угол на ободе от +x */
+const TOOTH_Y = 0.15;
+const PHI0 = Math.asin((TOOTH_Y - GEAR.y) / GEAR_R);
+const GEAR_EDGE = GEAR_R * Math.cos(PHI0);
+/** зона «встать на зуб»: круг у правого края */
 const STEP_ZONE = { x: GEAR_EDGE + 0.1, z: GEAR.z - 0.2, r: 0.8 };
 /** стоя на зубе — лицом к оси шестерни (на −x) */
-const ROOF_YAW = -Math.PI / 2;
-/** настил от люка наискосок к правому краю шестерни: от, до (x, z) */
+const HALL_YAW = -Math.PI / 2;
+/** настил по воде от двери наискосок к правому краю шестерни: от, до (x, z) */
 const WALK = { x0: 0.25, z0: 0.5, x1: GEAR_EDGE - 0.9, z1: GEAR.z - GEAR_T / 2 - 1.3 };
 const WALK_LEN = Math.hypot(WALK.x1 - WALK.x0, WALK.z1 - WALK.z0);
 const WALK_YAW = Math.atan2(WALK.x1 - WALK.x0, WALK.z1 - WALK.z0);
@@ -105,9 +114,8 @@ const FENCE_Z = 16;
 
 const EYE = 1.6;
 const BODY_R = 0.3;
-const WADE = 1.15;
+const WADE = 1.25;
 const BOARD = 1.6;
-const MUD_Y = -0.22;
 
 const SODIUM = new Color3(1, 0.62, 0.3);
 
@@ -288,9 +296,9 @@ export class SwampScene {
   error: string | null = null;
 
   pos = { x: 0, z: 0.6 };
-  eyeY = EYE + MUD_Y;
+  eyeY = EYE + WATER_Y;
   time = 0;
-  /** время с шага на зуб (null — ходишь по крыше) */
+  /** время с шага на зуб (null — ходишь по залу) */
   endT: number | null = null;
 
   private started = false;
@@ -307,7 +315,7 @@ export class SwampScene {
   private gearAxis = new Vector3(0, 0, 1);
   private gearSmallAxis = new Vector3(0, 0, 1);
   private gearSign = 1;
-  /** угол большой шестерни (рад) в момент шага на зуб — дальше сценарий доворачивает на зуб */
+  /** угол большой шестерни (рад) в момент шага на зуб — дальше её доворачивает подъём (зуб под ногами — под ногами) */
   private gearAt0 = 0;
   private gearAngle = 0;
   private lastTooth = -1;
@@ -316,11 +324,13 @@ export class SwampScene {
   private lamps: { light: PointLight; base: number; seed: number }[] = [];
   private overlay!: { mud: StandardMaterial; dark: StandardMaterial; drip: StandardMaterial; glare: StandardMaterial };
   private rain!: ParticleSystem;
+  /** откуда сыплется: в зале — капли грязи с «потолка» над игроком, у части — морось над ним */
+  private dripAt = new Vector3();
   private beam!: { pivot: TransformNode; light: SpotLight; cone: Mesh };
   private beamYaw = 0;
-  private roofRoot!: TransformNode;
+  private hallRoot!: TransformNode;
   private baseRoot!: TransformNode;
-  private where: 'roof' | 'base' = 'roof';
+  private where: 'hall' | 'base' = 'hall';
   private eyeLamp: PointLight;
   private last = 0;
 
@@ -347,7 +357,7 @@ export class SwampScene {
     scene.ambientColor = new Color3(0, 0, 0);
     scene.skipPointerMovePicking = true;
     scene.fogMode = Scene.FOGMODE_EXP2;
-    this.roofFog();
+    this.hallFog();
     const ip = scene.imageProcessingConfiguration;
     ip.toneMappingEnabled = true;
     ip.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
@@ -371,11 +381,12 @@ export class SwampScene {
 
     const hemi = new HemisphericLight('swamp:moon', new Vector3(-0.2, 1, 0.3), scene);
     hemi.diffuse = new Color3(0.55, 0.62, 0.66).scale(1 - 0.3 * this.spec.darkness);
-    hemi.intensity = 1.5;
-    hemi.groundColor = new Color3(0.06, 0.06, 0.05);
+    hemi.intensity = 1.0;
+    // снизу — отсвет воды: перевёрнутое болото над головой (грань смотрит вниз) видно
+    hemi.groundColor = new Color3(0.3, 0.28, 0.2).scale(1 - 0.3 * this.spec.darkness);
     hemi.specular = Color3.Black();
 
-    // тусклый свет у глаза — пока зуб опускается (иначе снизу он чёрный)
+    // тусклый свет у глаза — пока зуб поднимает (иначе грязь и зубья рядом чёрные)
     const eye = (this.eyeLamp = new PointLight('swamp:eyeLamp', new Vector3(0, 0.2, 0.3), scene));
     eye.parent = cam;
     eye.diffuse = new Color3(1, 0.72, 0.45);
@@ -409,7 +420,7 @@ export class SwampScene {
       s.ready = true;
     } catch (e) {
       console.error(e);
-      s.error = 'Не удалось собрать крышу: ' + String((e as Error)?.message ?? e);
+      s.error = 'Не удалось собрать зал: ' + String((e as Error)?.message ?? e);
     }
     s.emitHud(true);
     return s;
@@ -436,10 +447,10 @@ export class SwampScene {
     if (!this.disposed) this.scene.render();
   }
 
-  private roofFog() {
-    this.scene.fogColor = new Color3(0.1, 0.11, 0.1);
-    this.scene.fogDensity = 0.035 + 0.03 * this.spec.darkness;
-    this.scene.clearColor = new Color4(0.1, 0.11, 0.1, 1);
+  private hallFog() {
+    this.scene.fogColor = new Color3(0.085, 0.09, 0.075);
+    this.scene.fogDensity = 0.045 + 0.03 * this.spec.darkness;
+    this.scene.clearColor = new Color4(0.085, 0.09, 0.075, 1);
   }
 
   private baseFog() {
@@ -485,108 +496,161 @@ export class SwampScene {
   }
 
   private build() {
-    this.roofRoot = new TransformNode('swamp:roof', this.scene);
+    this.hallRoot = new TransformNode('swamp:hall', this.scene);
     this.baseRoot = new TransformNode('swamp:base', this.scene);
     this.baseRoot.position.copyFrom(BASE);
-    this.buildRoof();
+    this.buildHall();
     this.buildBase();
     this.baseRoot.setEnabled(false);
-    // дождь — за камерой
+    // в зале — капли грязи с перевёрнутого болота над игроком; у части (rainBase) — морось
     const rain = (this.rain = new ParticleSystem('swamp:rain', 1400, this.scene));
     rain.particleTexture = rainTexture(this.scene);
-    rain.emitter = this.camera.position;
-    rain.minEmitBox = new Vector3(-9, 6, -9);
-    rain.maxEmitBox = new Vector3(9, 8, 9);
-    rain.direction1 = new Vector3(-0.4, -9, 0.3);
-    rain.direction2 = new Vector3(-0.2, -11, 0.5);
+    rain.emitter = this.dripAt;
+    rain.minEmitBox = new Vector3(-8, -0.05, -8);
+    rain.maxEmitBox = new Vector3(8, 0, 8);
+    rain.direction1 = new Vector3(-0.05, -4.5, 0.05);
+    rain.direction2 = new Vector3(0.05, -6, -0.05);
+    rain.gravity = new Vector3(0, -6, 0);
     rain.minSize = 0.03;
-    rain.maxSize = 0.05;
-    rain.minScaleY = 9;
-    rain.maxScaleY = 14;
-    rain.minLifeTime = 0.7;
-    rain.maxLifeTime = 0.9;
-    rain.emitRate = 1200;
-    rain.color1 = new Color4(0.7, 0.75, 0.8, 0.22);
-    rain.color2 = new Color4(0.6, 0.66, 0.7, 0.14);
-    rain.colorDead = new Color4(0.5, 0.5, 0.5, 0);
+    rain.maxSize = 0.06;
+    rain.minScaleY = 4;
+    rain.maxScaleY = 7;
+    rain.minLifeTime = 0.6;
+    rain.maxLifeTime = 0.8;
+    rain.emitRate = 260;
+    rain.color1 = new Color4(0.42, 0.34, 0.2, 0.55);
+    rain.color2 = new Color4(0.3, 0.25, 0.15, 0.4);
+    rain.colorDead = new Color4(0.3, 0.25, 0.15, 0);
     rain.blendMode = ParticleSystem.BLENDMODE_STANDARD;
     rain.billboardMode = ParticleSystem.BILLBOARDMODE_STRETCHED;
     rain.start();
     for (const m of this.scene.meshes) (m as AbstractMesh).isPickable = false;
-    // на крыше и у части — по 4–6 источников (у части свет крыши выключен вместе с её корнем): без этого
-    // StandardMaterial берёт только первые 4 и зуб над головой остаётся чёрным
+    // в зале и у части — по 5–7 источников (у части свет зала выключен вместе с его корнем): без этого
+    // StandardMaterial берёт только первые 4 и зубья у глаза остаются чёрными
     for (const m of this.scene.materials) (m as unknown as { maxSimultaneousLights: number }).maxSimultaneousLights = 8;
   }
 
-  private buildRoof() {
+  private buildHall() {
     const scene = this.scene;
-    const root = this.roofRoot;
-    // ── грязь: одна плоскость; вода набора — лужи поверх
-    const mudMat = this.mat('swamp:mudMat', new Color3(1, 1, 1));
-    mudMat.diffuseTexture = mudTexture(scene);
-    mudMat.specularColor = new Color3(0.08, 0.08, 0.06);
-    const mud = MeshBuilder.CreateGround('swamp:mudPlane', { width: 2 * RX + 2, height: RZ1 - RZ0 + 2 }, scene);
-    mud.position.set(0, 0, (RZ0 + RZ1) / 2);
-    mud.material = mudMat;
-    mud.parent = root;
+    const root = this.hallRoot;
     const R = rng(this.roll.unit);
-    for (const [x, z, s] of [[-6, 4, 1.4], [5.5, 6, 1.1], [-3, 12, 1.6], [6, 15, 1.3], [-8, 20, 1.5], [9, 24, 1.2], [3, 26, 1.6], [-11, 9, 1.0]] as const) {
-      this.put('p_fac_water', x, 0.004, z, R() * Math.PI, s, root);
+    const zc = (HZ0 + HZ1) / 2;
+    // ── затопленный пол: тёмный бетон под водой набора
+    const floorMat = this.mat('swamp:floorMat', new Color3(0.16, 0.16, 0.14));
+    const floor = MeshBuilder.CreateGround('swamp:floor', { width: 2 * HX + 30, height: HZ1 - HZ0 + 30 }, scene);
+    floor.position.set(0, WATER_Y, zc);
+    floor.material = floorMat;
+    floor.parent = root;
+    const waterTpl = this.props.get('p_fac_water');
+    const wsrc = waterTpl?.material instanceof StandardMaterial ? waterTpl.material.diffuseTexture : null;
+    // текстура воды набора светлая — тёмная вода по щиколотку
+    const wm = this.mat('swamp:hallWaterMat', new Color3(0.2, 0.22, 0.17));
+    if (wsrc instanceof Texture) {
+      const t = wsrc.clone();
+      t.uScale = 14;
+      t.vScale = 14;
+      wm.diffuseTexture = t;
     }
-    // ── парапет по краю крыши, за ним — туман
+    wm.specularColor = new Color3(0.22, 0.24, 0.2);
+    wm.specularPower = 48;
+    wm.alpha = 0.88;
+    const water = MeshBuilder.CreateGround('swamp:hallWater', { width: 2 * HX + 30, height: HZ1 - HZ0 + 30 }, scene);
+    water.position.set(0, 0, zc);
+    water.material = wm;
+    water.parent = root;
+
+    // ── перевёрнутое болото над головой: грязь (лицом вниз), лужи, островки, камыш и сухие деревья вниз головой
+    const mudMat = this.mat('swamp:ceilMudMat', new Color3(1, 1, 1));
+    mudMat.diffuseTexture = mudTexture(scene);
+    mudMat.specularColor = new Color3(0.1, 0.1, 0.08);
+    const ceil = MeshBuilder.CreateGround('swamp:ceilMud', { width: 2 * HX + 30, height: HZ1 - HZ0 + 30 }, scene);
+    ceil.rotation.x = Math.PI;
+    ceil.position.set(0, CEIL, zc);
+    ceil.material = mudMat;
+    ceil.parent = root;
+    /** модель вниз головой: её «пол» — грязь над головой */
+    const hang = (id: string, x: number, z: number, rotY = 0, scale = 1, dy = 0): Mesh | null => {
+      const m = this.put(id, x, CEIL + dy, z, rotY, scale, root);
+      if (m) m.rotation.x = Math.PI;
+      return m;
+    };
+    for (const [x, z, sc] of [[-6, 4, 1.4], [5.5, 6, 1.1], [-3, 12, 1.6], [6.5, 16, 1.3], [-8, 19, 1.5], [9, 22, 1.2], [2, 21, 1.4], [-10, 9, 1.0]] as const) {
+      hang('p_fac_water', x, z, R() * Math.PI, sc, -0.003);
+    }
+    for (const [x, z, r] of [[-3.8, 7.5, 0.2], [4.8, 9.5, 1.1], [-7.5, 16.5, 2], [10.5, 14, 0.7], [-11, 3, 1.4], [1.5, 18, 2.6]] as const) hang('p_fac_mud', x, z, r, 1.3);
+    // перевёрнутый настил — над настилом по воде
+    for (let d = 1, k = 0; d < WALK_LEN; d += 2, k++) {
+      const u = d / WALK_LEN;
+      hang('p_fac_boardwalk', WALK.x0 + (WALK.x1 - WALK.x0) * u + 0.4, WALK.z0 + (WALK.z1 - WALK.z0) * u, -WALK_YAW + (k % 3 - 1) * 0.06, 1);
+    }
+    // камыш свисает гуще всего у шестерни — подъём идёт сквозь него
+    for (let i = 0; i < 70; i++) {
+      const x = (R() * 2 - 1) * (HX - 1), z = HZ0 + 4 + R() * (HZ1 - HZ0 - 5);
+      if (Math.abs(x) < GEAR_R - 0.6 && Math.abs(z - GEAR.z) < 1.2) continue; // сквозь шестерню
+      hang('p_fac_reeds', x, z, R() * Math.PI * 2, 1.0 + R() * 0.6, 0.05);
+    }
+    for (const [x, z] of [[GEAR_EDGE - 0.6, GEAR.z - 1.1], [GEAR_EDGE + 0.5, GEAR.z - 0.7], [GEAR_EDGE - 1.4, GEAR.z - 0.8], [GEAR_EDGE + 0.1, GEAR.z - 1.6]] as const) {
+      hang('p_fac_reeds', x, z, R() * Math.PI * 2, 1.2, 0.05);
+    }
+    for (const [x, z, r, sc] of [[-5, 10, 0.3, 1.0], [7.5, 4.5, 1.9, 0.9], [9.5, 19, 0.8, 1.1], [-10, 17, 2.4, 1.0], [-2.5, 22, 1, 0.95], [-8.5, 5.5, 2.9, 0.85]] as const) {
+      hang('p_fac_tree', x, z, r, sc, 0.1);
+    }
+
+    // ── стена с дверью, откуда пришёл: кирпич от воды до грязи, за проёмом — темнота
+    const brick = this.mat('swamp:wallMat', new Color3(0.75, 0.75, 0.7));
+    const damp = new Texture(dampUrl, scene);
+    damp.uScale = 12;
+    damp.vScale = 3;
+    brick.diffuseTexture = damp;
     const concrete = this.mat('swamp:concrete', new Color3(0.36, 0.35, 0.33));
-    this.cube('swamp:parapetW', -RX - 0.4, -0.3, RZ0, -RX, 0.8, RZ1, concrete, root);
-    this.cube('swamp:parapetE', RX, -0.3, RZ0, RX + 0.4, 0.8, RZ1, concrete, root);
-    this.cube('swamp:parapetN', -RX - 0.4, -0.3, RZ1, RX + 0.4, 0.8, RZ1 + 0.4, concrete, root);
-    this.cube('swamp:parapetS', -RX - 0.4, -0.3, RZ0 - 0.4, RX + 0.4, 0.8, RZ0, concrete, root);
-    this.box(-RX - 1, RZ0 - 1, -RX + 0.3, RZ1 + 1);
-    this.box(RX - 0.3, RZ0 - 1, RX + 1, RZ1 + 1);
-    this.box(-RX - 1, RZ1 - 0.3, RX + 1, RZ1 + 1);
-    this.box(-RX - 1, RZ0 - 1, RX + 1, RZ0 + 0.3);
-    for (let z = RZ0 + 2; z < RZ1 - 1; z += 2.1) {
-      if (R() < 0.35) continue;
-      this.put('p_fac_railing', -RX + 0.05, 0.8, z, Math.PI / 2, 1, root);
-      this.put('p_fac_railing', RX - 0.05, 0.8, z + 1, Math.PI / 2, 1, root);
-    }
-    // ── будка люка: стены, крыша, проём к +z; внутри — лестница вниз
-    const brick = this.mat('swamp:hatch', new Color3(0.42, 0.36, 0.3));
-    const { x: hx, z0, z1, door, h } = HATCH;
-    this.cube('swamp:hatchBack', -hx, -0.3, z0, hx, h, z0 + 0.25, brick, root);
-    this.cube('swamp:hatchL', -hx, -0.3, z0, -hx + 0.25, h, z1, brick, root);
-    this.cube('swamp:hatchR', hx - 0.25, -0.3, z0, hx, h, z1, brick, root);
-    this.cube('swamp:hatchFL', -hx, -0.3, z1 - 0.25, -door, h, z1, brick, root);
-    this.cube('swamp:hatchFR', door, -0.3, z1 - 0.25, hx, h, z1, brick, root);
-    this.cube('swamp:hatchLintel', -door, 2.1, z1 - 0.25, door, h, z1, brick, root);
-    this.cube('swamp:hatchRoof', -hx - 0.1, h, z0 - 0.1, hx + 0.1, h + 0.15, z1 + 0.1, concrete, root);
-    const hole = this.cube('swamp:hatchDark', -hx + 0.25, -0.29, z0 + 0.25, hx - 0.25, -0.28, z1 - 0.25, this.mat('swamp:void', Color3.Black()), root);
-    hole.position.y = 0.02;
-    this.box(-hx, z0, -door - 0.02, z1);
-    this.box(door + 0.02, z0, hx, z1);
-    this.box(-hx, z0, hx, z0 + 0.6);
-    // лампа над дверью будки
-    this.put('p_fac_lamp', 0, h - 0.02, z1 + 0.35, 0, 0.8, root);
-    const doorLamp = new PointLight('swamp:doorLamp', new Vector3(0, h - 0.2, z1 + 1.0), scene);
+    const { z: dz, w: dw, h: dh } = DOOR;
+    this.cube('swamp:wallL', -HX - 6, WATER_Y, dz - 0.3, -dw, CEIL + 0.3, dz, brick, root);
+    this.cube('swamp:wallR', dw, WATER_Y, dz - 0.3, HX + 6, CEIL + 0.3, dz, brick, root);
+    this.cube('swamp:lintel', -dw, dh, dz - 0.3, dw, CEIL + 0.3, dz, concrete, root);
+    this.cube('swamp:doorDark', -dw - 0.3, WATER_Y, dz - 3.2, dw + 0.3, dh + 0.3, dz - 3.0, this.mat('swamp:void', Color3.Black()), root);
+    for (const sx of [-1, 1]) this.cube('swamp:doorSide', sx * dw + (sx > 0 ? 0 : -0.3), WATER_Y, dz - 3.2, sx * dw + (sx > 0 ? 0.3 : 0), dh, dz - 0.3, concrete, root);
+    this.box(-HX - 6, dz - 0.3, -dw - 0.02, dz);
+    this.box(dw + 0.02, dz - 0.3, HX + 6, dz);
+    this.box(-dw - 0.4, dz - 3.2, -dw, dz - 0.3);
+    this.box(dw, dz - 3.2, dw + 0.4, dz - 0.3);
+    this.box(-dw, dz - 3.4, dw, dz - 3.0);
+    // границы зала (дальше — туман)
+    this.box(-HX - 1, HZ0, -HX, HZ1 + 1);
+    this.box(HX, HZ0, HX + 1, HZ1 + 1);
+    this.box(-HX - 1, HZ1, HX + 1, HZ1 + 1);
+    // лампа над дверью
+    this.put('p_fac_lamp', 0, dh + 0.75, dz + 0.4, 0, 0.8, root);
+    const doorLamp = new PointLight('swamp:doorLamp', new Vector3(0, dh + 0.3, dz + 1.8), scene);
     doorLamp.diffuse = SODIUM;
     doorLamp.specular = Color3.Black();
     doorLamp.falloffType = Light.FALLOFF_GLTF;
-    doorLamp.range = 9;
-    doorLamp.intensity = 3.5;
+    doorLamp.range = 8;
+    doorLamp.intensity = 1.3;
     doorLamp.parent = root;
-    this.lamps.push({ light: doorLamp, base: 3.5, seed: 3 });
+    this.lamps.push({ light: doorLamp, base: 1.3, seed: 3 });
 
-    // ── настил от люка к шестерне
+    // ── настил по воде от двери к шестерне
     for (let d = 1, k = 0; d < WALK_LEN; d += 2, k++) {
       const u = d / WALK_LEN;
-      this.put('p_fac_boardwalk', WALK.x0 + (WALK.x1 - WALK.x0) * u, 0, WALK.z0 + (WALK.z1 - WALK.z0) * u, WALK_YAW + (k % 3 - 1) * 0.04, 1, root);
+      this.put('p_fac_boardwalk', WALK.x0 + (WALK.x1 - WALK.x0) * u, WATER_Y + 0.05, WALK.z0 + (WALK.z1 - WALK.z0) * u, WALK_YAW + (k % 3 - 1) * 0.04, 1, root);
     }
 
-    // ── большая шестерня: ротор набора, ось — вдоль x
+    // ── ржавые двутавры уходят в грязь
+    for (const x of [-9, 9]) {
+      for (const z of [4, 10, 16, 22]) {
+        const c = this.put('p_fac_column', x, WATER_Y, z, 0, 1, root);
+        if (c) c.scaling.set(1.4, (CEIL - WATER_Y + 0.2) / 2.5, 1.4);
+        this.box(x - 0.2, z - 0.2, x + 0.2, z + 0.2);
+      }
+    }
+
+    // ── большая шестерня: ротор набора, ось — вдоль z (лицом к игроку), поднимается из воды
     const rot = this.props.rotorsOf('p_fac_gear_large')[0];
     if (rot && rot.motion.kind === 'spin') {
       const holder = new TransformNode('swamp:gearHolder', scene);
       holder.parent = root;
       holder.position.set(0, GEAR.y, GEAR.z);
-      holder.scaling.setAll(GEAR.scale);
+      holder.scaling.setAll(GEAR_SCALE);
       const g = (this.gear = rot.mesh.clone('swamp:bigGear', holder, true));
       g.makeGeometryUnique();
       const p = rot.motion.pivot;
@@ -595,22 +659,22 @@ export class SwampScene {
       g.position.setAll(0);
       g.rotationQuaternion = Quaternion.Identity();
       this.gearAxis = rot.motion.axis.clone();
-      // знак: правая (+x мира) сторона обода должна уходить вниз, в грязь
+      // знак: правая (+x мира) сторона обода должна идти вверх, к грязи
       holder.computeWorldMatrix(true);
       const W = holder.getWorldMatrix();
       const inv = W.clone().invert();
-      const near = Vector3.TransformNormal(new Vector3(1, 0, 0), inv).normalize().scale(0.9);
+      const side = Vector3.TransformNormal(new Vector3(1, 0, 0), inv).normalize().scale(0.9);
       const q = Quaternion.RotationAxis(this.gearAxis, 0.02);
-      const p0 = Vector3.TransformCoordinates(near, W), p1 = Vector3.TransformCoordinates(near.rotateByQuaternionToRef(q, new Vector3()), W);
-      this.gearSign = p1.y < p0.y ? 1 : -1;
+      const p0 = Vector3.TransformCoordinates(side, W), p1 = Vector3.TransformCoordinates(side.rotateByQuaternionToRef(q, new Vector3()), W);
+      this.gearSign = p1.y > p0.y ? 1 : -1;
       // малая шестерня в зацеплении — слева от большой, крутится навстречу вдвое быстрее
       const rs = this.props.rotorsOf('p_fac_gear_small')[0];
       if (rs && rs.motion.kind === 'spin') {
         const h2 = new TransformNode('swamp:gearSmallHolder', scene);
         h2.parent = root;
-        const r2 = (0.902 / 2) * GEAR.scale;
-        h2.position.set(-(GEAR_R + r2 - 0.55), GEAR.y + 0.6, GEAR.z);
-        h2.scaling.setAll(GEAR.scale);
+        const r2 = (0.902 / 2) * GEAR_SCALE;
+        h2.position.set(-(GEAR_R + r2 - 0.45), GEAR.y + 0.4, GEAR.z);
+        h2.scaling.setAll(GEAR_SCALE);
         const g2 = (this.gearSmall = rs.mesh.clone('swamp:smallGear', h2, true));
         g2.makeGeometryUnique();
         const p2 = rs.motion.pivot;
@@ -621,63 +685,53 @@ export class SwampScene {
         this.gearSmallAxis = rs.motion.axis.clone();
       }
     }
-    this.box(-GEAR_R - 2.2, GEAR.z - GEAR_T / 2 - 0.05, GEAR_EDGE - 0.55, GEAR.z + GEAR_T / 2 + 0.05);
-    // рабочая лампа у шестерни — красноватая, мигает
-    const work = new PointLight('swamp:work', new Vector3(GEAR_EDGE + 1.6, 3.4, GEAR.z - 2.2), scene);
+    this.box(-GEAR_R - 2.0, GEAR.z - GEAR_T / 2 - 0.05, GEAR_EDGE - 0.55, GEAR.z + GEAR_T / 2 + 0.05);
+    // рабочая лампа у шестерни — красноватая, мигает; столб стоит в воде
+    const work = new PointLight('swamp:work', new Vector3(GEAR_EDGE + 1.6, 3.2, GEAR.z - 2.2), scene);
     work.diffuse = new Color3(1, 0.42, 0.22);
     work.specular = Color3.Black();
     work.falloffType = Light.FALLOFF_GLTF;
     work.range = 14;
-    work.intensity = 12;
+    work.intensity = 8;
     work.parent = root;
-    this.lamps.push({ light: work, base: 12, seed: 5 });
-    const pole = this.cube('swamp:workPole', GEAR_EDGE + 1.55, -0.3, GEAR.z - 2.25, GEAR_EDGE + 1.65, 3.5, GEAR.z - 2.15, this.mat('swamp:pole', new Color3(0.15, 0.15, 0.15)), root);
-    pole.isPickable = false;
+    this.lamps.push({ light: work, base: 8, seed: 5 });
+    const poleMat = this.mat('swamp:pole', new Color3(0.15, 0.15, 0.15));
+    this.cube('swamp:workPole', GEAR_EDGE + 1.55, WATER_Y, GEAR.z - 2.25, GEAR_EDGE + 1.65, 3.3, GEAR.z - 2.15, poleMat, root);
     this.box(GEAR_EDGE + 1.4, GEAR.z - 2.4, GEAR_EDGE + 1.8, GEAR.z - 2.0);
+    // ещё два фонаря на столбах в воде — тусклые, натриевые
+    for (const [x, z, k] of [[-6.5, 7, 0.6], [7.5, 19, 0.5]] as const) {
+      this.cube('swamp:lampPole', x - 0.05, WATER_Y, z - 0.05, x + 0.05, 3.0, z + 0.05, poleMat, root);
+      this.put('p_fac_lamp', x, 3.6, z, 0, 0.8, root);
+      const l = new PointLight('swamp:hallLamp', new Vector3(x, 2.85, z), scene);
+      l.diffuse = SODIUM;
+      l.specular = Color3.Black();
+      l.falloffType = Light.FALLOFF_GLTF;
+      l.range = 12;
+      l.intensity = 9 * k;
+      l.parent = root;
+      this.lamps.push({ light: l, base: 9 * k, seed: 13 + x });
+      this.box(x - 0.15, z - 0.15, x + 0.15, z + 0.15);
+    }
 
-    // ── дымоход с отсветом и вентиляторы, механизмы в грязи (крутятся)
-    const stack = MeshBuilder.CreateCylinder('swamp:stack', { diameterTop: 1.3, diameterBottom: 1.7, height: 14, tessellation: 16 }, scene);
-    stack.position.set(-10, 7 - 0.3, 25);
-    stack.material = brick;
-    stack.parent = root;
-    this.box(-10.9, 24.1, -9.1, 25.9);
-    const glow = new PointLight('swamp:stackGlow', new Vector3(-10, 14.5, 25), scene);
-    glow.diffuse = new Color3(1, 0.45, 0.15);
-    glow.specular = Color3.Black();
-    glow.range = 22;
-    glow.intensity = 1.2;
-    glow.parent = root;
-    this.lamps.push({ light: glow, base: 1.2, seed: 9 });
-    for (const [x, z, r] of [[-RX + 0.6, 4, Math.PI / 2], [-RX + 0.6, 16, Math.PI / 2], [RX - 0.6, 10, -Math.PI / 2], [RX - 0.6, 22, -Math.PI / 2]] as const) {
-      this.put('p_fac_fan', x, 0, z, r, 1.2, root);
+    // ── механизмы в воде по краям (крутятся), бочки, металлолом
+    for (const [x, z, r] of [[-HX + 0.6, 4, Math.PI / 2], [-HX + 0.6, 16, Math.PI / 2], [HX - 0.6, 10, -Math.PI / 2], [HX - 0.6, 22, -Math.PI / 2]] as const) {
+      this.put('p_fac_fan', x, WATER_Y, z, r, 1.2, root);
       this.box(x - 0.4, z - 0.8, x + 0.4, z + 0.8);
     }
-    this.put('p_fac_flywheel', -7, -0.55, 14, 0.4, 1.3, root);
-    this.box(-8, 13.6, -6, 14.4);
-    this.put('p_fac_gear_pair', 8, -0.7, 18, -0.6, 1.2, root);
-    this.box(6.5, 17.2, 9.5, 18.8);
-    this.put('p_fac_platform', -5, -0.12, 6.5, 0, 1, root);
-    this.put('p_fac_shaft', 6, -0.2, 3, 0.3, 1, root);
-    // трубы вдоль парапета на опорах
-    for (let z = 2; z < RZ1 - 3; z += 3.1) this.put('p_fac_pipe', -RX + 1.2, 0.55, z, Math.PI / 2, 1, root);
-    // ── бочки, металлолом, островки, камыш, сухие деревья
-    for (const [x, z, r] of [[-2.6, 2.4, 0.3], [3.2, 9.4, 1.2], [-4.4, 16.5, 2.1], [10.5, 5, 0.5], [-12.5, 27, 0]] as const) {
-      this.put('p_fac_barrel', x, -0.28, z, r, 1, root);
+    this.put('p_fac_flywheel', -7, -0.35, 13, 0.4, 1.3, root);
+    this.box(-8, 12.6, -6, 13.4);
+    this.put('p_fac_gear_pair', 8.5, -0.5, 13, -0.6, 1.2, root);
+    this.box(7, 12.2, 10, 13.8);
+    this.put('p_fac_pump', -10.5, WATER_Y, 20, 0.3, 1, root);
+    this.box(-11.6, 19.4, -9.4, 20.6);
+    this.put('p_fac_shaft', 6, -0.15, 3, 0.3, 1, root);
+    for (const [x, z, r] of [[-2.6, 2.4, 0.3], [3.2, 7.4, 1.2], [-4.4, 16.5, 2.1], [10.5, 5, 0.5], [-11.5, 23, 0]] as const) {
+      this.put('p_fac_barrel', x, -0.3, z, r, 1, root);
       this.box(x - 0.32, z - 0.32, x + 0.32, z + 0.32);
     }
-    for (const [x, z, r] of [[4.2, 1.6, 0.4], [-9, 2.5, 1.7], [11, 13, 2.6], [-3.5, 25, 0.9]] as const) this.put('p_fac_scrap', x, -0.15, z, r, 1.1, root);
-    for (const [x, z, r] of [[-3.8, 7.5, 0.2], [4.8, 12.5, 1.1], [-7.5, 22.5, 2], [11.5, 26.5, 0.7], [-12, 13, 1.4]] as const) this.put('p_fac_mud', x, 0, z, r, 1.3, root);
-    for (let i = 0; i < 46; i++) {
-      const x = (R() * 2 - 1) * (RX - 1.2), z = RZ0 + 2 + R() * (RZ1 - RZ0 - 3);
-      if (this.onWalk(x, z, 1.4) || Math.hypot(x - STEP_ZONE.x, z - STEP_ZONE.z) < 3) continue; // настил и зуб
-      if (Math.abs(x) < GEAR_R + 3.5 && Math.abs(z - GEAR.z) < 2) continue; // шестерни
-      if (Math.abs(x) < 2 && z < 1.5) continue;
-      this.put('p_fac_reeds', x, -0.05, z, R() * Math.PI * 2, 1.1 + R() * 0.5, root);
-    }
-    for (const [x, z, r, s] of [[-5, 10, 0.3, 1.3], [7, 4.5, 1.9, 1.2], [9.5, 20, 0.8, 1.45], [-11, 18, 2.4, 1.35], [-2.5, 28, 1, 1.25], [12.5, 28.5, 2.9, 1.1]] as const) {
-      this.put('p_fac_tree', x, -0.1, z, r, s, root);
-      this.box(x - 0.2, z - 0.2, x + 0.2, z + 0.2);
-    }
+    for (const [x, z, r] of [[4.2, 1.6, 0.4], [-9, 2.5, 1.7], [11, 17, 2.6], [-3.5, 21, 0.9]] as const) this.put('p_fac_scrap', x, -0.2, z, r, 1.1, root);
+    // течь — сверху, из грязи, в воду
+    for (const [x, z] of [[-1.5, 5], [2.8, 10.5], [-5.5, 14], [5.5, 20]] as const) this.put('p_fac_leak', x, CEIL - 0.05, z, R() * Math.PI, 1, root);
   }
 
   private buildBase() {
@@ -689,14 +743,14 @@ export class SwampScene {
     const water = MeshBuilder.CreateGround('swamp:baseWater', { width: 60, height: 30 }, scene);
     water.position.set(0, 0, -12 + EMERGE_Z);
     water.parent = root;
-    const wm = this.mat('swamp:baseWaterMat', new Color3(0.35, 0.4, 0.36));
+    const wm = this.mat('swamp:baseWaterMat', new Color3(0.2, 0.23, 0.19));
     const wsrc = waterTpl?.material instanceof StandardMaterial ? waterTpl.material.diffuseTexture : null;
     if (wsrc instanceof Texture) {
       const t = wsrc.clone();
       t.uScale = 15;
       t.vScale = 7.5;
       wm.diffuseTexture = t;
-      wm.diffuseColor = new Color3(0.55, 0.6, 0.55);
+      wm.diffuseColor = new Color3(0.22, 0.25, 0.2);
     }
     wm.specularColor = new Color3(0.25, 0.27, 0.25);
     wm.specularPower = 64;
@@ -858,7 +912,7 @@ export class SwampScene {
     spot.diffuse = new Color3(1, 0.97, 0.88);
     spot.specular = Color3.Black();
     spot.range = 45;
-    spot.intensity = 2.2;
+    spot.intensity = 1.5;
     spot.parent = pivot;
     this.beam = { pivot, light: spot, cone };
   }
@@ -913,7 +967,7 @@ export class SwampScene {
     this.sync();
   }
 
-  /** Угол шестерни по времени крыши: рывок на зуб в начале каждого периода. */
+  /** Угол шестерни по времени в зале: рывок на зуб в начале каждого периода. */
   private gearAngleAt(time: number): number {
     const T = this.spec.toothS;
     const n = Math.floor(time / T), f = (time - n * T) / T;
@@ -940,7 +994,7 @@ export class SwampScene {
       gearPulse = Math.max(0, 1 - ((this.time / this.spec.toothS) % 1) / 0.35);
       if (this.started || this.manual) this.move(dt, input ?? this.readKeys());
       if (this.inStepZone() && !this.exited) this.startEnd();
-      else if (this.pos.z < HATCH.z1 - 0.45 && Math.abs(this.pos.x) < HATCH.door) {
+      else if (this.pos.z < DOOR.z - 0.45 && Math.abs(this.pos.x) < DOOR.w) {
         this.exited = true;
         if (document.pointerLockElement === this.canvas) document.exitPointerLock();
         this.emitHud(true);
@@ -950,8 +1004,9 @@ export class SwampScene {
     } else {
       this.endT += dt;
       const p = endPose(this.endT, EYE);
-      this.gearAngle = this.gearAt0 + this.gearSign * ((2 * Math.PI) / GEAR.teeth) * p.gear;
-      gearPulse = this.endT < END_PRESS_S ? 1 : 0;
+      // зуб под ногами остаётся под ногами: шестерня доворачивается на столько, на сколько поднялся зуб по ободу
+      this.gearAngle = this.gearAt0 + this.gearSign * (this.liftPhi(p.y) - PHI0);
+      gearPulse = this.endT < END_LIFT_S ? 1 : 0;
       this.cues(this.endT, p);
       this.beamFrame(p);
     }
@@ -960,7 +1015,7 @@ export class SwampScene {
     const p = this.endT === null ? null : endPose(this.endT, EYE);
     this.audio.frame(dt, {
       muffle: p ? Math.max(p.mud, p.dark) : 0,
-      heart: p && (p.phase === 'under' || p.phase === 'press') ? Math.min(1, p.dark + 0.3) : p?.phase === 'emerge' ? 0.4 : 0,
+      heart: p && (p.phase === 'under' || p.phase === 'lift') ? Math.min(1, p.dark + 0.3) : p?.phase === 'emerge' ? 0.4 : 0,
       gear: gearPulse,
       radio: p && p.place === 'base' ? Math.min(1, (this.endT! - END_SWITCH_S) / 6) : 0,
     });
@@ -978,12 +1033,24 @@ export class SwampScene {
     once('clunk', 0, () => this.audio.sfx('clunk'));
     once('press', END_STEP_S, () => this.audio.sfx('press'));
     once('squelch', END_STEP_S + 1.6, () => this.audio.sfx('squelch'));
-    once('squelch2', END_PRESS_S - 0.2, () => this.audio.sfx('squelch'));
+    once('squelch2', END_LIFT_S - 0.4, () => this.audio.sfx('squelch'));
     once('switch', END_SWITCH_S, () => {
       this.where = 'base';
-      this.roofRoot.setEnabled(false);
+      this.hallRoot.setEnabled(false);
       this.baseRoot.setEnabled(true);
       this.baseFog();
+      // у части — морось сверху, а не капли грязи
+      this.rain.minEmitBox.set(-9, 6, -9);
+      this.rain.maxEmitBox.set(9, 8, 9);
+      this.rain.direction1.set(-0.4, -9, 0.3);
+      this.rain.direction2.set(-0.2, -11, 0.5);
+      this.rain.gravity.setAll(0);
+      this.rain.minScaleY = 9;
+      this.rain.maxScaleY = 14;
+      this.rain.color1.set(0.7, 0.75, 0.8, 0.22);
+      this.rain.color2.set(0.6, 0.66, 0.7, 0.14);
+      this.rain.colorDead.set(0.5, 0.5, 0.5, 0);
+      this.rain.emitRate = 600;
       this.audio.base();
       this.emitHud(true);
     });
@@ -1025,17 +1092,23 @@ export class SwampScene {
     if (this.endT !== null) return;
     this.endT = 0;
     this.gearAt0 = this.gearAngle;
-    this.pos = { x: GEAR_EDGE + 0.15, z: GEAR.z };
-    this.camera.rotation.set(0, ROOF_YAW, 0);
+    this.pos = { x: GEAR_EDGE, z: GEAR.z - 0.25 };
+    this.camera.rotation.set(0, HALL_YAW, 0);
     this.keys.clear();
     this.emitHud(true);
   }
 
-  /** Высота «пола» под ногами: настил, островок, иначе — грязь по колено. */
+  /** Высота «пола» под ногами: настил, зуб у шестерни, иначе — пол под водой (по щиколотку). */
   ground(x: number, z: number): number {
-    if (this.onWalk(x, z, 0.56)) return 0.36;
-    if (Math.hypot(x - STEP_ZONE.x, z - STEP_ZONE.z) < STEP_ZONE.r + 0.3) return 0.12;
-    return MUD_Y;
+    if (this.onWalk(x, z, 0.56)) return 0.32;
+    if (Math.hypot(x - STEP_ZONE.x, z - STEP_ZONE.z) < STEP_ZONE.r + 0.3) return TOOTH_Y;
+    return WATER_Y;
+  }
+
+  /** Угол на ободе зуба под ногами по высоте глаза (подъём сценария), рад от +x. */
+  private liftPhi(eyeY: number): number {
+    const s = Math.min(0.94, Math.max(-1, (eyeY - EYE - GEAR.y) / GEAR_R));
+    return Math.asin(s);
   }
 
   /** Точка на настиле (полоса ширины 2·half вдоль пути от люка к шестерне). */
@@ -1072,19 +1145,18 @@ export class SwampScene {
       const p = endPose(this.endT, EYE);
       const sh = p.shake * 0.06;
       const j = () => (Math.random() - 0.5) * sh;
-      if (p.place === 'roof') c.position.set(this.pos.x + j(), p.y + j(), this.pos.z + j());
+      if (p.place === 'hall') c.position.set(GEAR_R * Math.cos(this.liftPhi(p.y)) + j(), p.y + j(), this.pos.z + j());
       else c.position.set(BASE.x + j(), BASE.y + p.y + j(), BASE.z + EMERGE_Z + p.z + j());
       if (p.phase !== 'done') {
         c.rotation.x = -p.pitch;
-        c.rotation.y = (p.place === 'roof' ? ROOF_YAW : 0) + p.yaw;
+        c.rotation.y = (p.place === 'hall' ? HALL_YAW : 0) + p.yaw;
         c.rotation.z = p.roll;
       }
       o.mud.alpha = p.mud * 0.97;
       o.dark.alpha = p.dark;
       o.drip.alpha = p.drip * 0.9;
       o.glare.alpha = p.glare;
-      this.eyeLamp.intensity = p.place === 'roof' ? 3.2 * (1 - p.mud) : 0;
-      this.rain.emitRate = p.place === 'base' ? 600 : 1200;
+      this.eyeLamp.intensity = p.place === 'hall' ? 1.6 * (1 - p.mud) : 0;
       return;
     }
     o.mud.alpha = o.dark.alpha = o.drip.alpha = o.glare.alpha = 0;
@@ -1112,7 +1184,7 @@ export class SwampScene {
     let prompt: string | null = null;
     if (!p) {
       if (dGear < 4.5) prompt = 'Встань на зуб шестерни — у самой грязи';
-      else if (this.pos.z < 1.6 && Math.abs(this.pos.x) < 1.6) prompt = 'Назад — в люк, вниз по лестнице';
+      else if (this.pos.z < 1.6 && Math.abs(this.pos.x) < 1.6) prompt = 'Назад — в дверь, на завод';
     }
     return {
       loading: !this.ready && !this.error,

@@ -67,6 +67,8 @@ describe('обвал в снежных ходах', () => {
     expect(s.next).toBeCloseTo(s.crawled + S.retryM);
     expect(normCollapse({ everyM: [90, 10], warnS: -1, digSelf: 3.4 })).toMatchObject({ everyM: [10, 90], warnS: 0.3, digSelf: 3 });
     expect(normCollapse('мусор')).toEqual(DEFAULT_COLLAPSE);
+    expect(normCollapse({ clear: 7.6 }).clear).toBe(8);
+    expect(collapseRule()).toContain('раскопать');
     expect(collapseRule()).toContain('2 с');
   });
 });

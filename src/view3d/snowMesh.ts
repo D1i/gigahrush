@@ -53,6 +53,8 @@ export interface SnowDoor {
   ny: number;
   half: number;
   state: SnowDoorState;
+  /** завал раскопан на долю 0…1: пробка меньше и ниже (сверху открывается щель) */
+  dug?: number;
 }
 
 export interface SnowPieceSpec {
@@ -400,7 +402,9 @@ export function snowField(spec: SnowPieceSpec): SnowField {
     for (const d of plugs) {
       const { along, lat } = doorAt(d, x, y);
       if (along > 1.1 || lat > d.half + 0.6) continue;
-      const r = Math.hypot(along + 0.15, lat * 0.85, (z - 0.35) * 1.1) - 0.72 - vnoise(x * 4, y * 4, z * 4, S + 29) * 0.07;
+      const dug = Math.min(1, Math.max(0, d.dug ?? 0));
+      const R = 0.72 * (1 - 0.5 * dug), zc = 0.35 - 0.18 * dug;
+      const r = Math.hypot(along + 0.15, lat * 0.85, (z - zc) * 1.1) - R - vnoise(x * 4, y * 4, z * 4, S + 29) * 0.07;
       v = Math.max(v, -r);
     }
     // план комнаты (кроме пролётов проёмов) — снег

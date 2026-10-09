@@ -12,6 +12,7 @@
 // Соседи между собой могут пересекаться (localRadius = 1) — на кусок A это не влияет: ему нужны только
 // границы «A | сосед», а их задают две комнаты.
 import { buildBlockoutModel } from './core';
+import { liftPiece } from './stairs';
 import { adjacencyOf, subRun } from './subrun';
 import type { BlockoutModel, BlockoutOptions, Opening, Rect, RunExport, RunInstance, Side, Surface } from './types';
 
@@ -127,9 +128,9 @@ export function pieceOf(model: BlockoutModel, id: string): BlockoutModel {
   };
 }
 
-/** Кусок комнаты: pieceOf(neighborhoodModel(...)). */
+/** Кусок комнаты: pieceOf(neighborhoodModel(...)), поднятый на высоту комнаты (лестницы: stairs.ts liftPiece). */
 export function buildPiece(run: RunExport, id: string, opts?: Partial<BlockoutOptions>, openCut = false): BlockoutModel {
-  return pieceOf(neighborhoodModel(run, id, opts, openCut), id);
+  return liftPiece(pieceOf(neighborhoodModel(run, id, opts, openCut), id), (run.instances ?? []).find((i) => i.id === id));
 }
 
 /** Пол комнаты в куске для определения «где стоит игрок»: её пол + её половины проёмов. Граница с
@@ -155,6 +156,8 @@ export interface PiecePortal {
   hi: number;
   /** высота проёма от пола, м */
   h: number;
+  /** отметка пола проёма, м: высота комнаты (RunInstance.z) + подъём пола у метки (лестница, RunConnector.dz) */
+  z: number;
   /** проём целиком (на всю толщину стены) */
   rect: Rect;
   /** шов бесконечного хода: комната to видна сдвинутой на shift (м плана [dx, dy]; её настоящее место — без сдвига) */
@@ -193,6 +196,7 @@ export function piecePortals(run: RunExport, piece: BlockoutModel, id: string): 
       lo: axis === 'x' ? r.y0 : r.x0,
       hi: axis === 'x' ? r.y1 : r.x1,
       h: op.heightM,
+      z: Math.round(((Number(inst?.z) || 0) + (Number(k.dz) || 0)) * 1e6) / 1e6,
       rect: { ...r },
     });
   }

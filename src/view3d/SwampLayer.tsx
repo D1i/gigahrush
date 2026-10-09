@@ -1,6 +1,6 @@
 // Финал игры «Болото на крыше» во вкладке «3D»: своя сцена (src/locations/sceneSwampEnd.ts) в движке просмотрщика
 // (BlockoutViewer.setOverlay) и HUD: «клик — войти», подсказка у шестерни и люка, титры «КОНЕЦ» с кнопками. В
-// «Прогулке» сцена открывается шагом в комнату «Лестница на крышу»; назад — люк (к той же двери завода). Сцена
+// «Прогулке» сцена открывается шагом в комнату «Под перевёрнутым болотом»; назад — дверь (к той же двери завода). Сцена
 // грузится лениво.
 import { useEffect, useRef, useState } from 'react';
 import { Color4 } from '@babylonjs/core/Maths/math.color';
@@ -102,14 +102,14 @@ export function SwampLayer(props: { viewer: BlockoutViewer | null; req: SwampReq
       {debug && h && (
         <div className="float v3-loc-debug mono">
           <div>
-            {req.title} · {h.phase === 'walk' ? 'крыша' : h.phase === 'end' ? `финал · ${h.end}` : 'выход'}
+            {req.title} · {h.phase === 'walk' ? 'зал' : h.phase === 'end' ? `финал · ${h.end}` : 'выход'}
           </div>
           <div>{h.titles.lines[1]}</div>
         </div>
       )}
       {(error || !h || h.loading) && (
         <div className="v3-loc-center">
-          {error ? <div className="v3-err">{error}</div> : <div className="muted">Крыша…</div>}
+          {error ? <div className="v3-err">{error}</div> : <div className="muted">Болото…</div>}
           {error && req.mode === 'room' && (
             <button className="btn" onClick={() => props.onClose?.()}>
               Назад
@@ -120,8 +120,8 @@ export function SwampLayer(props: { viewer: BlockoutViewer | null; req: SwampReq
       {h && !h.loading && !error && !h.started && (
         <div className="v3-loc-center prompt" onClick={() => void sceneRef.current?.begin()}>
           <div className="t">{req.title}</div>
-          <div>Клик — подняться на крышу</div>
-          <div className="muted">WASD — идти (грязь по колено) · мышь — смотреть · Shift — быстрее · Esc — отпустить мышь</div>
+          <div>Клик — войти</div>
+          <div className="muted">WASD — идти (вода по щиколотку) · мышь — смотреть · Shift — быстрее · Esc — отпустить мышь</div>
         </div>
       )}
       {h && h.started && !h.locked && h.phase === 'walk' && (
@@ -141,7 +141,7 @@ export function SwampLayer(props: { viewer: BlockoutViewer | null; req: SwampReq
               <button className="btn" onClick={() => { release(); exitRef.current('new'); }} title="Сбросить мир этого сида и начать с начала">
                 Новая игра
               </button>
-              <button className="btn" onClick={() => setRun((k) => k + 1)} title="Ещё раз подняться на крышу">
+              <button className="btn" onClick={() => setRun((k) => k + 1)} title="Ещё раз — в зал под болотом">
                 Ещё раз
               </button>
               <button className="btn" onClick={() => { release(); exitRef.current('back'); }} title="Вернуться к лестнице на заводе">

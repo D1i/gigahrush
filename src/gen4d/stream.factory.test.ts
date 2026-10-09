@@ -1,5 +1,5 @@
 // Завод бесконечного мира (docs/GENERATOR-4D.md §21): сеть цехов из своих комнат, влажность кусков, «иди туда, где
-// влажнее» — болото и комната-финал «Лестница на крышу» (спец-локация 'swamp').
+// влажнее» — болото и комната-финал «Под перевёрнутым болотом» (спец-локация 'swamp').
 import { describe, expect, it } from 'vitest';
 import { createDefaultProject } from '../data/presets';
 import { BIOME_ONLY_TAG } from '../gen/generate';

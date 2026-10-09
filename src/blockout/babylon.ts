@@ -28,6 +28,7 @@ import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
 import type { BaseTexture } from '@babylonjs/core/Materials/Textures/baseTexture';
 import { DOOR_STYLE_BY_ID, doorGeometry, type DoorLeafGeo, type DoorPart, type DoorStyle, type HandleKind } from './doors';
+import { stairMeshes } from './stairs';
 import type { BlockoutModel, DeadEnd, DoorSlot, Rect, RunFinish, Solid, SolidKind, Surface, WallFace } from './types';
 
 export type BlockoutMaterialKey = 'wall' | 'partition' | 'lintel' | 'column' | 'floor' | 'portalFloor' | 'ceiling' | 'deadEnd';
@@ -163,7 +164,7 @@ export interface BabylonBlockout {
 
 /** metadata каждого меша болванки. */
 export interface BlockoutMeta {
-  kind: SolidKind | 'floor' | 'portalFloor' | 'ceiling' | 'portalCeiling' | 'prop' | 'propTop' | 'deadEnd' | 'facing' | 'door' | 'doorLeaf' | 'doorHandle';
+  kind: SolidKind | 'floor' | 'portalFloor' | 'ceiling' | 'portalCeiling' | 'prop' | 'propTop' | 'deadEnd' | 'facing' | 'door' | 'doorLeaf' | 'doorHandle' | 'stair';
   /** экземпляр комнаты (полы, потолки, мебель, тупики при merge: false) */
   inst?: string;
   propId?: string;
@@ -556,7 +557,7 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
 
   // ── двери (BlockoutModel.doors): закрытые — вместо панели тупика ──
   const doorClosed = new Set((model.doors ?? []).filter((d) => d.leaf && d.role !== 'open' && d.role !== 'opened').map((d) => `${d.inst}/${d.connector}`));
-  const { doors, doorLeaves } = buildDoors(scene, model, floorZ, opts.doorPose, (m, md) => add(m, md, doorMaterial(sh), false));
+  const { doors, doorLeaves } = buildDoors(scene, model, floorZ, opts.doorPose, (m, md, collide = false) => add(m, md, doorMaterial(sh), collide));
 
   // ── тупики: дверная панель, утопленная в стену, с ручкой ──
   const deadEnds: Mesh[] = [];
@@ -592,7 +593,7 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
       const len = Math.hypot(x2 - x1, y2 - y1) || 1;
       const tx = (x2 - x1) / len;
       const ty = (y2 - y1) / len;
-      const z = floorZ.get(d.inst) ?? 0;
+      const z = d.z ?? floorZ.get(d.inst) ?? 0;
       const span = (pts: number[][]): Rect => ({
         x0: Math.min(...pts.map((p) => p[0])),
         y0: Math.min(...pts.map((p) => p[1])),
@@ -654,7 +655,7 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
       extraMats.push(mat);
     }
     const m = add(g.toMesh(`prop:${p.inst}:${p.propId}`, scene), { kind: 'prop', inst: p.inst, propId: p.propId, name: p.name }, mat, true);
-    m.position.set(p.x, floorZ.get(p.inst) ?? 0, -p.y);
+    m.position.set(p.x, p.z ?? floorZ.get(p.inst) ?? 0, -p.y);
     m.rotation.y = (p.rot || 0) * deg;
     props.push(m);
     const tpl = opts.propModel?.(p.propId) ?? null;
@@ -697,6 +698,25 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
       top.parent = m;
       meta(top, { kind: 'propTop', inst: p.inst, propId: p.propId, name: p.name });
       allMeshes.push(top);
+    }
+  }
+
+  // ── лестницы (src/blockout/stairs.ts): ступени и перила — без коллизий, площадки — с ними, пандус по линии носков и
+  // стенки перил — невидимый коллайдер ──
+  if (model.stairs?.length) {
+    const sm = stairMeshes(model.stairs);
+    for (const [g, name, collide, visible] of [[sm.visible, 'stairs', false, true], [sm.pads, 'stairPads', true, true], [sm.collider, 'stairCollider', true, false]] as const) {
+      if (g.empty) continue;
+      const vd = new VertexData();
+      vd.positions = g.p;
+      vd.normals = g.n;
+      vd.uvs = g.uv;
+      vd.colors = g.c;
+      vd.indices = g.i;
+      const m = new Mesh(name, scene);
+      vd.applyToMesh(m, false);
+      walls.push(add(m, { kind: 'stair' }, doorMaterial(sh), collide));
+      m.isVisible = visible;
     }
   }
 
@@ -827,14 +847,15 @@ export function poseDoor(d: DoorMeshes, angle: number, handle: number) {
 /**
  * Двери модели: наличники, доски заколоченных и неподвижные полотна — один меш с цветами в вершинах; подвижные полотна
  * (выход, открытый выход) — меш на полотно (начало — ось петель), ручка — его ребёнок. Коллизий у дверей нет: закрытую
- * дверь держит стена за ней, распахнутая стоит у стены.
+ * дверь держит стена за ней, распахнутая стоит у стены. Самозакрывающиеся (DoorStyle.selfClosing, общага) — подвижны при
+ * любой роли, полотно — коллайдер (проём открыт, держит само полотно).
  */
 function buildDoors(
   scene: Scene,
   model: BlockoutModel,
   floorZ: Map<string, number>,
   pose: BabylonBlockoutOptions['doorPose'],
-  add: (m: Mesh, md: BlockoutMeta) => Mesh,
+  add: (m: Mesh, md: BlockoutMeta, collide?: boolean) => Mesh,
 ): { doors: Mesh[]; doorLeaves: Map<string, DoorMeshes> } {
   const doors: Mesh[] = [];
   const doorLeaves = new Map<string, DoorMeshes>();
@@ -844,12 +865,13 @@ function buildDoors(
     const style = DOOR_STYLE_BY_ID.get(slot.style);
     if (!style) continue;
     const geo = doorGeometry({ style, widthM: slot.widthM, heightM: slot.heightM, hinge: slot.hinge, role: slot.role, leaf: slot.leaf, space: slot.space, seed: slot.seed, tag: slot.tag });
-    const D = doorMatrix(slot, floorZ.get(slot.inst) ?? 0);
+    const D = doorMatrix(slot, slot.z ?? floorZ.get(slot.inst) ?? 0);
     const yaw = doorYaw(slot);
     emitDoorParts(g, geo.frame, D);
     const p = pose?.(slot) ?? null;
     const angle = p ? p.angle : slot.angle;
-    const movable = slot.role === 'exit' || slot.role === 'opened';
+    // самозакрывающаяся (общага) — подвижна при любой роли, полотно твёрдое
+    const movable = slot.role === 'exit' || slot.role === 'opened' || (style.selfClosing === true && slot.leaf);
     const key = `${slot.inst}/${slot.connector}`;
     const moving: DoorLeafMesh[] = [];
     for (const lf of geo.leaves) {
@@ -866,7 +888,7 @@ function buildDoors(
       const lg = new BoxBatch(true);
       emitDoorParts(lg, lf.parts, null);
       const name = `doorLeaf:${key}:${lf.hinge}`;
-      const mesh = add(lg.toMesh(name, scene), { kind: 'doorLeaf', inst: slot.inst, connector: slot.connector, name: style.name });
+      const mesh = add(lg.toMesh(name, scene), { kind: 'doorLeaf', inst: slot.inst, connector: slot.connector, name: style.name }, style.selfClosing === true);
       mesh.position.copyFrom(hinge);
       mesh.rotation.y = rot;
       let handle: Mesh | null = null;

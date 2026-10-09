@@ -12,6 +12,7 @@
 .coop-code { font-family: var(--mono); letter-spacing: 0.02em; }
 .coop-box { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
 .coop-box .btn { align-self: flex-start; }
+.coop-steam { border-color: #4fb3e8aa; background: #4fb3e80d; }
 .coop-colors { display: flex; gap: 6px; align-items: center; height: 28px; }
 .coop-color { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
 .coop-color.on { border-color: var(--text, #fff); box-shadow: 0 0 0 2px #0009; }

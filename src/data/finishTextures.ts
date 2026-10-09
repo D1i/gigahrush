@@ -11,7 +11,7 @@
 export type FinishTexKind =
   | 'stripe' | 'flower' | 'rhomb' | 'rogozhka'
   | 'tile' | 'paint' | 'whitewash' | 'plaster' | 'concrete' | 'brick' | 'dvp'
-  | 'lino_parquet' | 'lino_speckle' | 'herringbone' | 'metlakh' | 'boards' | 'tile_floor';
+  | 'lino_parquet' | 'lino_speckle' | 'herringbone' | 'metlakh' | 'boards' | 'tile_floor' | 'tile_panel';
 
 export interface FinishTexOpts {
   /** основной цвет */
@@ -22,6 +22,9 @@ export interface FinishTexOpts {
   n?: number;
   /** трещины и выбоины (бетон пола) */
   cracks?: boolean;
+  /** кафельная панель (tile_panel): нижний ряд плитки и бордюр-полплитки сверху */
+  low?: string;
+  high?: string;
 }
 
 // ---------------------------------------------------------------- цвет и ГСЧ
@@ -419,6 +422,62 @@ function drawTile(t: T, o: FinishTexOpts, floor = false): void {
   t.modulate(t.fbm(3, 3, 2), floor ? 0.06 : 0.03);
 }
 
+/**
+ * Кафельная панель стены (коридоры общаги): плитка 15×15 рядами снизу вверх — нижний ряд low (тёмно-зелёный), выше
+ * ряды плитки base (три оттенка вразнобой, 3–5% со сколами), сверху — бордюр high в полплитки; подтёки ржавчины.
+ * Картинка — на всю высоту панели (tileH отделки = высота dado: низ картинки у пола), по X — n плиток с повтором; по Y
+ * не повторяется (рисуется без сдвигов ±H).
+ */
+function drawTilePanel(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#d9c7a0';
+  const grout = o.accent ?? '#8e8a7c';
+  const low = o.low ?? '#5e8a6e';
+  const high = o.high ?? '#7fa37a';
+  const n = o.n ?? 4;
+  const { W, H } = t;
+  const s = W / n, g = Math.max(2, s * 0.035), bev = Math.max(1, s * 0.025);
+  // оттенки бежевой плитки: основной и два партии (темнее, светлее)
+  const tones = [base, base, mix(base, '#b39a68', 0.45), mix(base, '#f4ead2', 0.5)];
+  t.fill(grout);
+  const rows = Math.max(1, Math.floor((H - s / 2) / s + 1e-6));
+  let y = H;
+  for (let r = 0; r < rows; r++) {
+    y -= s;
+    for (let i = 0; i < n; i++) {
+      const col = shade(r === 0 ? low : tones[Math.floor(t.r() * tones.length)], t.u(-0.03, 0.03));
+      t.tileRect(i * s + g / 2, y + g / 2, s - g, s - g, col, bev, 0.22);
+      // скол угла: плитка отбита до цементной подложки
+      if (r > 0 && t.r() < 0.04) {
+        const cx = i * s + g / 2 + (t.r() < 0.5 ? 0 : s - g), cy = y + g / 2 + (t.r() < 0.5 ? 0 : s - g);
+        const dx = (cx > i * s + s / 2 ? -1 : 1) * t.u(0.18, 0.4) * s, dy = (cy > y + s / 2 ? -1 : 1) * t.u(0.15, 0.35) * s;
+        t.c.fillStyle = '#b7ae9a';
+        t.c.beginPath();
+        t.c.moveTo(cx, cy);
+        t.c.lineTo(cx + dx, cy);
+        t.c.lineTo(cx + dx * 0.45, cy + dy * 0.55);
+        t.c.lineTo(cx, cy + dy);
+        t.c.closePath();
+        t.c.fill();
+      }
+    }
+  }
+  // бордюр — оставшаяся полоса сверху (полплитки)
+  if (y > g) for (let i = 0; i < n; i++) t.tileRect(i * s + g / 2, g / 2, s - g, y - g, shade(high, t.u(-0.03, 0.03)), bev, 0.25);
+  // подтёки ржавчины от швов вниз (по X — с повтором через край)
+  for (let k = 0; k < 3; k++) {
+    const x = t.u(0, W), y0 = t.u(H * 0.1, H * 0.5), len = t.u(H * 0.15, H * 0.4), w = t.u(1.5, 3.5);
+    for (const ox of [-W, 0, W]) {
+      if (x + ox < -w || x + ox > W + w) continue;
+      const gr = t.c.createLinearGradient(0, y0, 0, y0 + len);
+      gr.addColorStop(0, 'rgba(138,90,42,0.35)');
+      gr.addColorStop(1, 'rgba(138,90,42,0)');
+      t.c.fillStyle = gr;
+      t.c.fillRect(x + ox - w / 2, y0, w, len);
+    }
+  }
+  t.modulate(t.fbm(3, 3, 2), 0.03);
+}
+
 /** Масляная краска: ровный цвет, следы кисти (вертикальные), лёгкие пятна. */
 function drawPaint(t: T, o: FinishTexOpts): void {
   t.fill(o.base ?? '#5a8463');
@@ -726,6 +785,7 @@ const DRAW: Record<FinishTexKind, (t: T, o: FinishTexOpts) => void> = {
   rogozhka: drawRogozhka,
   tile: (t, o) => drawTile(t, o, false),
   tile_floor: (t, o) => drawTile(t, o, true),
+  tile_panel: drawTilePanel,
   paint: drawPaint,
   whitewash: drawWhitewash,
   plaster: drawPlaster,

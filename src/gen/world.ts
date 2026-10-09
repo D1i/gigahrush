@@ -5,6 +5,7 @@ import type { CellKey, Connector, Decor, Door, Instance, Project, Run, Spot } fr
 import type { RunFinish } from '../blockout/types';
 import { encodeRows, normDeg, transformSeg } from './geom';
 import { cloneLocation } from '../locations/stairwell';
+import { connDz, worldStair } from '../model/stairs';
 
 export interface InstanceWorld {
   inst: Instance;
@@ -113,13 +114,18 @@ export function exportRunJSON(p: Project, run: Run, opts: ExportOptions = {}): u
       floor: w.inst.floor ?? 0,
       /** спец-локация комнаты (src/locations/, docs/LOCATIONS.md) или null — обычная комната */
       location: room?.location ? cloneLocation(room.location) : null,
+      /** высота низа комнаты, м (за лестницами, src/model/stairs.ts) и лестница в мировых клетках — только если есть */
+      ...(w.inst.z ? { z: w.inst.z } : {}),
+      ...(room?.stair ? { stair: worldStair(room.stair, w.inst.rot, w.inst.dx, w.inst.dy) } : {}),
       bbox: w.bbox,
       cells: encodeRows(w.cells),
       doors: w.doors.map((d) => ({ id: d.id, cx: d.cx, cy: d.cy, side: d.side, len: d.len, line: segmentLine(d) })),
-      connectors: w.connectors.map((k) => ({
+      connectors: w.connectors.map((k, ci) => ({
         id: k.id, name: k.name, tag: k.tag, cx: k.cx, cy: k.cy, side: k.side, len: k.len,
         line: segmentLine(k),
         linkedTo: linkBy.get(`${w.inst.id}/${k.id}`) ?? null,
+        // пол у метки выше низа комнаты (лестница), м
+        ...(room?.stair && connDz(room, ci) ? { dz: connDz(room, ci) } : {}),
       })),
       decor: w.decor.map((d) => ({ id: d.id, propId: d.propId, x: d.x, y: d.y, rot: d.rot })),
       spots: w.spots.map((s) => {

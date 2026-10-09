@@ -168,6 +168,30 @@ describe('снежные тоннели: сеть лазов', { timeout: 300000
     if (free) expect(w.collapse(free[0], free[1])).toBe(false);
   });
 
+  it('раскопка завала: работа копится (в сохранении тоже), набралась — проём снова открыт', () => {
+    const w = snow('раскопка');
+    walk(w, 80);
+    const l = w.run().links.find((x) => !x.kind || x.kind === 'door')!;
+    expect(w.collapseProgress(l.a.inst, l.a.connector)).toBeNull();
+    expect(w.digThrough(l.a.inst, l.a.connector, 0.5)).toBeNull(); // не завал — копать нечего
+    w.collapse(l.a.inst, l.a.connector);
+    expect(w.collapseProgress(l.b.inst, l.b.connector)).toBe(0);
+    // два игрока копают с разных сторон — работа общая
+    expect(w.digThrough(l.a.inst, l.a.connector, 0.3)).toBeCloseTo(0.3);
+    expect(w.digThrough(l.b.inst, l.b.connector, 0.25)).toBeCloseTo(0.55);
+    expect(w.doorState(l.a.inst, l.a.connector)).toBe('collapsed');
+    const w2 = createStreamWorld(p, w.settings, w.save());
+    expect(w2.collapseProgress(l.a.inst, l.a.connector)).toBeCloseTo(0.55);
+    expect(w2.digThrough(l.a.inst, l.a.connector, 0.5)).toBe(1);
+    expect(w2.doorState(l.a.inst, l.a.connector)).toBe('linked');
+    expect(w2.doorState(l.b.inst, l.b.connector)).toBe('linked');
+    expect(w2.collapseProgress(l.a.inst, l.a.connector)).toBeNull();
+    expect(w2.run().links.find((x) => x.a.inst === l.a.inst && x.a.connector === l.a.connector)?.sealed).toBeFalsy();
+    // раскопанный завал после сохранения — открыт
+    const w3 = createStreamWorld(p, w2.settings, w2.save());
+    expect(w3.doorState(l.b.inst, l.b.connector)).toBe('linked');
+  });
+
   it('снега нет вне биомов: прежняя прогулка и прогоны', () => {
     const legacy = createStreamWorld(p, streamSettings('снег-вне', { world: null }));
     walk(legacy, 150);

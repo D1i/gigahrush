@@ -17,7 +17,10 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const out = fileURLToPath(new URL('./qa/', import.meta.url));
 mkdirSync(out, { recursive: true });
 const keep = process.argv.includes('--keep-server');
-const server = spawn(`npx vite --port ${PORT} --strictPort`, { cwd: ROOT, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+// SNAP=1 — снимок сборки (NODE_ENV=development vite build --mode development --outDir tmp/qa-build): правки других
+// сессий в дереве не перезагружают страницу посреди проверки
+const SNAP = !!process.env.SNAP;
+const server = spawn(SNAP ? `npx vite preview --outDir tmp/qa-build --port ${PORT} --strictPort` : `npx vite --port ${PORT} --strictPort`, { cwd: ROOT, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
 let serverLog = '';
 server.stdout.on('data', (d) => (serverLog += d));
 server.stderr.on('data', (d) => (serverLog += d));
@@ -119,10 +122,12 @@ try {
   });
   await page.reload({ timeout: 180000 });
   await page.waitForTimeout(1000);
-  await page.evaluate(async () => {
-    const { mutate } = await import('/src/model/store.ts');
-    mutate((p) => Object.assign(p.world, { trAfter: 100000 }));
-  });
+  // в снегу переходов по счётчику и так нет (свой выход); в снимке сборки модулей по путям нет
+  if (!SNAP)
+    await page.evaluate(async () => {
+      const { mutate } = await import('/src/model/store.ts');
+      mutate((p) => Object.assign(p.world, { trAfter: 100000 }));
+    });
   await page.getByRole('button', { name: '3D', exact: true }).click();
   await page.waitForFunction(() => window.__rfWalk && window.__rf3dFold?.portal?.isActive && window.__rfSnow, null, { timeout: 180000 });
   await page.waitForTimeout(2500);
@@ -193,6 +198,38 @@ try {
     const den = pose.tags?.includes('берлога');
     ok('B зажатая W: на четвереньках (глаз ~0.5 м), руки в кадре, покачивание', den || (pose.base < 0.6 && pose.hands && Math.max(...rolls.map(Math.abs)) > 0.005), JSON.stringify({ ...pose, rolls: rolls.map((x) => +x.toFixed(3)) }));
   }
+  // ползком «как на настоящем экране»: шаг 6 мм за кадр (60–144 к/с), маршрут через куски (горки, ямы, повороты)
+  {
+    const route = await page.evaluate(async () => {
+      const v = window.__rf3d, c = v.fps, s = window.__rfWalk, d = window.__rf3dFold;
+      const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+      const cur = () => d.portal?.current ?? d.current.center;
+      const visited = new Set([cur()]);
+      const cm = s.rx.cellM;
+      const passed = [];
+      for (let n = 0; n < 8; n++) {
+        const inst = s.rx.instances.find((i) => i.id === cur());
+        const door = inst.connectors.find((k) => k.linkedTo && !visited.has(k.linkedTo.inst));
+        if (!door) break;
+        const out = { N: [0, 1], S: [0, -1], E: [1, 0], W: [-1, 0] }[door.side];
+        const tx = ((door.line[0] + door.line[2]) / 2) * cm + out[0] * 0.6, tz = -((door.line[1] + door.line[3]) / 2) * cm + out[1] * 0.6;
+        let ok = false, best = Infinity, since = 0;
+        for (let f = 0; f < 700; f++) {
+          const dx = tx - c.position.x, dz = tz - c.position.z, dd = Math.hypot(dx, dz);
+          c.cameraDirection.set((dx / (dd || 1)) * 0.006, 0, (dz / (dd || 1)) * 0.006);
+          c.rotation.y = Math.atan2(dx, dz);
+          await frame();
+          if (cur() === door.linkedTo.inst) { ok = true; break; }
+          if (dd < best - 0.01) { best = dd; since = 0; } else if (++since > 150) break;
+        }
+        passed.push((ok ? '' : '✗') + s.rx.instances.find((i) => i.id === door.linkedTo.inst)?.roomId);
+        if (!ok) break;
+        visited.add(door.linkedTo.inst);
+      }
+      return { passed, pose: v.posture.pose };
+    });
+    ok('B ползком мелким шагом (6 мм/кадр) — сквозь куски, поза не сбивается', route.passed.length >= 5 && !route.passed.some((x) => x.startsWith('✗')) && route.pose === 'crawl', route.passed.join(' → ') + ' · ' + route.pose);
+  }
   ok('B мир растёт по лазам — только снег', b1.n > a0.n && (await page.evaluate(() => window.__rfWalk.world.run().instances.every((i) => i.roomId.startsWith('snow_')))), `комнат ${a0.n} → ${b1.n}, сейчас ${b1.roomId}`);
   await page.screenshot({ path: out + 'snow-3-tunnel.png' });
 
@@ -235,7 +272,8 @@ try {
       const far = gt.doors.filter((d) => d.to && d.id !== c0.site.connector).sort((a, b) => Math.hypot(b.x - c0.site.x, b.z + c0.site.y) - Math.hypot(a.x - c0.site.x, a.z + c0.site.y))[0];
       if (far) await camWalk(page, (far.x + gt.cx) / 2, (far.z + gt.cz) / 2, 200, 0.05);
     }
-    await page.waitForTimeout(2600);
+    await page.waitForFunction(() => window.__rfSnow.collapse.phase !== 'warn', null, { timeout: 20000 }).catch(() => {}); // треск 2 с — при низких к/с дольше
+    await page.waitForTimeout(300);
     const c1 = await page.evaluate((site) => {
       const s = window.__rfWalk, w = s.world;
       const i = s.rx.instances.find((x) => x.id === site.inst);
@@ -244,6 +282,45 @@ try {
     }, c0.site);
     ok('C обвал: проём завален навсегда (collapsed), глыбы набора упали', c1.state === 'collapsed' && c1.flag && c1.chunks > 0, JSON.stringify(c1));
     ok('C успел уползти — не засыпан', c1.phase === 'calm', c1.phase);
+    // раскопка завала: у пробки — «Завал. E — разгребать», 10 ударов — пробка на половину, 20 — лаз открыт, глыбы убраны
+    {
+      const gs = await roomGeo(page, c0.site.inst);
+      const dp = gs.doors.find((d) => d.id === c0.site.connector);
+      await page.evaluate(({ x, z, cx, cz }) => {
+        const c = window.__rf3d.fps;
+        const l = Math.hypot(cx - x, cz - z) || 1;
+        c.position.x = x + ((cx - x) / l) * 0.7;
+        c.position.z = z + ((cz - z) / l) * 0.7;
+        c.rotation.y = Math.atan2(x - c.position.x, z - c.position.z);
+      }, { x: dp.x, z: dp.z, cx: gs.cx, cz: gs.cz });
+      await frames(page, 20);
+      const pr0 = await page.evaluate(() => [...document.querySelectorAll('.v3-lift-prompt')].map((e) => e.textContent).join('|'));
+      ok('C у завала: «Завал. E — разгребать (0/20)»', pr0.includes('Завал. E — разгребать (0/20)'), pr0);
+      for (let k = 0; k < 10; k++) {
+        await page.keyboard.press('KeyE');
+        await frames(page, 2);
+      }
+      await frames(page, 20);
+      const half = await page.evaluate((site) => {
+        const s = window.__rfWalk;
+        const k = s.rx.instances.find((i) => i.id === site.inst).connectors.find((x) => x.id === site.connector);
+        return { p: s.world.collapseProgress(site.inst, site.connector), dug: k.dug ?? 0, state: s.world.doorState(site.inst, site.connector) };
+      }, c0.site);
+      await page.screenshot({ path: out + 'snow-5b-dig-half.png' });
+      ok('C 10 ударов — раскопано наполовину, пробка меньше', Math.abs(half.p - 0.5) < 1e-6 && half.dug === 0.5 && half.state === 'collapsed', JSON.stringify(half));
+      for (let k = 0; k < 10; k++) {
+        await page.keyboard.press('KeyE');
+        await frames(page, 2);
+      }
+      await frames(page, 40);
+      const done = await page.evaluate((site) => {
+        const s = window.__rfWalk;
+        const k = s.rx.instances.find((i) => i.id === site.inst).connectors.find((x) => x.id === site.connector);
+        return { state: s.world.doorState(site.inst, site.connector), linked: !!k.linkedTo, collapsed: !!k.collapsed, chunks: window.__rf3d.scene.meshes.filter((m) => m.name.startsWith('snow:chunk')).length };
+      }, c0.site);
+      await page.screenshot({ path: out + 'snow-5c-dug.png' });
+      ok('C 20 ударов — лаз снова открыт, глыбы убраны', done.state === 'linked' && done.linked && !done.collapsed && done.chunks === 0, JSON.stringify(done));
+    }
     const au2 = await page.evaluate(() => window.__rfSnow.audio.counters);
     ok('C звук: треск свода и удар обвала', au2.crack > 2 && au2.fall > 0, JSON.stringify(au2));
     await frames(page, 30);
@@ -280,7 +357,8 @@ try {
           await new Promise((r) => requestAnimationFrame(() => r()));
         }
       });
-      await page.waitForTimeout(2600);
+      await page.waitForFunction(() => window.__rfSnow.collapse.phase !== 'warn', null, { timeout: 20000 }).catch(() => {}); // треск 2 с — при низких к/с дольше
+    await page.waitForTimeout(300);
       const d0 = await page.evaluate(() => ({ phase: window.__rfSnow.collapse.phase, hud: document.body.innerText.includes('Засыпало'), white: !!document.querySelector('.v3-snow-buried') }));
       ok('C у проёма — засыпало: белая пелена, «E — откапываться»', d0.phase === 'buried' && d0.hud && d0.white, JSON.stringify(d0));
       await page.screenshot({ path: out + 'snow-6-buried.png' });

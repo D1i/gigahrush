@@ -28,6 +28,10 @@ export interface PlayerState {
   eye?: number;
   /** засыпан обвалом в снегу — напарник рядом может откапывать (E) */
   buried?: boolean;
+  /** держит горящий фонарь (биом «Общага»: свет у аватара, защитное поле вокруг p) */
+  lamp?: 1;
+  /** погиб (утащила рука и т. п.) — аватар не показывается, до возрождения */
+  dead?: 1;
 }
 
 /** Действие игрока над другим игроком (адресное, без журнала мира): dig — откапывать засыпанного. */
@@ -71,6 +75,9 @@ export type ClientMsg =
   | { t: 'state'; s: PlayerState }
   /** действие над игроком to (сервер передаёт только ему) */
   | { t: 'act'; to: string; a: PlayerAct }
+  /** событие для всех остальных в лобби — без номера и журнала (мигание света, рука, позы дверей); опоздавшим не
+   *  досылается — шлющий (обычно хост) повторяет состояние сам */
+  | { t: 'fx'; k: string; d: unknown }
   | { t: 'checkpoint'; seq: number; save: string; opened: string[]; fp: string }
   | { t: 'project' }
   | { t: 'bye' };
@@ -95,6 +102,7 @@ export type ServerMsg =
   | ({ t: 'op' } & SeqOp)
   | { t: 'state'; id: string; s: PlayerState }
   | { t: 'act'; from: string; a: PlayerAct }
+  | { t: 'fx'; from: string; k: string; d: unknown }
   | { t: 'join'; player: PlayerInfo }
   | { t: 'leave'; id: string }
   | { t: 'host'; id: string }
@@ -132,6 +140,37 @@ export function hashText(s: string): string {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0') + ':' + s.length.toString(36);
 }
+
+/** Мост Steam (tools/steam-bridge.mjs) — GET /steam: хост (сервер лобби у себя) или игрок (туннель к хосту). */
+export interface SteamBridgeStatus {
+  app: 'room-forge-steam';
+  v: number;
+  role: 'host' | 'client';
+  /** лобби Steam есть (хост создал / игрок вошёл) */
+  ready: boolean;
+  error: string | null;
+  steam: { lobby: string | null; me: string; host: string | null; members: number; max: number };
+  /** игровое лобби (UUID) — хост публикует его в данных лобби Steam */
+  game: { lobby: string | null };
+}
+
+/** Где искать мост Steam: адрес из поля «Сервер» (мост с --port N), страница с него самого и localhost:8787. */
+export function steamBridgeBases(server = ''): string[] {
+  const out: string[] = [];
+  if (server.trim()) {
+    try {
+      const u = new URL(normServerUrl(server));
+      out.push(`${u.protocol === 'wss:' ? 'https' : 'http'}://${u.host}`);
+    } catch {}
+  }
+  const l = typeof location !== 'undefined' ? location : null;
+  if (l && (l.protocol === 'http:' || l.protocol === 'https:') && !out.includes(`${l.protocol}//${l.host}`)) out.push(`${l.protocol}//${l.host}`);
+  if (!out.includes('http://localhost:8787')) out.push('http://localhost:8787');
+  return out;
+}
+
+/** WebSocket коопа моста по его http-адресу. */
+export const bridgeWsUrl = (base: string): string => base.replace(/^http/, 'ws') + '/coop';
 
 /** Адрес relay по умолчанию: dev-сервер / сервер, с которого открыта игра (путь /coop); из файла — localhost:8787. */
 export function defaultServerUrl(): string {

@@ -44,6 +44,17 @@ export interface RunConnector extends RunSegment {
   opened?: boolean;
   /** бесконечный мир: проём завален обвалом (снежные ходы) — тупик навсегда; оболочка снега ставит в нём пробку */
   collapsed?: boolean;
+  /** раскопка завала: доля 0…1 (четвертями) — пробка снега меньше */
+  dug?: number;
+  /** лестница (RunInstance.stair): пол у метки выше низа комнаты на dz, м; нет поля — 0 */
+  dz?: number;
+}
+
+/** Лестница экземпляра (src/model/stairs.ts): марши и площадки в мировых клетках [x0, x1) × [y0, y1); up — куда идти
+ *  вверх; высоты пола — над низом комнаты (RunInstance.z), м. */
+export interface RunStair {
+  flights: { x0: number; y0: number; x1: number; y1: number; up: Side; z0: number; z1: number }[];
+  pads: { x0: number; y0: number; x1: number; y1: number; z: number }[];
 }
 
 export interface RunInstance {
@@ -63,6 +74,11 @@ export interface RunInstance {
   floor?: number;
   /** спец-локация комнаты (Room Forge: src/locations/, docs/LOCATIONS.md) или null — обычная комната */
   location?: { kind: string; [k: string]: unknown } | null;
+  /** высота низа комнаты, м (за лестницами мир выше/ниже); нет поля — 0. Ядро строит всё на 0 — куски портального
+   *  рендера поднимает src/blockout/stairs.ts (liftPiece) */
+  z?: number;
+  /** лестница с перепадом высоты (ступени, площадки, перила) — src/blockout/stairs.ts */
+  stair?: RunStair;
   bbox: { x0: number; y0: number; x1: number; y1: number };
   /** сжатые ряды клеток "y:x1-x2,x3" в мировых клетках */
   cells: string[];
@@ -287,6 +303,8 @@ export interface DoorSlot {
   space: [number, number];
   /** место двери (вариант цвета, доски) — «inst/connector» */
   seed: string;
+  /** отметка пола у двери, м (лестница: метка выше низа комнаты); нет поля — пол комнаты */
+  z?: number;
 }
 
 /** Тупиковый проём, закрытый стеной (deadEnds = 'panel' → у стены рисуется дверная панель). */
@@ -301,6 +319,8 @@ export interface DeadEnd {
   heightM: number;
   /** откуда тупик: несвязанная метка (connector — id метки) или дверь без метки (connector — id двери) */
   source?: 'connector' | 'door';
+  /** отметка пола у тупика, м (лестница: метка выше низа комнаты); нет поля — пол комнаты */
+  z?: number;
 }
 
 /**
@@ -340,6 +360,22 @@ export interface PropBox {
   h: number;
   color: string;
   tags: string[];
+  /** отметка, на которой стоит предмет, м (площадка лестницы; подвесной — «пол» под высоким потолком); нет поля — пол
+   *  комнаты */
+  z?: number;
+}
+
+/** Лестница куска (src/blockout/stairs.ts): план, м; высоты — абсолютные (низ комнаты + лестница), м. */
+export interface StairGeo {
+  inst: string;
+  /** низ комнаты, м */
+  base: number;
+  /** марши: прямоугольник, куда идти вверх, высота низа и верха, ступеней */
+  flights: { rect: Rect; up: Side; z0: number; z1: number; steps: number }[];
+  /** площадки: прямоугольник и высота пола */
+  pads: { rect: Rect; z: number }[];
+  /** перила у обрывов (бок марша, край площадки): ломаная по плану с высотой пола [x, y, z] и низ обрыва, м */
+  rails: { pts: [number, number, number][]; low: number }[];
 }
 
 export interface RoomInfo3D {
@@ -386,4 +422,6 @@ export interface BlockoutModel {
   issues: string[];
   /** слоты дверей (только при BlockoutOptions.doors) */
   doors?: DoorSlot[];
+  /** лестницы с перепадом высоты (куски портального рендера, src/blockout/stairs.ts liftPiece) */
+  stairs?: StairGeo[];
 }

@@ -17,7 +17,8 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const out = fileURLToPath(new URL('./qa/', import.meta.url));
 mkdirSync(out, { recursive: true });
 const keep = process.argv.includes('--keep-server');
-const server = spawn(`npx vite --port ${PORT} --strictPort`, { cwd: ROOT, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+// без слежения за файлами (tools/vite.qa.config.ts): правки других сессий не перезагружают страницу посреди проверки
+const server = spawn(`npx vite --config tools/vite.qa.config.ts --port ${PORT} --strictPort`, { cwd: ROOT, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
 let serverLog = '';
 server.stdout.on('data', (d) => (serverLog += d));
 server.stderr.on('data', (d) => (serverLog += d));
@@ -167,7 +168,7 @@ try {
     }
   }
   ok('B по мокрым соседям — ступени сыро, течь, топь', [1, 2, 3].every((k) => levels.has(k)), [...levels].join(','));
-  ok('B дошли до болота: «Лестница на крышу»', !!swamp, `${path.length} кусков: ${path.join(' ')}`);
+  ok('B дошли до болота: «Под перевёрнутым болотом»', !!swamp, `${path.length} кусков: ${path.join(' ')}`);
   const wetFin = await page.evaluate(() => {
     const s = window.__rfWalk, w = s.world, run = w.run();
     return run.instances.filter((i) => w.wetAt(i.id)?.level === 3).map((i) => run.content[run.instances.indexOf(i)]?.finish?.floor);
@@ -180,8 +181,8 @@ try {
     await page.waitForFunction(() => !!window.__rfSwamp?.ready, null, { timeout: 300000 });
     await page.waitForTimeout(1500);
     const s0 = await page.evaluate(() => window.__rfSwamp.qaState());
-    ok('C вход в комнату — сцена финала: крыша, шестерня', s0.place === 'roof' && s0.models > 20 && s0.boxes > 10, JSON.stringify({ place: s0.place, models: s0.models, rotors: s0.rotors }));
-    await page.screenshot({ path: out + 'factory-3-roof.png' });
+    ok('C вход в комнату — сцена финала: зал под перевёрнутым болотом, шестерня', s0.place === 'hall' && s0.models > 20 && s0.boxes > 10, JSON.stringify({ place: s0.place, models: s0.models, rotors: s0.rotors }));
+    await page.screenshot({ path: out + 'factory-3-hall.png' });
     // подойти к зубу: подсказка
     await page.evaluate(() => {
       const s = window.__rfSwamp, z = s.qaState().stepZone;

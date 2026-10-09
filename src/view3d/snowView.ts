@@ -220,7 +220,12 @@ export function snowSpecFor(run: RunExport, id: string): { spec: SnowPieceSpec; 
   const gap = typeof run.settings?.gap === 'number' ? run.settings.gap : 1;
   const states = new Map(inst.connectors.map((k) => [k.id, snowDoorState(k)]));
   const spec = snowSpecOf(inst, run.cellM > 0 ? run.cellM : 0.1, (c) => states.get(c) ?? 'closed', gap);
-  const key = `${id}|${inst.connectors.map((k) => (states.get(k.id) ?? 'c')[0]).join('')}|${spec.x0},${spec.y0},${spec.floorY}`;
+  // раскопка завала — пробка меньше (четвертями: кусок пересобирается 3 раза)
+  for (const d of spec.doors) {
+    const k = inst.connectors.find((x) => x.id === d.id);
+    if (k?.collapsed && k.dug) d.dug = k.dug;
+  }
+  const key = `${id}|${inst.connectors.map((k) => (states.get(k.id) ?? 'c')[0] + (k.collapsed && k.dug ? k.dug : '')).join('')}|${spec.x0},${spec.y0},${spec.floorY}`;
   return { spec, key };
 }
 

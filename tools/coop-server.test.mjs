@@ -53,6 +53,15 @@ describe('coop: хаб лобби', () => {
     a.send({ t: 'act', to: 'A', a: 'dig' });
     a.send({ t: 'act', to: 'нет-такого', a: 'dig' });
     expect(a.last('act')).toBeUndefined();
+    // временное событие (fx) — всем остальным, без журнала; больше 2 КБ — отбрасывается
+    b.send({ t: 'fx', k: 'blink', d: { phase: 2 } });
+    expect(a.last('fx')).toEqual({ t: 'fx', from: 'B', k: 'blink', d: { phase: 2 } });
+    expect(c.last('fx')).toEqual({ t: 'fx', from: 'B', k: 'blink', d: { phase: 2 } });
+    expect(b.last('fx')).toBeUndefined();
+    b.send({ t: 'fx', k: 'big', d: 'x'.repeat(3000) });
+    b.send({ t: 'fx', k: 'слишком-длинный-вид-события', d: 1 });
+    expect(a.all('fx').length).toBe(1);
+    expect(hub.lobbies.get(LOBBY).ops.length).toBe(3);
     // мусор — молча мимо
     a.send({ t: 'op', op: 'x' });
     a.send({ t: 'nope' });

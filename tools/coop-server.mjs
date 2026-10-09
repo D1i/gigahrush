@@ -8,9 +8,11 @@
 //  • Чекпойнт: хост (первый из подключённых) раз в ~20 с присылает сохранение мира на seq — журнал до него сервер
 //    забывает; новичок получает чекпойнт + журнал после него. Отпечаток мира на seq уходит остальным — сверка копий.
 //  • Положения игроков ретранслируются как есть (последнее помнится — для новичков и переподключений); адресные
-//    действия игрока над игроком (act: откапывать засыпанного) — только адресату.
+//    действия игрока над игроком (act: откапывать засыпанного) — только адресату; временные события (fx: мигание света,
+//    рука, двери, что сами закрываются) — всем остальным, без журнала.
 //  • Обрыв связи: клиент переподключается с since = последний seq — получает только пропущенное.
-//  • Лобби без игроков живёт ttl (30 мин), потом забывается.
+//  • Лобби без игроков живёт ttl (30 мин), потом забывается. В лобби — не больше maxPlayers (4) подключённых игроков.
+//  • Сервер можно запустить и через Steam (tools/steam-bridge.mjs: хост — этот же хаб, игроки — по P2P-туннелю Steam).
 //
 // Запуск отдельно: `npm run coop-server` (node tools/coop-server.mjs [--port 8787]) — relay на /coop и, если есть
 // собранный dist/index.html, сама игра на /. В `npm run dev` тот же relay висит на пути /coop dev-сервера (vite.config.ts).
@@ -22,12 +24,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 /** Версия протокола (src/coop/protocol.ts — COOP_PROTO). */
 export const COOP_PROTO = 1;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+/** Игроков в лобби не больше (подключённых одновременно). */
+export const MAX_PLAYERS = 4;
 /** Предел сообщения: проект с текстурами ~1.5 МБ, сохранение мира — сотни КБ. */
 const MAX_MSG = 64 * 1024 * 1024;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 const MAX_OP = 4096;
 const MAX_STATE = 2048;
+const MAX_FX = 2048;
 
 const str = (v, max) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : null);
 
@@ -39,6 +44,9 @@ export function createCoopHub(o = {}) {
   const now = o.now ?? Date.now;
   const ttl = o.ttlMs ?? 30 * 60 * 1000;
   const log = o.log ?? (() => {});
+  const maxPlayers = o.maxPlayers ?? MAX_PLAYERS;
+  /** создано лобби (мост Steam публикует его UUID в данных лобби Steam) */
+  const onLobby = o.onLobby ?? (() => {});
   /** @type {Map<string, any>} */
   const lobbies = new Map();
 
@@ -83,8 +91,11 @@ export function createCoopHub(o = {}) {
         lob = { id: key, meta: c.meta, project: c.project, projectHash: c.projectHash, seq: 0, ops: [], cp: null, players: new Map(), host: null, emptyAt: null, orders: 0, created: now() };
         lobbies.set(key, lob);
         log(`лобби ${key} создано (${name}), сид «${c.meta.seed}», проект ${(c.project.length / 1024).toFixed(0)} КБ`);
+        onLobby(lob);
       } else if (!lob) return fail('no-lobby', 'Лобби не найдено (UUID неверный или сервер перезапускался)');
       const old = lob.players.get(id);
+      // мест нет: подключённых уже maxPlayers (тот же игрок из другого окна — не новый)
+      if (connected(lob).filter((p) => p.id !== id).length >= maxPlayers) return fail('full', `Лобби заполнено: уже ${maxPlayers} игрока`);
       if (old?.conn && old.conn !== conn) {
         // тот же игрок с другой вкладки / после обрыва, который сервер ещё не заметил — старое соединение закрыть
         old.conn.send({ t: 'error', code: 'replaced', text: 'Вы вошли в это лобби из другого окна' });
@@ -156,6 +167,13 @@ export function createCoopHub(o = {}) {
           const a = str(m.a, 16);
           const target = to && a ? L.players.get(to) : null;
           if (target?.conn && target !== me) target.conn.send({ t: 'act', from: me.id, a });
+          return;
+        }
+        case 'fx': {
+          // временные события (мигание, рука, двери, что сами закрываются) — остальным, без журнала
+          const k = str(m.k, 16);
+          if (!k || JSON.stringify(m.d ?? null).length > MAX_FX) return;
+          broadcast(L, { t: 'fx', from: me.id, k, d: m.d ?? null }, me);
           return;
         }
         case 'checkpoint': {
@@ -342,9 +360,11 @@ function wrapSocket(socket, head) {
  * Повесить relay на http-сервер (свой или dev-сервер Vite): WebSocket-апгрейды на path обслуживает хаб, остальные
  * (HMR Vite) не трогаются. Возвращает хаб.
  */
-export function attachCoopRelay(server, o = {}) {
-  const path = o.path ?? '/coop';
-  const hub = o.hub ?? createCoopHub({ log: o.log });
+/**
+ * WebSocket-сервер на пути path http-сервера: на каждое соединение — onConnection(ws), ws: { send(text), close(),
+ * onmessage(text), onclose() }. Чужие апгрейды (HMR Vite) не трогаются. Его же берёт мост Steam (туннель к хосту).
+ */
+export function attachWsServer(server, path, onConnection) {
   server.on('upgrade', (req, socket, head) => {
     let url;
     try {
@@ -360,12 +380,15 @@ export function attachCoopRelay(server, o = {}) {
     }
     const accept = createHash('sha1').update(key + GUID).digest('base64');
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-    const ws = wrapSocket(socket, head);
-    const conn = hub.connect(
-      (m) => ws.send(JSON.stringify(m)),
-      () => ws.close(),
-    );
-    ws.onmessage = (text) => {
+    onConnection(wrapSocket(socket, head));
+  });
+}
+
+/** Соединение с хабом по JSON-сообщениям: text — входящее, send(obj) — исходящее. Общая часть WebSocket и туннеля Steam. */
+export function hubConn(hub, sendText, close) {
+  const conn = hub.connect((m) => sendText(JSON.stringify(m)), close);
+  return {
+    receive(text) {
       let m;
       try {
         m = JSON.parse(text);
@@ -373,7 +396,17 @@ export function attachCoopRelay(server, o = {}) {
         return;
       }
       conn.receive(m);
-    };
+    },
+    drop: () => conn.drop(),
+  };
+}
+
+export function attachCoopRelay(server, o = {}) {
+  const path = o.path ?? '/coop';
+  const hub = o.hub ?? createCoopHub({ log: o.log });
+  attachWsServer(server, path, (ws) => {
+    const conn = hubConn(hub, (t) => ws.send(t), () => ws.close());
+    ws.onmessage = (text) => conn.receive(text);
     ws.onclose = () => conn.drop();
   });
   if (!hub.gcTimer) {

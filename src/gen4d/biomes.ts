@@ -5,7 +5,8 @@
 // (тега нет в списке — 0). Пресеты — по группам комнат (первый тег): хрущёвки (подъезд и квартиры), малосемейки
 // (коридорный дом, гостинки), общежитие, «богатая квартира» (куда ведут переходы, с усилением элитности) и три
 // подвала — сеть ходов (layout 'tunnels') с одними комнатами и разной отделкой: сухой, заброшенный, затопленный;
-// сарай — тоже сеть ходов, но из своих комнат (проходы 1.5 м, стойла, сеновал).
+// сарай — тоже сеть ходов, но из своих комнат (проходы 1.5 м, стойла, сеновал); общага — сеть длинных коридоров с
+// комнатами по бокам (src/data/roomsObshaga.ts, docs/GENERATOR-4D.md §22).
 import type { ApartmentSettings, Biome, FinishRule, Room, TunnelSettings, WalkGenSettings, WorldSettings } from '../model/types';
 import { DEFAULT_WET, normWet } from './wet';
 
@@ -50,6 +51,39 @@ function factoryBiome(): Biome {
   { hubEvery: [30, 70], turn: 0.14, branch: 0.3, ring: 0, loop: 0 }, 0.45);
   return { ...rest, wet: { ...DEFAULT_WET }, note };
 }
+/** Общага — сеть коридоров из своих комнат (src/data/roomsObshaga.ts). */
+const OBSHAGA_TAGS: [string, number][] = [['общага', 1]];
+
+/** Общага (§22): длинные коридоры 2 м в кафеле, по бокам — двери тупиковых комнат, общие кухни, туалеты, душевые,
+ *  прачечные; лестницы между этажами и спуск в затопленный подвал; хаб — вестибюль с вахтой. Не агрессивно
+ *  неевклидова: повороты и развилки редки (прямые коридоры), кольца из вахты редкие и длинные, бесконечные участки —
+ *  почти никогда. */
+function obshagaBiome(): Biome {
+  const { note, ...rest } = T('obshaga', 'Общага', '#c9b98a', [
+    rule('коридор', [['f_obsh_corridor', 1]], [['f_obsh_lino_brown', 3], ['f_metlakh', 1]]),
+    rule('вахта', [['f_obsh_corridor', 3], ['f_two_entrance', 1]], [['f_metlakh', 3], ['f_obsh_lino_brown', 1]]),
+    rule('лестница', [['f_obsh_corridor', 2], ['f_two_entrance', 1]], [['f_concrete_floor', 2], ['f_metlakh', 1]]),
+    rule('комната', [['f_obsh_paint_beige', 3], ['f_obsh_paint_green', 2], ['f_wp_rogozhka', 1]], [['f_obsh_lino_brown', 3], ['f_boards', 2], ['f_lino_gray', 1]]),
+    rule('вахтёрская', [['f_obsh_paint_green', 2], ['f_obsh_paint_beige', 1]], [['f_obsh_lino_brown', 1]]),
+    rule('кухня', [['f_two_kitchen', 3], ['f_obsh_corridor', 2]], [['f_metlakh', 2], ['f_obsh_lino_brown', 1]]),
+    rule('туалет', [['f_two_bath', 1]], [['f_metlakh', 1]]),
+    rule('душ', [['f_tile_white', 2], ['f_tile_blue', 1]], [['f_tile_floor', 2], ['f_metlakh', 1]]),
+    rule('прачечная', [['f_two_bath', 2], ['f_obsh_paint_green', 1]], [['f_metlakh', 2], ['f_tile_floor', 1]]),
+    rule('подвал', [['f_bsm_damp', 4], ['f_concrete', 1]], [['f_bsm_water', 1]]),
+  ], 'Общага: длинные коридоры 2 м в бежевом и зелёном кафеле, по бокам через 3.3–3.6 м двери бедных комнат на 2–3 ' +
+    'кровати (тупик, одна дверь-створка — закрывается сама), общие кухни, туалеты, душевая-улитка, прачечная; лестницы ' +
+    'на этажи (подъём — модуль лестниц) и спуск в подвал, затопленный по пояс. Хаб — огромный вестибюль с вахтой и ' +
+    'комнатой вахтёра (там всегда керосиновая лампа), выход — двери на улицу. Не агрессивно неевклидова: повороты и ' +
+    'развилки редки, кольца редкие и длинные.',
+  OBSHAGA_TAGS,
+  // прямые коридоры: поворот 4%, развилка 3% на кусок; хаб через 90–200 м; 80% дверей комнат открываются (остальные
+  // заперты); кольцо из вахты — 8%, длинное (40–90 м: наложение в 4D далеко от входа); бесконечный участок — 1%, не
+  // ближе 30 м к хабу
+  { hubEvery: [90, 200], turn: 0.04, branch: 0.03, storage: 0.8, ring: 0.08, ringLen: [40, 90], loop: 0.01, loopLen: [24, 40], loopMinDist: 30 });
+  // обзор 45 м: коридор в 30–40 м с дверями виден до конца (по пределу обзора — 27 м); порядок полей — как у normBiome
+  return { ...rest, viewM: 45, note };
+}
+
 /** Снежные тоннели — сеть лазов из своих комнат (src/data/roomsSnow.ts). */
 const SNOW_TAGS: [string, number][] = [['снег', 1]];
 const T = (id: string, name: string, color: string, rules: FinishRule[], note: string, tags = TUNNEL_TAGS, tunnels?: Partial<TunnelSettings>, dark?: number): Biome => {
@@ -98,6 +132,7 @@ export function defaultBiomes(): Biome[] {
       'Берлоги — стоять скрючившись. Обвалы заваливают лазы навсегда. Выход — подтаявший снег в полу редкой берлоги ' +
       '(через 60–150 м ползком): пробить — провалишься в ангар. Вход — переходом.',
       SNOW_TAGS, { hubEvery: [60, 150], turn: 0.32, branch: 0.24, storage: 0.4, ring: 0.3, ringLen: [24, 60], loop: 0.02 }, 0.9),
+    obshagaBiome(),
     B('rich', 'Богатая квартира', '#d06a4e', [
       ['прихожая', 1], ['кухня', 1], ['санузел', 1], ['жилая', 1.5], ['балкон', 1], ['кладовка', 1], ['коридор', 0.2],
     ], 'Сюда ведут переходы: квартира с усиленной элитностью (richBoost), выходы — в обычные квартиры биома, откуда пришли.', true),
@@ -216,15 +251,18 @@ export function tunOf(w: WorldSettings, biome: string | null | undefined): Tunne
 export type TunnelKind = 'hub' | 'straight' | 'turn' | 'branch' | 'storage';
 /** Проход хода подвала — метка ('basement', 1.0 м); «Спуск в подвал» — выход квартиры с этой меткой. */
 export const TUNNEL_TAG = 'basement';
-/** Проходы сетей ходов: подвал — 'basement' (1.0 м), сарай — 'barn' (1.5 м), снег — 'snow' (лаз 1.2 м). Сети друг с
- *  другом не стыкуются. */
-export const TUNNEL_PASS_TAGS: ReadonlySet<string> = new Set([TUNNEL_TAG, 'barn', 'snow', 'factory']);
-/** Дверь бокового помещения (кладовая подвала) — со стороны помещения: по ней кусок — «кладовая». */
-export const TUNNEL_STORE_TAGS: ReadonlySet<string> = new Set(['storage>basement', 'den>snow']);
-/** Дверь хода в боковое помещение (кладовая) — со стороны хода. */
-export const TUNNEL_SIDE_TAGS: ReadonlySet<string> = new Set(['basement>storage', 'snow>den']);
-/** Метки кусков роста ходов (кроме хабов): проходы, двери в боковые помещения, дверь в служебку. */
-const TUNNEL_DOORS: ReadonlySet<string> = new Set([...TUNNEL_PASS_TAGS, ...TUNNEL_SIDE_TAGS, 'corridor>service']);
+/** Проходы сетей ходов: подвал — 'basement' (1.0 м), сарай — 'barn' (1.5 м), снег — 'snow' (лаз 1.2 м), завод —
+ *  'factory' (2.0 м), общага — коридоры 'obshaga' (2.0 м) и ходы затопленного подвала 'obshaga_bsm' (1.6 м). Сети друг
+ *  с другом не стыкуются. */
+export const TUNNEL_PASS_TAGS: ReadonlySet<string> = new Set([TUNNEL_TAG, 'barn', 'snow', 'factory', 'obshaga', 'obshaga_bsm']);
+/** Дверь бокового помещения (кладовая подвала, комната общаги) — со стороны помещения: по ней кусок — «кладовая». */
+export const TUNNEL_STORE_TAGS: ReadonlySet<string> = new Set(['storage>basement', 'den>snow', 'room>obshaga']);
+/** Дверь хода в боковое помещение (кладовая, комната общаги) — со стороны хода: за ней с шансом tunnels.storage —
+ *  помещение, иначе дверь заперта (тупик). */
+export const TUNNEL_SIDE_TAGS: ReadonlySet<string> = new Set(['basement>storage', 'snow>den', 'obshaga>room']);
+/** Метки кусков роста ходов (кроме хабов): проходы, двери в боковые помещения, дверь в служебку, двери коридора общаги
+ *  в общее помещение (кухня, туалет, душевая, прачечная) и на лестничную клетку — растут всегда, как служебка. */
+const TUNNEL_DOORS: ReadonlySet<string> = new Set([...TUNNEL_PASS_TAGS, ...TUNNEL_SIDE_TAGS, 'corridor>service', 'obshaga>common', 'obshaga>stairs']);
 
 /** Вид комнаты в сети ходов: хаб (тег «хаб»), кладовая (дверь к ходу 'storage>basement'), прямой (два
  *  прохода на противоположных стенах), поворот (на соседних), развилка (три и больше); null — не кусок хода. */
@@ -285,6 +323,7 @@ export function normBiome(v: unknown): Biome | null {
     ...(Object.keys(tunnels).length ? { tunnels } : {}),
     ...(fin(o.dark) && o.dark > 0 ? { dark: clampN(o.dark, 0, 1) } : {}),
     ...(normWet(o.wet) ? { wet: normWet(o.wet)! } : {}),
+    ...(fin(o.viewM) && o.viewM > 0 ? { viewM: clampN(o.viewM, 1, 200) } : {}),
     note: typeof o.note === 'string' ? o.note : '',
   };
 }
@@ -388,8 +427,14 @@ export function normWorld(v: unknown): WorldSettings {
   };
 }
 
-/** Множитель веса комнаты в биоме: наибольший среди её тегов (0 — комната в биоме не растёт). */
+/** Тег комнаты «только в биоме» (= BIOME_ONLY_TAG, src/gen/generate.ts; здесь строкой — без зависимости от генератора). */
+const ONLY_TAG = 'только-биом';
+
+/** Множитель веса комнаты в биоме: наибольший среди её тегов (0 — комната в биоме не растёт). Комната «только в биоме»
+ *  растёт лишь в биомах её группы (первый тег в списке биома): коридор общаги (теги «общага», «коридор») не попадает в
+ *  малосемейки по тегу «коридор», её подвал — в подвалы. */
 export function biomeMul(b: Biome, room: Room): number {
+  if (room.tags.includes(ONLY_TAG) && !b.tags.some((t) => t.tag === room.tags[0] && t.mul > 0)) return 0;
   let m = 0;
   for (const t of b.tags) if (room.tags.includes(t.tag) && t.mul > m) m = t.mul;
   return m;

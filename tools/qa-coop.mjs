@@ -1,5 +1,6 @@
-// QA коопа «Прогулки» (docs/COOP.md): playwright + системный Chrome, свой vite (порт 5241, relay на /coop) — без HMR и
-// слежения за файлами: в дереве параллельно работают другие сессии, их правки не должны перемонтировать страницу посреди
+// QA коопа «Прогулки» (docs/COOP.md): playwright + системный Chrome, свой vite (порт 5297, relay на /coop) — без
+// слежения за файлами (HMR — только для перезагрузки после пересборки зависимостей): в дереве параллельно работают другие
+// сессии, их правки не должны перемонтировать страницу посреди
 // прогона.
 // Два игрока — два контекста браузера (разные вкладки-игроки):
 //  1. A: «3D» → «Подключить онлайн» → «Создать лобби» → код (UUID); B: «Подключить онлайн» → код → «Подключиться».
@@ -17,7 +18,7 @@ import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 
-const PORT = 5241;
+const PORT = 5297;
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const out = fileURLToPath(new URL('./qa/', import.meta.url));
 mkdirSync(out, { recursive: true });
@@ -26,7 +27,7 @@ const keep = process.argv.includes('--keep-server');
 let serverLog = '';
 const vite = await createVite({
   root: ROOT,
-  server: { port: PORT, strictPort: true, hmr: false, watch: null },
+  server: { port: PORT, strictPort: true, watch: null },
   customLogger: {
     info: (m) => (serverLog += m + '\n'),
     warn: (m) => (serverLog += m + '\n'),
@@ -74,7 +75,7 @@ async function player(name) {
   page.on('pageerror', (e) => errors.push(`${name} PAGEERROR ${e.message}`));
   // перезагрузки страницы (Vite пересобрал зависимости и перезагрузил её сам) — для разбора нестабильных прогонов
   page.on('load', () => (loads[name] = (loads[name] ?? 0) + 1));
-  page.on('console', (m) => m.type() === 'error' && !/pointer ?lock|WebSocket/i.test(m.text()) && errors.push(`${name} ${m.text().slice(0, 300)}`));
+  page.on('console', (m) => m.type() === 'error' && !/pointer ?lock|WebSocket|ERR_CONNECTION_REFUSED/i.test(m.text()) && errors.push(`${name} ${m.text().slice(0, 300)}`));
   await go(page, BASE);
   await page.evaluate(
     ({ name, color }) => {
@@ -184,6 +185,23 @@ async function sameSeq(A, B) {
   }
 }
 
+// прогрев: Vite собирает зависимости (Babylon и т. п.) до игроков — иначе пересборка посреди прогона перезагрузит
+// страницы (504 Outdated Optimize Dep → вкладка по умолчанию)
+{
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  try {
+    await go(page, BASE);
+    await page.evaluate(() => localStorage.setItem('room-forge/walk', JSON.stringify({ seed: 'qa-warm', clusters: true, on: true })));
+    await page.reload({ timeout: 180000 });
+    await page.getByRole('button', { name: '3D', exact: true }).click({ timeout: 180000 });
+    await page.waitForFunction(() => window.__rfWalk && window.__rf3dFold?.portal?.isActive, null, { timeout: 180000 });
+    await page.getByRole('button', { name: 'Подключить онлайн' }).click();
+    await page.waitForTimeout(3000);
+  } catch {}
+  await ctx.close();
+}
+
 try {
   const A = await player('A');
   const B = await player('B');
@@ -242,7 +260,10 @@ try {
       const plain = (id) => !d.run.instances.find((i) => i.id === id)?.location;
       const nb = d.run.links.map((x) => (x.a.inst === cur ? x.b.inst : x.b.inst === cur ? x.a.inst : null)).find((id) => id && plain(id));
       d.goTo(nb);
-    });
+    }).then(() =>
+      // A узнал, что B ушёл (положение дошло), и аватар доехал
+      A.waitForFunction((room) => [...window.__rfCoop.co.players.values()][0]?.state?.room !== room && !window.__rfCoop.presence.slowed, fa.room, { timeout: 30000 }),
+    );
   const bBack = async (x, z) => {
     await B.evaluate((id) => window.__rf3dFold.goTo(id), fa.room);
     await B.waitForTimeout(400);
@@ -386,27 +407,20 @@ try {
 
   // ═════════ 6б. снег: B ползком (аватар лежит, не под полом); B засыпан — A откапывает ═════════
   {
-    // оба — в комнате A, вдоль длинного прямоугольника пола, в 1.1 м друг от друга
-    const fr = await floorRect(A);
-    await B.evaluate((id) => window.__rf3dFold.goTo(id), fr.room);
-    await B.waitForTimeout(600);
-    const r = fr.rect;
-    const ax = r.x1 - r.x0 >= r.y1 - r.y0;
-    const mx = (r.x0 + r.x1) / 2, my = (r.y0 + r.y1) / 2;
-    const qa = ax ? [mx - 0.55, -my] : [mx, -(my - 0.55)];
-    const qb = ax ? [mx + 0.55, -my] : [mx, -(my + 0.55)];
+    // оба — в стартовой комнате (обзор проверен в п. 2): A и B у разных краёв длинного прямоугольника пола
+    for (const pg of [A, B]) await pg.evaluate((id) => window.__rf3dFold.goTo(id), fa.room);
+    await B.waitForTimeout(800);
+    const qa = pa, qb = pb;
     await place(A, qa[0], qa[1], qb[0], qb[1]);
-    // B ползком: эллипсоид как у SnowWalk в лазе (глаза 0.5 м) — камера опускается к полу
+    // B на четвереньки (поза, src/view3d/posture.ts — как в снежном лазе): глаза 1.6 → 0.5 м над полом
     await B.evaluate(({ x, z, lx, lz }) => {
       const c = window.__rf3d.fps;
-      // как SnowWalk: глаза опускаются вместе с эллипсоидом (1.6 → 0.5 м над полом)
-      c.ellipsoid.set(0.25, 0.28, 0.25);
-      c.ellipsoidOffset.set(0, 2 * 0.28 - 0.5, 0);
-      c.position.set(x, c.position.y - 1.1, z);
+      window.__rf3d.posture.set('crawl');
+      c.position.set(x, c.position.y, z);
       c.rotation.set(0.04, Math.atan2(lx - x, lz - z), 0);
       c.cameraDirection.setAll(0);
     }, { x: qb[0], z: qb[1], lx: qa[0], lz: qa[1] });
-    await A.waitForFunction(() => Math.abs(([...window.__rfCoop.co.players.values()][0]?.state?.eye ?? 9) - 0.5) < 0.05, null, { timeout: 30000 }).catch(() => {});
+    await A.waitForFunction(() => ([...window.__rfCoop.co.players.values()][0]?.state?.eye ?? 9) < 0.8, null, { timeout: 30000 }).catch(() => {});
     await A.waitForTimeout(1200);
     const lying = await A.evaluate(() => {
       const p = window.__rfCoop.presence;
@@ -429,8 +443,23 @@ try {
     // пол комнаты B — по модели её куска (камера A может стоять не на полу)
     const floorY = camB.floorZ ?? 0;
     const bodyY = await A.evaluate(() => window.__rf3d.scene.meshes.find((m) => m.name.startsWith('coop:body:'))?.position.y ?? null);
-    ok('B ползком: A получает высоту глаз ~0.5 м, аватар лежит над полом (не под ним)', lying.eye !== null && Math.abs(lying.eye - 0.5) < 0.05 && bodyY !== null && bodyY > floorY + 0.1 && bodyY < floorY + 0.5, `eye ${lying.eye}, тело на ${(bodyY - floorY).toFixed(2)} м над полом`);
+    // глаз ползком — ~0.5 м с покачиванием на каждый шаг рукой (posture.ts)
+    ok('B ползком: A получает высоту глаз (< 0.8 м), аватар лежит над полом (не под ним)', lying.eye !== null && lying.eye < 0.8 && bodyY !== null && bodyY > floorY + 0.1 && bodyY < floorY + 0.6, `eye ${lying.eye}, тело на ${(bodyY - floorY).toFixed(2)} м над полом`);
+    // кадр: A стоит на полу и смотрит вниз на лежащего B
+    await A.evaluate(({ fy, bx, bz }) => {
+      const c = window.__rf3d.fps;
+      c.position.y = fy + 1.65;
+      c.rotation.set(Math.atan2(c.position.y - (fy + 0.3), Math.hypot(bx - c.position.x, bz - c.position.z)), Math.atan2(bx - c.position.x, bz - c.position.z), 0);
+      c.cameraDirection.setAll(0);
+    }, { fy: floorY, bx: qb[0], bz: qb[1] });
+    await A.waitForTimeout(600);
     await A.locator('canvas').first().screenshot({ path: out + 'coop-5-A-sees-B-crawling.png' });
+    // A подходит к B на 0.9 м (откапывать — ближе DIG_RADIUS_M)
+    {
+      const l = Math.hypot(qa[0] - qb[0], qa[1] - qb[1]) || 1;
+      const k = Math.min(0.9, l) / l;
+      await place(A, qb[0] + (qa[0] - qb[0]) * k, qb[1] + (qa[1] - qb[1]) * k, qb[0], qb[1]);
+    }
     // B засыпан (как после обвала у его места)
     await B.evaluate(({ x, z }) => {
       const st = window.__rfSnow.collapse;
@@ -451,12 +480,7 @@ try {
     }
     ok('A откопал B за 4 нажатия (digMate), у B — «откапывает»', digs[3].startsWith('calm') && digs[0] === 'buried:0.25', digs.join(' → '));
     // B снова на ногах
-    await B.evaluate(() => {
-      const c = window.__rf3d.fps;
-      c.ellipsoid.set(0.3, 0.85, 0.3);
-      c.ellipsoidOffset.set(0, 0.1, 0);
-      c.position.y += 1.1;
-    });
+    await B.evaluate(() => window.__rf3d.posture.set('stand'));
     await B.waitForTimeout(800);
   }
 

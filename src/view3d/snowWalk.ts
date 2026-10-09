@@ -8,6 +8,9 @@
 //  • Обвал (src/locations/snowCollapse.ts): метры ползком в лазах → место (host.pickSite) → треск и сыплется снег →
 //    обвал: проём завален навсегда (host.collapse), глыбы набора (snow_chunks.glb) падают; игрок у места — засыпан:
 //    белая пелена, E — откапываться (digSelf нажатий; напарник — digMate), откопался — на своей стороне завала.
+//  • Раскопка завала: у пробки (ближе 1.2 м к проёму с завалом) — «Завал. E — разгребать (n/N)»; каждое нажатие —
+//    работа 1/clear (мир — host.dig → WorldOp 'dig': в коопе нажатия всех игроков складываются, у всех одинаково);
+//    четверть раскопана — пробка меньше; до конца — лаз снова открыт, глыбы у него убираются.
 //  • Звук (./snowAudio.ts): ветер над снегом, хруст ползком, треск свода со стороны обвала, удар, засыпан — глухо и
 //    сердце, капли у подтаявшего пятна, удары по нему. Включается первым нажатием клавиши / кликом (автоплей);
 //    выключить — localStorage 'room-forge/snow-sound' = '0'.
@@ -43,6 +46,8 @@ import { ROOM_CROUCH, type Posture } from './posture';
 const SOUND_KEY = 'room-forge/snow-sound';
 
 const THAW_NEAR = 1.1;
+/** раскопка: ближе стольких метров к проёму с завалом */
+const PLUG_NEAR = 1.2;
 const COLD = new Color3(0.88, 0.93, 1);
 /** свет у игрока в снегу: ярче и дальше, чем в тёмных биомах (снег отражает) */
 const LAMP = { intensity: 0.95, range: 5.5 };
@@ -70,6 +75,10 @@ export interface SnowWalkHost {
   collapse(site: CollapseSite): void;
   /** розыгрыш ангара подтаявшей берлоги (null — не подтаявшая) */
   thawOf(roomId: string): HangarRoll | null;
+  /** доля раскопки завала у метки (0…1; null — завала нет) */
+  digProgress(inst: string, conn: string): number | null;
+  /** раскопать завал: работа amount (доля); в коопе — операция мира у всех */
+  dig(inst: string, conn: string, amount: number): void;
   /** пятно пробито — провал в ангар */
   onBreak(roomId: string): void;
   onHud(h: SnowHud): void;
@@ -89,10 +98,13 @@ export class SnowWalk {
   private puff: ParticleSystem | null = null;
   private thaw = new Map<string, ThawState>();
   private nearThaw: string | null = null;
+  /** завал рядом (проём с пробкой в комнате игрока) */
+  private nearPlug: { inst: string; conn: string; x: number; y: number } | null = null;
+  private chunkCheck = 0;
   private drips: ParticleSystem | null = null;
   private glow: PointLight | null = null;
   private chunks: Mesh[] = [];
-  private falling: { mesh: Mesh; v: Vector3; floor: number }[] = [];
+  private falling: { mesh: Mesh; v: Vector3; floor: number; site?: CollapseSite }[] = [];
   private hudKey = '';
   private shake = 0;
   private onKey = (e: KeyboardEvent) => this.key(e);
@@ -142,7 +154,11 @@ export class SnowWalk {
 
   private frame() {
     const dt = Math.min(0.1, this.scene.getEngine().getDeltaTime() / 1000 || 1 / 60);
-    const r = this.host.live() ? this.host.room() : null;
+    // комната на миг не определилась (мир пересобирается) — состояние не трогать: иначе поза дёргалась бы
+    // «встал — на четвереньки», и в лаз было не пролезть
+    const live = this.host.live();
+    const r = live ? this.host.room() : null;
+    if (live && !r) return;
     const snow = !!r && isSnowRoom(r.inst);
     if (snow !== this.on) (snow ? this.enter() : this.leave());
     this.audio.setInSnow(snow);
@@ -164,7 +180,9 @@ export class SnowWalk {
     // пол; скрючившись упёрся в низкий свод впереди — на четвереньки
     const P = this.posture;
     const c = this.cam.position;
-    const floor = this.floorBelow(c.x, c.z);
+    // высота низа комнаты (за настоящими лестницами мир выше/ниже — RunInstance.z; кусок и оболочка уже подняты)
+    const z0 = Number(r.inst.z) || 0;
+    const floor = this.floorBelow(c.x, c.z, z0);
     if (floor !== null && c.y - P.eye > floor + 0.3) {
       c.y = floor + P.eye + 0.02;
       this.last = null;
@@ -197,6 +215,34 @@ export class SnowWalk {
         prompt = s.hits ? `E — бить подтаявший снег (${s.hits}/${s.need})` : 'Подтаявший снег. E — бить';
       }
     } else this.thawFx(null, false);
+    // ── завал рядом: раскопка (E)
+    this.nearPlug = null;
+    if (!this.nearThaw) {
+      let bd = PLUG_NEAR;
+      for (const k of r.inst.connectors) {
+        if (!k.collapsed || k.len < 1) continue;
+        const x = ((k.line[0] + k.line[2]) / 2) * CELL, y = ((k.line[1] + k.line[3]) / 2) * CELL;
+        const d = Math.hypot(px - x, py - y);
+        if (d < bd) {
+          bd = d;
+          this.nearPlug = { inst: r.id, conn: k.id, x, y };
+        }
+      }
+      if (this.nearPlug) {
+        const p = this.host.digProgress(this.nearPlug.inst, this.nearPlug.conn) ?? 0;
+        prompt = `Завал. E — разгребать (${Math.round(p * this.spec.clear)}/${this.spec.clear})`;
+      }
+    }
+    // глыбы у раскопанных завалов — убрать
+    this.chunkCheck -= dt;
+    if (this.chunkCheck <= 0) {
+      this.chunkCheck = 0.5;
+      this.falling = this.falling.filter((f) => {
+        if (!f.site || this.host.digProgress(f.site.inst, f.site.connector) !== null) return true;
+        f.mesh.dispose();
+        return false;
+      });
+    }
     const buried = this.col.phase === 'buried' ? this.col.dig : null;
     const crack = this.col.phase === 'warn' ? Math.min(1, this.col.t / this.spec.warnS) : null;
     if (buried !== null) prompt = `Засыпало! E — откапываться (${Math.round(buried * this.spec.digSelf)}/${this.spec.digSelf})`;
@@ -219,14 +265,14 @@ export class SnowWalk {
 
   /** Пол полости под (x, z): первое пересечение луча снизу вверх с коллайдерами снега (полость замкнута — снизу первым
    *  встречается её пол); null — коллайдера под точкой нет. */
-  private floorBelow(x: number, z: number): number | null {
-    const ray = new Ray(new Vector3(x, -1.6, z), Vector3.Up(), 3.2);
+  private floorBelow(x: number, z: number, z0 = 0): number | null {
+    const ray = new Ray(new Vector3(x, z0 - 1.6, z), Vector3.Up(), 3.2);
     let best: number | null = null;
     for (const m of this.colliders) {
       const hit = ray.intersectsMesh(m as Mesh, false);
       if (hit.hit && (best === null || hit.distance < best)) best = hit.distance;
     }
-    return best === null ? null : -1.6 + best;
+    return best === null ? null : z0 - 1.6 + best;
   }
 
   /** Свод над (x, feet, z): ближайшее пересечение луча вверх с коллайдерами снега. */
@@ -341,6 +387,19 @@ export class SnowWalk {
       this.shake = Math.max(this.shake, 0.35);
       return;
     }
+    if (this.nearPlug && !this.nearThaw) {
+      const pl = this.nearPlug;
+      this.host.dig(pl.inst, pl.conn, 1 / this.spec.clear);
+      this.audio.dig();
+      this.shake = Math.max(this.shake, 0.25);
+      // снег из-под рук
+      if (this.puff) {
+        this.puff.emitter = new Vector3(pl.x, this.cam.position.y - this.posture.eye + 0.3, -pl.y);
+        this.puff.manualEmitCount = 25;
+        this.puff.start();
+      }
+      return;
+    }
     if (this.nearThaw) {
       const id = this.nearThaw;
       const roll = this.host.thawOf(id);
@@ -445,7 +504,7 @@ export class SnowWalk {
       m.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
       const s = 0.8 + Math.random() * 0.6;
       m.scaling.setAll(s);
-      this.falling.push({ mesh: m, v: new Vector3((Math.random() - 0.5) * 0.6, 0, (Math.random() - 0.5) * 0.6), floor: y + 0.02 + Math.random() * 0.12 });
+      this.falling.push({ mesh: m, v: new Vector3((Math.random() - 0.5) * 0.6, 0, (Math.random() - 0.5) * 0.6), floor: y + 0.02 + Math.random() * 0.12, site });
     }
   }
 
@@ -482,7 +541,7 @@ export class SnowWalk {
       return;
     }
     const pc = this.patchCenter(inst)!;
-    const y0 = 0; // этажи в «Прогулке» не поднимаются (портальный рендер)
+    const y0 = Number(inst.z) || 0; // низ комнаты (RunInstance.z — за настоящими лестницами); этажи (floor) не поднимаются
     if (!this.glow) {
       const g = (this.glow = new PointLight('snow:thawGlow', Vector3.Zero(), this.scene));
       g.diffuse = new Color3(1, 0.6, 0.28);

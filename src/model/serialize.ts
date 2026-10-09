@@ -34,6 +34,7 @@ import { cloneWorld, newWorldSettings, normWorld } from '../gen4d/biomes';
 import { areaM2, decodeCells, encodeCells } from './cells';
 import { uid } from './ops';
 import { cloneLocation, parseLocation } from '../locations/stairwell';
+import { cloneStair, parseStair } from './stairs';
 
 export const FORMAT = 'room-forge';
 export const FORMAT_VERSION = 1;
@@ -112,6 +113,8 @@ export function serializeRoom(r: Room, cellM: number): RoomJSON {
     finish: { wall: r.finish?.wall ?? null, floor: r.finish?.floor ?? null },
     // спец-локация (src/locations/): поле пишется, только если задано у комнаты
     ...(r.location !== undefined ? { location: cloneLocation(r.location) } : {}),
+    // лестница с перепадом высоты (src/model/stairs.ts): тоже только если задана
+    ...(r.stair ? { stair: cloneStair(r.stair) } : {}),
   };
 }
 
@@ -288,6 +291,7 @@ function parseRoomWith(json: unknown, ctx: RefCtx | null, roomId: string): Room 
     finish: { wall: fin(fo.wall, 'wall'), floor: fin(fo.floor, 'floor') },
     // спец-локация: нет поля — обычная комната; некорректная — null, диапазоны нормализуются
     ...('location' in o ? { location: parseLocation(o.location) } : {}),
+    ...(parseStair(o.stair) ? { stair: parseStair(o.stair) } : {}),
   };
 }
 
