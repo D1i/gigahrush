@@ -2,8 +2,11 @@
 // портального рендера (src/blockout/stairs.ts liftPiece): стены, потолок, перемычки и подвесные предметы — до своего
 // потолка; проём на всю высоту зала — без перемычки; у соседей разной высоты каждая половина — до своего потолка, порталы
 // двух сторон одной высоты; эскалатор из трёх маршей бок о бок — без видимых ступеней и перил по бокам, с пандусом,
-// опорой на каждом марше и перилами у края верхней площадки над промежутками.
+// опорой на каждом марше и перилами у края верхней площадки над промежутками. Низкий потолок (лаз 0.8 × 0.8, ceilM 0.85
+// ниже wallHeightM): стены и потолок опущены, потолок — коллайдер, проём — до 0.8 / потолка лаза с обеих сторон.
 import { afterAll, describe, expect, it } from 'vitest';
+import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
+import { Scene } from '@babylonjs/core/scene';
 import { createDefaultProject } from '../data/presets';
 import { room, TAG_OPEN_H, type ConnTag } from '../data/roomBuilder';
 import { exportRunJSON } from '../gen/world';
@@ -11,6 +14,7 @@ import { createStreamWorld, streamSettings } from '../gen4d/stream';
 import { parseRoom, serializeRoom } from '../model/serialize';
 import { connDz, parseStair, stairIssues, worldStair } from '../model/stairs';
 import type { Project, Room, Rot, Side, StairSpec } from '../model/types';
+import { buildBabylonBlockout } from './babylon';
 import { validateBlockout } from './core';
 import { buildPiece, mergePieces, piecePortals } from './pieces';
 import { liftPiece, stairFloorAt, stairMeshes } from './stairs';
@@ -96,6 +100,21 @@ describe('высокие залы и проёмы по метке', { timeout: 6
     // babylon.ts ставит модель подвесного на z + wallHeightM — потолок зала
     const lamp = pc.props.find((x) => x.tags.includes('потолок'))!;
     expect(lamp.z! + H).toBeCloseTo(TALL, 6);
+  });
+
+  it('Babylon: болванка подвесного предмета высокого зала — не коллайдер (висела бы плитой над полом)', () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const bo = buildBabylonBlockout(scene, pieces.get(hall)!, { collisions: true });
+    const lamp = bo.props.find((m) => m.name === `prop:${hall}:p_obsh_plafond`)!;
+    expect(lamp).toBeTruthy();
+    // болванка — на z = ceilM − wallHeightM над полом (2.0 м): в переходе метро (3.2) это 0.7 м — поперёк хода
+    expect(lamp.position.y).toBeCloseTo(TALL - H, 6);
+    expect(lamp.checkCollisions).toBe(false);
+    // стены — по-прежнему коллайдеры
+    expect(bo.root.getChildMeshes(false).some((m) => m.metadata?.kind === 'wall' && m.checkCollisions)).toBe(true);
+    bo.dispose();
+    engine.dispose();
   });
 
   it('проход на всю высоту между высокими залами — без перемычки, половины закрыты плитой потолка', () => {
@@ -266,5 +285,143 @@ describe('эскалатор: три марша бок о бок', { timeout: 60
 
   it('validateBlockout: кусок тоннеля чистый', () => {
     expect(validateBlockout(mergePieces([pc]))).toEqual([]);
+  });
+});
+
+// ───────────────────────── низкий потолок: лаз 0.8 × 0.8 ─────────────────────────
+
+// В node нет canvas: сетка-текстура болванки Babylon рисуется в заглушку (как в babylon.test.ts).
+class FakeCanvas {
+  constructor(public width: number, public height: number) {}
+  getContext() {
+    const store: Record<string | symbol, unknown> = {};
+    return new Proxy(store, { get: (t, k) => (k in t ? t[k] : () => undefined), set: (t, k, v) => ((t[k] = v), true) });
+  }
+}
+(globalThis as unknown as { OffscreenCanvas?: unknown }).OffscreenCanvas ??= FakeCanvas;
+
+const DUCT_CEIL = 0.85, DUCT_OPEN = 0.8;
+
+/** Комната 4×4 (потолок 2.5): N — лаз по метке с высотой проёма 0.8 (tt_duct), E — лаз по обычной метке (tt_dplain,
+ *  проём по doorHeightM — его режет потолок лаза). Лазы 0.8 × 2.0 — потолок 0.85, в лазе tt_duct — плафон. */
+function ductWorld(): { rx: RunExport; room: string; duct: string; duct2: string | null; plain: string } {
+  const p = project([
+    box('tt_lroom', 4, 4, [['N', 1.6, 'hall>kitchen', 'tt_duct'], ['E', 1.6, 'hall>kitchen', 'tt_dplain']], { weight: 0 }),
+    box('tt_duct', 0.8, 2, [['N', 0, 'hall>kitchen', 'tt_duct'], ['S', 0, 'hall>kitchen', 'tt_duct']], { ceilM: DUCT_CEIL, lamp: true }),
+    box('tt_dplain', 2, 0.8, [['W', 0, 'hall>kitchen', 'tt_dplain'], ['E', 0, 'hall>kitchen', 'tt_dplain']], { ceilM: DUCT_CEIL }),
+  ]);
+  for (const seed of ['duct', 'a', 'b', 'c', 'd', 'e', 'f', 'g']) {
+    const w = createStreamWorld(p, streamSettings(seed, { startRoomId: 'tt_lroom', deadEndChance: 0, sightM: 0 }));
+    w.ensureAround(w.startId!, 2);
+    const rx = exportRunJSON(p, w.run()) as RunExport;
+    const r = rx.instances.find((i) => i.id === w.startId)!;
+    const duct = r.connectors[0].linkedTo?.inst ?? null, plain = r.connectors[1].linkedTo?.inst ?? null;
+    if (!duct || !plain) continue;
+    const d = rx.instances.find((i) => i.id === duct)!;
+    const duct2 = d.connectors.map((k) => k.linkedTo?.inst ?? null).find((x) => x && x !== r.id) ?? null;
+    return { rx, room: r.id, duct, duct2, plain };
+  }
+  throw new Error('нет сида, при котором у комнаты оба лаза');
+}
+
+describe('низкий потолок (Room.ceilM ниже wallHeightM): лаз 0.8 × 0.8', { timeout: 60000 }, () => {
+  TAG_OPEN_H.tt_duct = DUCT_OPEN;
+  afterAll(() => {
+    delete TAG_OPEN_H.tt_duct;
+  });
+  const { rx, room: rm, duct, duct2, plain } = ductWorld();
+  const pieces = new Map<string, BlockoutModel>(rx.instances.map((i) => [i.id, buildPiece(rx, i.id, { deadEnds: 'panel', doors: true })]));
+  const inst = (id: string) => rx.instances.find((i) => i.id === id)!;
+  const portal = (from: string, to: string) => piecePortals(rx, pieces.get(from)!, from).find((q) => q.to === to)!;
+  const lintels = (id: string, to: string) => {
+    const op = pieces.get(id)!.openings.find((o) => o.a.inst === to || o.b.inst === to)!;
+    const ov = (r: { x0: number; y0: number; x1: number; y1: number }) =>
+      Math.min(r.x1, op.rect.x1) - Math.max(r.x0, op.rect.x0) > 1e-6 && Math.min(r.y1, op.rect.y1) - Math.max(r.y0, op.rect.y0) > 1e-6;
+    return pieces.get(id)!.solids.filter((s) => s.kind === 'lintel' && ov(s.rect)).map((s) => [s.z0, s.z1]);
+  };
+
+  it('экспорт: потолок лаза 0.85, проём метки 0.8', () => {
+    expect(inst(duct).ceilM).toBe(DUCT_CEIL);
+    expect(inst(duct).connectors.map((c) => c.openH)).toEqual([DUCT_OPEN, DUCT_OPEN]);
+    expect(inst(plain).connectors.map((c) => c.openH)).toEqual([undefined, undefined]);
+  });
+
+  it('лаз: стены, облицовка и потолок опущены до 0.85, потолок — коллайдер, подвесной — под ним; ничего не в минус', () => {
+    for (const id of [duct, plain]) {
+      const pc = pieces.get(id)!;
+      expect(Math.max(...pc.solids.filter((s) => s.kind === 'wall').map((s) => s.z1)), id).toBeCloseTo(DUCT_CEIL + S, 6);
+      for (const s of pc.solids) expect(s.z1, `${id} ${s.kind}`).toBeGreaterThan(s.z0);
+      for (const f of pc.faces) {
+        expect(f.z1, id).toBeGreaterThan(f.z0);
+        expect(f.z1, id).toBeLessThanOrEqual(DUCT_CEIL + 1e-6);
+      }
+      expect(pc.ceilings.length, id).toBeGreaterThan(0);
+      for (const c of pc.ceilings) {
+        expect(c.z, id).toBeCloseTo(DUCT_CEIL, 6);
+        expect(c.solid, id).toBe(true);
+      }
+      expect(pc.floors.find((f) => f.inst === id)!.z).toBe(0);
+    }
+    const lamp = pieces.get(duct)!.props.find((x) => x.tags.includes('потолок'))!;
+    expect(lamp.z! + H).toBeCloseTo(DUCT_CEIL, 6);
+    // у обычной комнаты рядом потолок прежний и без коллизий
+    for (const c of pieces.get(rm)!.ceilings) expect(c.solid).toBeUndefined();
+  });
+
+  it('метка с проёмом 0.8: порталы обеих сторон — 0.8, перемычки — от 0.8 до своих потолков', () => {
+    expect(duct2).not.toBeNull();
+    expect(portal(rm, duct).h).toBeCloseTo(DUCT_OPEN, 6);
+    expect(portal(duct, rm).h).toBeCloseTo(DUCT_OPEN, 6);
+    expect(lintels(rm, duct).length).toBeGreaterThan(0);
+    for (const l of lintels(rm, duct)) expect(l).toEqual([DUCT_OPEN, H + S]);
+    expect(lintels(duct, rm).length).toBeGreaterThan(0);
+    for (const l of lintels(duct, rm)) expect(l).toEqual([DUCT_OPEN, DUCT_CEIL + S]);
+    if (duct2) {
+      expect(portal(duct, duct2).h).toBeCloseTo(DUCT_OPEN, 6);
+      expect(portal(duct2, duct).h).toBeCloseTo(DUCT_OPEN, 6);
+      for (const l of lintels(duct, duct2)) expect(l).toEqual([DUCT_OPEN, DUCT_CEIL + S]);
+    }
+  });
+
+  it('обычная метка: проём — до потолка лаза (0.85) с обеих сторон, у комнаты перемычка 0.85…2.5, у лаза — плита', () => {
+    expect(portal(rm, plain).h).toBeCloseTo(DUCT_CEIL, 6);
+    expect(portal(plain, rm).h).toBeCloseTo(DUCT_CEIL, 6);
+    expect(lintels(rm, plain).length).toBeGreaterThan(0);
+    for (const l of lintels(rm, plain)) expect(l).toEqual([DUCT_CEIL, H + S]);
+    expect(lintels(plain, rm)).toEqual([]);
+    const plate = pieces.get(plain)!.ceilings.find((c) => c.inst === null && c.owner === plain);
+    expect(plate?.z).toBeCloseTo(DUCT_CEIL, 6);
+  });
+
+  it('тупики и двери лаза — высотой проёма', () => {
+    let n = 0;
+    for (const i of rx.instances.filter((x) => x.roomId !== 'tt_lroom')) {
+      const id = i.id, pc = pieces.get(id)!;
+      const top = i.roomId === 'tt_duct' ? DUCT_OPEN : DUCT_CEIL;
+      for (const d of [...pc.deadEnds, ...(pc.doors ?? [])]) {
+        expect(d.heightM, `${id} ${d.connector}`).toBeCloseTo(top, 6);
+        n++;
+      }
+    }
+    expect(n).toBeGreaterThan(0);
+  });
+
+  it('validateBlockout: лаз и его соседи вместе — чистая стыковка', () => {
+    for (const [id, pc] of pieces) expect(validateBlockout(mergePieces([pc])), id).toEqual([]);
+    for (const nb of [duct, plain]) expect(validateBlockout(mergePieces([pieces.get(rm)!, pieces.get(nb)!])), nb).toEqual([]);
+    if (duct2) expect(validateBlockout(mergePieces([pieces.get(duct)!, pieces.get(duct2)!]))).toEqual([]);
+  });
+
+  it('Babylon: потолок лаза — коллайдер, потолок комнаты — нет', () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const low = buildBabylonBlockout(scene, pieces.get(duct)!, { collisions: true });
+    expect(low.ceilings.length).toBeGreaterThan(0);
+    expect(low.ceilings.every((m) => m.checkCollisions)).toBe(true);
+    const hi = buildBabylonBlockout(scene, pieces.get(rm)!, { collisions: true });
+    expect(hi.ceilings.some((m) => m.checkCollisions)).toBe(false);
+    low.dispose();
+    hi.dispose();
+    engine.dispose();
   });
 });

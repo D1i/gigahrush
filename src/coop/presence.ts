@@ -140,8 +140,8 @@ export class CoopPresence {
     private readonly inLoc: () => string | null,
     /** свой игрок засыпан обвалом (снежные ходы) */
     private readonly buried: () => boolean = () => false,
-    /** общага: свой игрок держит лампу / погиб (PlayerState.lamp / dead) */
-    private readonly flags: { lamp?: () => boolean; dead?: () => boolean; torch?: () => boolean } = {},
+    /** общага: свой игрок держит лампу / погиб (PlayerState.lamp / dead); лут: «меченый» (PlayerState.mk) */
+    private readonly flags: { lamp?: () => boolean; dead?: () => boolean; torch?: () => boolean; mk?: () => boolean } = {},
   ) {
     this.scene = v.scene;
     this.models = new AvatarModels(this.scene);
@@ -449,9 +449,10 @@ export class CoopPresence {
     if (this.flags.lamp?.()) s.lamp = 1;
     if (this.flags.torch?.()) s.torch = 1;
     if (this.flags.dead?.()) s.dead = 1;
+    if (this.flags.mk?.()) s.mk = 1;
     const o = this.sent;
     const same =
-      o && o.room === s.room && o.loc === s.loc && o.fps === s.fps && o.eye === s.eye && o.buried === s.buried && o.lamp === s.lamp && o.torch === s.torch && o.dead === s.dead &&
+      o && o.room === s.room && o.loc === s.loc && o.fps === s.fps && o.eye === s.eye && o.buried === s.buried && o.lamp === s.lamp && o.torch === s.torch && o.dead === s.dead && o.mk === s.mk &&
       Math.abs(o.p[0] - s.p[0]) < 0.01 && Math.abs(o.p[1] - s.p[1]) < 0.01 && Math.abs(o.p[2] - s.p[2]) < 0.01 && Math.abs(o.yaw - s.yaw) < 0.01;
     if (same && t - this.sentAt < HEARTBEAT_MS) return;
     this.co.sendState(s);

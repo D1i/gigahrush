@@ -21,6 +21,8 @@
 //    над дверью поднят (альков): дверь видна целиком; без двери (тупик 'wall') — глухая стена;
 //  • завал (RunConnector.collapsed) — куча земли от проёма в комнату (раскопка — меньше).
 import type { DeadEndMode, RunConnector, RunExport, RunInstance, Side } from '../blockout/types';
+import { isCellarTags } from '../locations/cellarSqueeze';
+import { SNOWDOOR_CONN } from '../locations/storyDoors';
 import { hashStr, surfaceNets, vnoise, type SnowMeshData } from './snowMesh';
 
 /** Шаг решётки, м (делит полузазор 5 см: плоскость проёма — на узлах решётки). */
@@ -91,8 +93,8 @@ export interface CellarPieceSpec {
   seed: number;
 }
 
-/** Комната погреба (первый тег — «погреб»). */
-export const isCellarRoom = (inst: Pick<RunInstance, 'roomTags'> | null | undefined): boolean => inst?.roomTags[0] === 'погреб';
+/** Комната погреба (первый тег — «погреб», src/locations/cellarSqueeze.ts). */
+export const isCellarRoom = (inst: Pick<RunInstance, 'roomTags'> | null | undefined): boolean => !!inst && isCellarTags(inst.roomTags);
 
 const OUT: Record<Side, [number, number]> = { N: [0, -1], S: [0, 1], E: [1, 0], W: [-1, 0] };
 
@@ -170,6 +172,8 @@ export function cellarSpecOf(inst: RunInstance, cellM: number, opts: CellarSpecO
     else state = 'closed';
     // дверь болванки у закрытой метки: выход, приход — всегда; тупик — если тупики не глухие; срезанная — панель
     if (state !== 'open' && (c.exit || c.arrival || c.cut || opts.deadEnds !== 'wall')) slot = Math.min(openOf(c), ceilOf(inst));
+    // дверь в снег (src/view3d/storyWalk.ts): без слота болванки — своя низкая дверь 1.8 м и снег вровень со стеной
+    else if (state !== 'open' && c.id === SNOWDOOR_CONN) slot = Math.min(1.8, ceilOf(inst));
     let top = Math.min(CEL_DOOR_H, openOf(c), ceilOf(inst));
     const p = state === 'open' ? partner?.(c) : null;
     if (p) top = Math.min(top, openOf(p.k), ceilOf(p.inst));
@@ -245,6 +249,9 @@ export interface CellarField {
   f(x: number, y: number, z: number, noise?: boolean): number;
   /** расстояние до стены плана комнаты (< 0 — внутри клеток), м */
   plan(x: number, y: number): number;
+  /** у плоскости открытого проёма: вес 0…1 (1 — на плоскости, 0 — дальше 0.12 м), в out — нормаль устья к воздуху (план)
+   *  и [3] — насколько открыто устье в 0.1 м по ней; по точному профилю — у обоих соседей одинаково (без шва в свете) */
+  mouth(x: number, y: number, z: number, out: Float64Array): number;
   zMin: number;
   zMax: number;
 }
@@ -334,7 +341,7 @@ export function cellarField(spec: CellarPieceSpec): CellarField {
       const al = dx * d.nx + dy * d.ny;
       const la = Math.abs(-dx * d.ny + dy * d.nx);
       const dm = Math.hypot(Math.max(0, la - d.half), Math.max(0, al - pad));
-      if (dm < 0.4) fade = Math.min(fade, sstep(0.1, 0.4, dm));
+      if (dm < 0.3) fade = Math.min(fade, sstep(0.1, 0.3, dm));
       const ext = o.full ? 0 : Math.max(0, la - d.half - 0.4) * 3;
       cap = Math.min(cap, al + Math.max(dp, 0) - KEEP - 0.002 + ext);
       keep = Math.max(keep, KEEP - al - ext);
@@ -360,11 +367,14 @@ export function cellarField(spec: CellarPieceSpec): CellarField {
       const lay = Math.sin(z * 26 + vnoise(x * 1.3, y * 1.3, z * 0.6, S + 13) * 2.5);
       // стены: комья наружу, карманы выпавших комьев, слои; внутрь — не дальше CEL_IN
       let dw = 0.022 + 0.034 * n1 + 0.016 * n2 + 0.007 * n3 + 0.004 * lay + 0.1 * Math.max(0, pk - 0.35);
+      dw += 0.02 * vnoise(x * 1.1, y * 1.1, z * 1.1, S + 3);
       dw = Math.min(CEL_OUT, Math.max(-CEL_IN, dw));
       // свод: комья и провисания
       let dv = 0.035 + 0.03 * n1 + 0.014 * n2 + 0.006 * n3 - 0.12 * Math.max(0, -pk - 0.3);
       dv = Math.min(0.1, Math.max(-0.05, dv));
       let D = dw + (dv - dw) * sstep(top - 0.5, top - 0.12, z);
+      // провисания свода не заходят на стены: ниже угла свода — внутрь не дальше CEL_IN
+      D = Math.max(D, -CEL_IN - (0.05 - CEL_IN) * sstep(top - 0.25, top - 0.08, z));
       // у стороны с открытым проёмом комья не доходят до его плоскости
       if (D > cap - 0.015) D = smin(D, cap, 0.015);
       D *= fade;
@@ -399,38 +409,103 @@ export function cellarField(spec: CellarPieceSpec): CellarField {
     if (rough && z < 0.2 && fade > 0) {
       const e = -wv;
       if (e < 0.22) {
-        const r0 = (0.02 + 0.075 * Math.max(0, vnoise(x * 3.4, y * 3.4, 0.5, S + 41)) + 0.012 * n3) * fade;
-        const cf = Math.hypot(Math.max(e, 0), z * 1.3) - r0 - 0.008 * n2;
+        const r0 = (0.025 + 0.1 * Math.max(0, vnoise(x * 3.4, y * 3.4, 0.5, S + 41)) + 0.015 * n3) * fade;
+        // комья осыпи ~10 см
+        const cf = Math.hypot(Math.max(e, 0), z * 1.3) - r0 - (0.012 * n2 + 0.02 * vnoise(x * 10, y * 10, z * 10, S + 43)) * fade;
         v = Math.max(v, -cf);
       }
     }
-    // завалы: куча земли от проёма в комнату
+    // завалы: проём засыпан вровень со стеной, земля оползает в комнату (кучу перед ним ставит ./cellarWalk.ts)
     for (const o of heaps) {
       const d = o.d;
       const dx = x - d.x, dy = y - d.y;
       const al = dx * d.nx + dy * d.ny - pad;
       const la = Math.abs(-dx * d.ny + dy * d.nx);
-      const s = 1 - 0.55 * clamp01(d.dug ?? 0);
-      const a = d.half + 0.35, b = 0.75 * s, c = 1.35 * s;
-      if (al > b + 0.2 || la > a + 0.2) continue;
-      let r = (Math.hypot(la / a, al / b, z / c) - 1) * Math.min(a, b, c) * 0.9;
-      if (noise) r -= 0.04 * vnoise(x * 5, y * 5, z * 5, S + 29) + 0.015 * vnoise(x * 13, y * 13, z * 13, S + 31);
-      v = Math.max(v, -r);
+      if (al > 0.45 || la > d.half + 0.5) continue;
+      const s = 1 - 0.6 * clamp01(d.dug ?? 0);
+      const t = clamp01(z / top);
+      const w = 1 - sstep(d.half, d.half + 0.35, la);
+      if (w <= 0) continue;
+      let depth = 0.03 + 0.24 * s * (1 - t) * (1 - t);
+      if (noise) depth += 0.03 * vnoise(x * 6, y * 6, z * 6, S + 29) + 0.012 * vnoise(x * 14, y * 14, z * 14, S + 31);
+      v = Math.max(v, (depth * w - al) * 0.8);
     }
     // не ближе KEEP к плоскостям открытых проёмов, кроме устья
     if (keep > v) v = keep;
     return tube < v ? tube : v;
   };
 
-  return { f, plan, zMin: -0.1, zMax };
+  const mouth = (x: number, y: number, z: number, out: Float64Array): number => {
+    for (const o of opens) {
+      const d = o.d;
+      const dx = x - d.x, dy = y - d.y;
+      const al = dx * d.nx + dy * d.ny;
+      const ls = -dx * d.ny + dy * d.nx;
+      const la = Math.abs(ls);
+      if (Math.abs(al) > 0.12 || la > d.half + 0.08) continue;
+      const e = 0.002;
+      const gl = (cellarProfile(la + e, z, o.hw, d.top) - cellarProfile(Math.max(0, la - e), z, o.hw, d.top)) / (la + e - Math.max(0, la - e));
+      const gz = (cellarProfile(la, z + e, o.hw, d.top) - cellarProfile(la, z - e, o.hw, d.top)) / (2 * e);
+      // к воздуху — против градиента; вбок — по (−ny, nx) со знаком стороны
+      const sg = ls < 0 ? -1 : 1;
+      let nx = gl * sg * d.ny, ny = -gl * sg * d.nx, nz = -gz;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      nx /= l;
+      ny /= l;
+      nz /= l;
+      out[0] = nx;
+      out[1] = ny;
+      out[2] = nz;
+      const qx = x + nx * 0.1 - d.x, qy = y + ny * 0.1 - d.y;
+      out[3] = -cellarProfile(Math.abs(-qx * d.ny + qy * d.nx), z + nz * 0.1, o.hw, d.top);
+      return 1 - sstep(0.03, 0.12, Math.abs(al));
+    }
+    return 0;
+  };
+
+  return { f, plan, mouth, zMin: -0.1, zMax };
 }
+
+/**
+ * Луч из воздуха полости в землю (руки на стене ложатся на бугры — ./cellarHands.ts): план, метры (z — над полом),
+ * (dx, dy, dz) — единичный. Расстояние до земли (поле ≥ 0) или null: начало в земле или не дошёл за max. Шаг — по
+ * величине поля (рельеф пологий — оно близко к расстоянию), не меньше 3 мм; у границы — делением пополам.
+ */
+export function cellarRay(F: CellarField, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number): number | null {
+  let t = 0;
+  let v = F.f(ox, oy, oz);
+  if (v >= 0) return null;
+  for (let i = 0; i < 48 && t < max; i++) {
+    const t1 = Math.min(max, t + Math.max(0.003, -v * 0.6));
+    const v1 = F.f(ox + dx * t1, oy + dy * t1, oz + dz * t1);
+    if (v1 >= 0) {
+      let a = t, b = t1;
+      for (let k = 0; k < 6; k++) {
+        const m = (a + b) / 2;
+        if (F.f(ox + dx * m, oy + dy * m, oz + dz * m) >= 0) b = m;
+        else a = m;
+      }
+      return (a + b) / 2;
+    }
+    t = t1;
+    v = v1;
+  }
+  return null;
+}
+
+/** Меши оболочек на сцене → их спецификации (меш строит ./cellarView.ts; лучи рук в землю — ./cellarWalk.ts). */
+const shellSpecs = new WeakMap<object, CellarPieceSpec>();
+export const markCellarShell = (mesh: object, spec: CellarPieceSpec): void => void shellSpecs.set(mesh, spec);
+export const cellarShellSpec = (mesh: object): CellarPieceSpec | null => shellSpecs.get(mesh) ?? null;
 
 // ───────────────────────── сетка ─────────────────────────
 
-const C0 = [0x1d / 255, 0x17 / 255, 0x12 / 255];
-const C1 = [0x2a / 255, 0x21 / 255, 0x19 / 255];
+/** чёрная земля #1d1712…#2a2119 — под фонарём (один источник, туман) ярче в SOIL_GAIN раз, иначе не видно комьев */
+const SOIL_GAIN = 2.0;
+const C0 = [(0x1d / 255) * SOIL_GAIN, (0x17 / 255) * SOIL_GAIN, (0x12 / 255) * SOIL_GAIN];
+const C1 = [(0x2a / 255) * SOIL_GAIN, (0x21 / 255) * SOIL_GAIN, (0x19 / 255) * SOIL_GAIN];
 /** глина / охра прожилок */
-const CLAY = [0x5a / 255, 0x42 / 255, 0x28 / 255];
+const CLAY = [0x6e / 255, 0x50 / 255, 0x30 / 255];
 /** средняя яркость текстуры земли (./cellarView.ts) — цвета вершин поделены на неё */
 export const SOIL_TEX_MEAN = 0.8;
 
@@ -453,8 +528,10 @@ export function buildCellarMesh(spec: CellarPieceSpec, step = CEL_STEP): SnowMes
     ext[d.side] = Math.max(spec.pad + step, 0);
     lim[d.side] = spec.pad;
   }
-  const S = spec.seed;
+  // цвет — по мировым координатам с общим зерном: у соседей по проёму одинаков на шве
+  const SC = 0x2c311a;
   const k = 1 / SOIL_TEX_MEAN;
+  const mo = new Float64Array(4);
   return surfaceNets(
     {
       f: F.f,
@@ -470,20 +547,33 @@ export function buildCellarMesh(spec: CellarPieceSpec, step = CEL_STEP): SnowMes
       cy1: spec.y1 + lim.S,
       floorY: spec.floorY,
       uvM: 0.5,
+      // у плоскости открытого проёма нормаль — по точному профилю устья (у соседей одинакова: шов не виден в свете)
+      normal(x, y, z, n) {
+        const w = F.mouth(x, y, z, mo);
+        if (w <= 0) return;
+        const nx = n[0] + (mo[0] - n[0]) * w, ny = n[1] + (mo[1] - n[1]) * w, nz = n[2] + (mo[2] - n[2]) * w;
+        const l = Math.hypot(nx, ny, nz) || 1;
+        n[0] = nx / l;
+        n[1] = ny / l;
+        n[2] = nz / l;
+      },
       color(x, y, z, gx, gy, gz, at, out, o) {
-        // впадины темнее: насколько глубоко в воздух уходит поле вдоль нормали
-        const probe = -at(x + gx * 0.1, y + gy * 0.1, z + gz * 0.1);
+        // впадины темнее: насколько глубоко в воздух уходит поле вдоль нормали (у проёма — по профилю устья)
+        let probe = -at(x + gx * 0.1, y + gy * 0.1, z + gz * 0.1);
+        const wm = F.mouth(x, y, z, mo);
+        if (wm > 0) probe += (mo[3] - probe) * wm;
         const ao = Math.min(1, Math.max(0.4, 0.4 + (probe / 0.1) * 0.6));
-        const t = 0.5 + 0.5 * vnoise(x * 1.3, y * 1.3, z * 1.3, S + 101);
+        const t = 0.5 + 0.5 * vnoise(x * 1.3, y * 1.3, z * 1.3, SC + 101);
         // сырые пятна — темнее, к полу — темнее
-        const wet = 1 - 0.22 * clamp01(vnoise(x * 0.9, y * 0.9, z * 0.9, S + 107) * 2 - 0.2);
+        const wet = 1 - 0.22 * clamp01(vnoise(x * 0.9, y * 0.9, z * 0.9, SC + 107) * 2 - 0.2);
         const low = 0.74 + 0.26 * clamp01(z / 0.9);
         let r = C0[0] + (C1[0] - C0[0]) * t, g = C0[1] + (C1[1] - C0[1]) * t, b = C0[2] + (C1[2] - C0[2]) * t;
-        // прожилки глины: редкие тонкие слои (по стенам)
-        const tz = z * 5.5 + vnoise(x * 0.9, y * 0.9, z * 0.4, S + 131) * 1.2;
+        // прожилки глины: редкие тонкие слои линзами (по стенам)
+        const tz = z * 5.5 + vnoise(x * 0.9, y * 0.9, z * 0.4, SC + 131) * 1.2;
         const li = Math.floor(tz);
-        if (((Math.imul(li + 977, 2654435761) ^ S) >>> 0) % 100 < 28) {
-          const w = (1 - sstep(0.03, 0.11, Math.abs(tz - li - 0.5))) * (1 - Math.abs(gz)) * 0.6;
+        if (((Math.imul(li + 977, 2654435761) ^ SC) >>> 0) % 100 < 14) {
+          const lens = clamp01(vnoise(x * 2.2, y * 2.2, li * 1.7, SC + 137) * 2.2 + 0.1);
+          const w = (1 - sstep(0.025, 0.09, Math.abs(tz - li - 0.5))) * (1 - Math.abs(gz)) * 0.55 * lens;
           r += (CLAY[0] - r) * w;
           g += (CLAY[1] - g) * w;
           b += (CLAY[2] - b) * w;

@@ -44,6 +44,7 @@ import { buildBabylonBlockout, createBlockoutShared, type BabylonBlockout, type 
 import { buildPiece, pieceFloorRects, piecePortals, type PiecePortal } from '../blockout/pieces';
 import type { BlockoutModel, BlockoutOptions, DoorSlot, Rect, RunExport } from '../blockout/types';
 import { snowPieceFor, snowPrefetch } from './snowView';
+import { cellarOptsOf, cellarPieceFor, cellarPrefetch, hideCellarBlockout } from './cellarView'; // cellar
 import { StairSupport } from './stairWalk';
 
 /** Слой мешей кусков: камеры его не рисуют — куски рисует только портальный рендер. */
@@ -201,6 +202,8 @@ export class PieceCache {
     }
     // снежные ходы: оболочки новых и изменившихся кусков — заранее, в воркере
     snowPrefetch(this.scene, run, ids);
+    // cellar: земляной погреб — так же (src/view3d/cellarView.ts)
+    cellarPrefetch(this.scene, run, ids, cellarOptsOf(this.opts.blockout, !!this.opts.openCut));
   }
 
   has(id: string): boolean {
@@ -245,6 +248,13 @@ export class PieceCache {
         m.parent = bo.root;
         if (z) m.position.y += z;
       }
+    }
+    // cellar: земляной погреб — оболочка вместо стен, потолка, облицовки и пола болванки (src/view3d/cellarView.ts);
+    // коробки стен и пол — невидимые коллайдеры, двери и предметы — как есть
+    const cellar = snow ? null : cellarPieceFor(this.scene, this.run, id, cellarOptsOf(this.opts.blockout, !!this.opts.openCut));
+    if (cellar) {
+      hideCellarBlockout(bo);
+      cellar.parent = bo.root;
     }
     const all = bo.root.getChildMeshes(false) as Mesh[];
     // рисуются только видимые (невидимые — коллайдеры, например бокс под моделью предмета)

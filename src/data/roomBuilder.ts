@@ -116,6 +116,15 @@ export const TAG_LEN = {
   // катакомбы: ход → боковая ниша-убежище (проём 0.9 м без полотна; не выросла — заложен кирпичом)
   'catacombs>refuge': 9,
   'refuge>catacombs': 9,
+  // sanatorium (src/data/roomsSanatorium.ts): коридоры, галереи и хабы санатория между собой — во всю ширину коридора 3.0 м
+  sanat: 30,
+  // санаторий: коридор → палата / комната в ремонте (филёнчатая дверь, полотно 0.8 → 0.9; за дверью с шансом
+  // tunnels.storage — комната, иначе дверь заперта)
+  'sanat>room': 9,
+  'room>sanat': 9,
+  // санаторий: коридор → процедурная или общее помещение (водолечебница, кабинет, душ Шарко, столовая…; растёт всегда)
+  'sanat>proc': 9,
+  'proc>sanat': 9,
 } as const;
 
 export type ConnTag = keyof typeof TAG_LEN;
@@ -138,6 +147,9 @@ export const TAG_OPEN_H: Record<string, number> = {
   // лаз — квадратный 0.8
   catacombs: 2.4,
   cat_duct: 0.8,
+  // sanatorium: проход сети — на всю высоту коридора 3.3 (шва между кусками нет); двери палат и процедурных — по
+  // умолчанию
+  sanat: 3.3,
 };
 
 export const ELITE_NORMAL: RoomElite[] = [

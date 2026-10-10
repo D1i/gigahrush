@@ -27,7 +27,9 @@ export type DoorGroup = 'хрущёвка' | 'общага' | 'подвал' | '
   // metro
   | 'метро'
   // catacombs
-  | 'катакомбы';
+  | 'катакомбы'
+  // sanatorium
+  | 'санаторий';
 
 /** Вид полотна — какой построитель модели. */
 export type DoorLook = 'dermantin' | 'panel' | 'flat' | 'glazed' | 'metal' | 'planks' | 'slats' | 'hermetic' | 'corrugated'
@@ -196,9 +198,10 @@ export const DOOR_STYLES: DoorStyle[] = [
   {
     id: 'cellar_low', name: 'Низкая дверь погреба (лаз)', group: 'погреб', look: 'planks', leaves: 1, thick: 0.05, leafH: 1.55,
     where: 'погреб: закрытые выходы в комнатах с тегом «погреб»; над дверью — доски', rest: 98,
-    anim: { handle: 'latch', unlatchS: 0.4, swingS: 1.2 }, colors: ['#5f4a37', '#54432f'],
-    casing: { w: 0.1, t: 0.03, color: '#3f3125' },
-    model: 'низкое дощатое полотно, обитое жестью на заклёпках; над дверью заложено досками',
+    // cellar: старые сырые доски — тёмные, серо-бурые (под фонарём не светлеют до белого)
+    anim: { handle: 'latch', unlatchS: 0.4, swingS: 1.2 }, colors: ['#463c32', '#3e352c'],
+    casing: { w: 0.1, t: 0.03, color: '#33291f' },
+    model: 'низкое полотно из старых тёмных досок: сырость снизу, потёки, две ржавые полосы на заклёпках; над дверью заложено досками',
   },
   {
     id: 'snow_iced', name: 'Обледенелая дверь', group: 'снег', look: 'planks', leaves: 1, thick: 0.05,
@@ -260,6 +263,25 @@ export const DOOR_STYLES: DoorStyle[] = [
     casing: null,
     model: 'ржавая решётка из прутьев в раме на заклёпках, за ней — темнота короба (глухая чёрная плита); не открывается',
   },
+  // ── санаторий (sanatorium) ──
+  {
+    id: 'sanatorium_door', name: 'Дверь палаты санатория', group: 'санаторий', look: 'glazed', leaves: 1, thick: 0.045,
+    where: 'санаторий: палаты, комнаты в ремонте, процедурные, столовая — room>sanat, proc>sanat (полотно в комнате); ' +
+      'закрытые двери палат и процедурных', rest: 92,
+    anim: { handle: 'lever', unlatchS: 0.28, swingS: 1.0 }, colors: ['#ecebe4', '#e6e3d8', '#efeee6'],
+    casing: { w: 0.08, t: 0.022, color: '#e9e6db' },
+    model: 'филёнчатое полотно под белой эмалью: верхняя филёнка остеклена (матовое стекло в два ряда), нижняя — глухая; ' +
+      'латунная нажимная ручка, латунная табличка-номер со стороны коридора',
+  },
+  {
+    id: 'sanatorium_screen', name: 'Остеклённая перегородка санатория', group: 'санаторий', look: 'glazed', leaves: 2, thick: 0.05,
+    where: 'санаторий: закрытый конец коридора (sanat, 3.0 м — во всю ширину и высоту), «Выход к корпусам» вестибюля (stair)',
+    rest: 92,
+    anim: { handle: 'none', unlatchS: 0.15, swingS: 1.2 }, colors: ['#9a6a3c', '#8d5f35', '#a5743f'],
+    casing: { w: 0.09, t: 0.03, color: '#7d5530' },
+    model: 'деревянная перегородка медового дуба с двустворчатой дверью: высокое стекло мелкой расстекловкой, фрамуга-брусок, ' +
+      'глухая филёнка внизу, латунные ручки-скобы',
+  },
 ];
 
 export const DOOR_STYLE_BY_ID: ReadonlyMap<string, DoorStyle> = new Map(DOOR_STYLES.map((s) => [s.id, s]));
@@ -298,8 +320,14 @@ const LEAF_SIDE: Record<string, boolean> = {
   'esc>hall': true, 'hall>esc': false,
   'slu>per': true, 'per>slu': false,
   'room>slu': true, 'slu>room': false,
+  // cellar: щель хода в клетушку — открытая без полотна (стиля по метке нет); не выросла клетушка — низкая дверца
+  // погреба со стороны клетушки
+  'bin>cellar': true, 'cellar>bin': false,
   // catacombs: проём хода в нишу-убежище — без полотна (стиля по метке нет); не выросла ниша — закладка кирпичом
   'refuge>catacombs': true, 'catacombs>refuge': false,
+  // sanatorium: палаты (комнаты в ремонте) и процедурные — внутрь (у коридора только наличник)
+  'room>sanat': true, 'sanat>room': false,
+  'proc>sanat': true, 'sanat>proc': false,
 };
 
 /** Дверь по метке (у пары — одна и та же); несколько — вариант по месту. */
@@ -324,6 +352,9 @@ const STYLE_BY_TAG: Record<string, string[]> = {
   // metro: служебные двери — железные
   'per>slu': ['service_metal'], 'slu>per': ['service_metal'],
   'slu>room': ['service_metal'], 'room>slu': ['service_metal'],
+  // sanatorium: палаты и процедурные — белая филёнчатая с остеклённой верхней филёнкой
+  'sanat>room': ['sanatorium_door'], 'room>sanat': ['sanatorium_door'],
+  'sanat>proc': ['sanatorium_door'], 'proc>sanat': ['sanatorium_door'],
 };
 
 /** Локация комнаты по её тегам (особые биомы — раньше квартирных тегов). */
@@ -338,6 +369,8 @@ export function doorContext(roomTags: readonly string[]): DoorGroup {
   if (roomTags.includes('метро')) return 'метро';
   // catacombs
   if (roomTags.includes('катакомбы')) return 'катакомбы';
+  // sanatorium
+  if (roomTags.includes('санаторий')) return 'санаторий';
   return 'хрущёвка';
 }
 
@@ -348,6 +381,14 @@ const CLOSED_BY_CONTEXT: Record<DoorGroup, string> = {
   'метро': 'metro_door',
   // catacombs: марш наверх из хаба ('stair') и прочее — подвальная железная
   'катакомбы': 'basement_metal',
+  // sanatorium
+  'санаторий': 'sanatorium_door',
+};
+
+/** sanatorium: закрытые проходы санатория по метке (где бы ни стояли): конец коридора 3.0 м — деревянная остеклённая
+ *  перегородка с двустворчатой дверью во всю ширину; «Выход к корпусам» вестибюля ('stair') — она же. */
+const SAN_CLOSED: Record<string, string> = {
+  sanat: 'sanatorium_screen',
 };
 
 /** catacombs: закрытые проходы катакомб по метке (где бы ни стояли): ход 2 м — закладка кирпичом или бетонная
@@ -407,7 +448,10 @@ export function doorStyleFor(tag: string, roomTags: readonly string[], closed: b
   else if (closed && (CAT_CLOSED[tag] || (ctx === 'катакомбы' && tag === 'stair'))) {
     const l = CAT_CLOSED[tag] ?? [CLOSED_BY_CONTEXT['катакомбы']];
     id = l[doorHash(seed + '#style') % l.length];
-  } else if (list) id = list[doorHash(seed + '#style') % list.length];
+  }
+  // sanatorium: закрытый конец коридора — по метке; выход вестибюля к корпусам ('stair') — остеклённая перегородка
+  else if (closed && (SAN_CLOSED[tag] || (ctx === 'санаторий' && tag === 'stair'))) id = SAN_CLOSED[tag] ?? 'sanatorium_screen';
+  else if (list) id = list[doorHash(seed + '#style') % list.length];
   else if (closed) {
     if (tag === 'stair') id = ctx === 'подвал' ? 'basement_metal' : ctx === 'сарай' ? 'barn_plank' : 'tambour';
     else if (tag === 'corridor') id = ctx === 'хрущёвка' ? 'tambour' : CLOSED_BY_CONTEXT[ctx];
@@ -759,7 +803,7 @@ function buildLeaf(st: DoorStyle, w: number, h: number, seed: string, k: number)
       L.box(0, 0, 0, w, h, t, col);
       if (st.id === 'obshaga_room') {
         // общага: жестяной номерок со стороны коридора (обратная сторона полотна в комнате), накладной замок изнутри
-        L.number(1.6, 'back', seed);
+        // smile: номерок — табличкой с настоящим номером (src/view3d/obshagaRoomsView.ts; 75% комнат — без номера)
         const xl = w - 0.08;
         L.front(xl - 0.045, 1.08, xl + 0.035, 1.2, 0.025, '#6b6b66');
         L.keyhole(1.0, 'back');
@@ -799,6 +843,34 @@ function buildLeaf(st: DoorStyle, w: number, h: number, seed: string, k: number)
           L.box(x - 0.012, 0.95, z, x + 0.012, 1.25, z + 0.025, ALU);
           L.box(x - 0.012, 0.95, z < 0 ? z + 0.025 : t, x + 0.012, 0.98, z < 0 ? 0 : z, ALU);
           L.box(x - 0.012, 1.22, z < 0 ? z + 0.025 : t, x + 0.012, 1.25, z < 0 ? 0 : z, ALU);
+        }
+      } else if (st.id === 'sanatorium_door') {
+        // sanatorium: белая эмаль; верхняя филёнка — матовое стекло в два ряда, нижняя — глухая филёнка; латунная ручка,
+        // табличка-номер со стороны коридора (обратная сторона полотна в комнате)
+        const gx = Math.min(0.11, w * 0.16);
+        const g0 = Math.max(1.12, h * 0.56), g1 = h - 0.12;
+        bodyWithHole(L, gx, g0, w - gx, g1, wood);
+        glazing(L, gx, g0, w - gx, g1, 1, 2, shade(wood, 0.97), '#dde3e0');
+        panels(L, [[0.12, g0 - 0.26]], shade(wood, 0.9), gx);
+        L.number(g0 - 0.13, 'back', seed);
+        L.keyhole(0.9, 'back');
+        L.lever(1.0, BRASS);
+      } else if (st.id === 'sanatorium_screen') {
+        // sanatorium: остеклённая деревянная перегородка — высокое стекло мелкой расстекловкой (фрамуга — брусок поперёк на
+        // ~2.3 м), глухая филёнка внизу, латунные ручки-скобы с обеих сторон
+        const gx = Math.min(0.1, w * 0.12);
+        const g0 = Math.min(0.85, h * 0.3), g1 = h - 0.1;
+        bodyWithHole(L, gx, g0, w - gx, g1, wood);
+        const cols = Math.max(1, Math.round((w - 2 * gx) / 0.45));
+        const rows = Math.max(2, Math.round((g1 - g0) / 0.45));
+        glazing(L, gx, g0, w - gx, g1, cols, rows, wood, GLASS);
+        if (g1 - g0 > 1.8) L.box(gx, g0 + 1.45, -0.006, w - gx, g0 + 1.52, t + 0.006, shade(wood, 0.92));
+        panels(L, [[0.12, g0 - 0.1]], shade(wood, 0.86), gx);
+        const x = w - 0.08;
+        for (const z of [-0.045, t + 0.02]) {
+          L.box(x - 0.012, 0.95, z, x + 0.012, 1.25, z + 0.025, BRASS);
+          L.box(x - 0.012, 0.95, z < 0 ? z + 0.025 : t, x + 0.012, 0.98, z < 0 ? 0 : z, BRASS);
+          L.box(x - 0.012, 1.22, z < 0 ? z + 0.025 : t, x + 0.012, 1.25, z < 0 ? 0 : z, BRASS);
         }
       } else {
         // ДО и двустворчатая в зал: стекло сверху, филёнка снизу
@@ -880,14 +952,18 @@ function buildLeaf(st: DoorStyle, w: number, h: number, seed: string, k: number)
       }
       const batten = shade(col, 0.85);
       if (st.id === 'cellar_low') {
-        // обивка жестью на заклёпках (сторона комнаты)
-        L.front(0.015, 0.015, w - 0.015, h - 0.015, 0.003, '#8e8f88');
-        for (let yy = 0.05; yy < h - 0.03; yy += 0.12) {
-          for (const xx of [0.04, w - 0.04]) L.front(xx - 0.006, yy - 0.006, xx + 0.006, yy + 0.006, 0.006, '#6d6e68', -0.003);
+        // cellar: старые сырые доски (сторона комнаты) — низ потемнел от сырости, потёки; слои по выступу: сырость
+        // 1 мм, потёки 1.25 мм, щели 1.5 мм; две ржавые полосы на заклёпках, под ручкой — железная накладка
+        L.front(0.004, 0, w - 0.004, 0.2 + rnd() * 0.1, 0.001, shade(col, 0.72));
+        for (let i = 0; i < 6; i++) {
+          const xx = 0.03 + rnd() * (w - 0.1), y1 = 0.35 + rnd() * (h - 0.5);
+          L.front(xx, Math.max(0.05, y1 - 0.2 - rnd() * 0.3), xx + 0.012 + rnd() * 0.025, y1, 0.00125, shade(col, rnd() < 0.5 ? 0.86 : 0.92));
         }
-        for (let xx = 0.1; xx < w - 0.08; xx += 0.12) {
-          for (const yy of [0.04, h - 0.04]) L.front(xx - 0.006, yy - 0.006, xx + 0.006, yy + 0.006, 0.006, '#6d6e68', -0.003);
+        for (const y of [0.3, h - 0.28]) {
+          L.front(0.012, y - 0.028, w - 0.012, y + 0.028, 0.004, '#3b2b21');
+          for (let xx = 0.045; xx < w - 0.03; xx += 0.105) L.front(xx - 0.006, y - 0.006, xx + 0.006, y + 0.006, 0.004, '#4b3e33', -0.004);
         }
+        L.front(w - 0.08 - 0.035, 0.86, w - 0.08 + 0.035, 1.25, 0.003, '#2f2924');
         // обвязка — с обратной стороны
         L.back(0.03, 0.15, w - 0.03, 0.27, 0.025, batten);
         L.back(0.03, h - 0.27, w - 0.03, h - 0.15, 0.025, batten);
@@ -1142,7 +1218,8 @@ export function doorGeometry(inp: DoorGeometryInput): DoorGeometry {
   }
   // ── заполнение над низкой дверью (погреб): доски горизонтально ──
   if (leafTop < H + DOOR_OV - 1e-6) {
-    const fill = '#4a3a2b';
+    // cellar: доски — в тон полотна cellar_low (серо-бурые, тёмные)
+    const fill = '#41372d';
     for (let y = leafTop + DOOR_GAP; y < H + DOOR_CAS_GAP - 1e-6; y += 0.12) {
       fr(-W / 2 - DOOR_CAS_GAP, y, -0.025, W / 2 + DOOR_CAS_GAP, Math.min(H + DOOR_CAS_GAP, y + 0.115), -0.002, doorHash(inp.seed + y.toFixed(2)) % 2 ? fill : shade(fill, 1.12));
     }
@@ -1196,8 +1273,8 @@ export function doorGeometry(inp: DoorGeometryInput): DoorGeometry {
   }
   // ── заколоченная (тупик): доски наискось поверх полотна и наличника — на брусках, гвозди. Самозакрывающаяся (общага)
   // не заколочена — просто заперта: её распахивает рука, полотно ходит ──
-  // (глухая стена метро — не дверь: без досок)
-  if (inp.role === 'dead' && !st.selfClosing && st.look !== 'blind') {
+  // (глухая стена метро — не дверь: без досок; катакомбы: закладка и решётка лаза — тоже)
+  if (inp.role === 'dead' && !st.selfClosing && st.look !== 'blind' && st.look !== 'bricked' && st.look !== 'grate') {
     const rnd = rngOf(inp.seed + '#boards');
     // перед самой выступающей деталью полотна (ручка, штурвал)
     let front = zf;

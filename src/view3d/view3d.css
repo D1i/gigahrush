@@ -232,3 +232,12 @@
 .v3-loc-dead.v3-story-fall { background: #000; animation-duration: 2s; }
 .v3-loc-dead.v3-story-fall h2 { color: #8d8478; }
 .v3-loc-dead.v3-story-fall .hint { color: #6d655a; font-style: italic; }
+
+/* катакомбы (src/view3d/catacombsWalk.ts): под водой — муть по экрану (туман сцены — густой зелёно-бурый); воздух —
+   синеватая полоска в HUD рядом со здоровьем (пока не полный) */
+.v3-cat-under {
+  position: absolute; inset: 0; pointer-events: none; z-index: 3;
+  background: radial-gradient(ellipse at 50% 45%, rgba(38, 52, 30, 0.35) 20%, rgba(18, 26, 12, 0.72) 75%, rgba(6, 9, 4, 0.92) 100%);
+}
+.v3-walkhud .v3-obsh-hp.v3-cat-air { border-color: #2c5a6a; background: #061218; }
+.v3-obsh-hp.v3-cat-air > i { background: #6fb6cf; }

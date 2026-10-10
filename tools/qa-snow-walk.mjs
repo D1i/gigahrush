@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const PORT = 5233;
+const PORT = 5330 + Math.floor(Math.random() * 40);
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const out = fileURLToPath(new URL('./qa/', import.meta.url));
 mkdirSync(out, { recursive: true });
@@ -184,10 +184,11 @@ try {
   {
     await page.locator('canvas').first().click({ position: { x: 640, y: 400 } }).catch(() => {});
     await page.keyboard.down('KeyW');
-    const rolls = [];
+    const rolls = [], eyes = [];
     for (let k = 0; k < 6; k++) {
       await page.waitForTimeout(300);
       rolls.push(await page.evaluate(() => window.__rf3d.fps.rotation.z));
+      eyes.push(await page.evaluate(() => window.__rf3d.posture.eye));
     }
     const pose = await page.evaluate(() => ({
       base: window.__rfSnow.base, eye: window.__rfSnow.eye, tags: (() => { const d = window.__rf3dFold; const r = d.portal?.current ?? d.current.center; return window.__rfWalk.rx.instances.find((i) => i.id === r)?.roomTags; })(),
@@ -196,7 +197,8 @@ try {
     await page.screenshot({ path: out + 'snow-3b-crawl-hands.png' });
     await page.keyboard.up('KeyW');
     const den = pose.tags?.includes('берлога');
-    ok('B зажатая W: на четвереньках (глаз ~0.5 м), руки в кадре, покачивание', den || (pose.base < 0.6 && pose.hands && Math.max(...rolls.map(Math.abs)) > 0.005), JSON.stringify({ ...pose, rolls: rolls.map((x) => +x.toFixed(3)) }));
+    // горизонт не кренится (заказчик: «горизонт ломается и заваливается»), ход — только толчок вверх-вниз
+    ok('B зажатая W: на четвереньках (глаз ~0.5 м), руки в кадре, горизонт ровный, толчки хода', den || (pose.base < 0.6 && pose.hands && Math.max(...rolls.map(Math.abs)) < 1e-6 && Math.max(...eyes) - Math.min(...eyes) > 0.004), JSON.stringify({ ...pose, rolls: rolls.map((x) => +x.toFixed(3)), eyes: eyes.map((x) => +x.toFixed(3)) }));
   }
   // ползком «как на настоящем экране»: шаг 6 мм за кадр (60–144 к/с), маршрут через куски (горки, ямы, повороты)
   {

@@ -200,6 +200,12 @@ describe('метро: сеть', { timeout: 600000 }, () => {
       const exit = start.connectors.find((c) => c.tag === 'stair')!;
       expect(w.doorState(w.startId!, exit.id)).toBe('exit');
       walk(w, 300);
+      // служебные помещения — за дверями служебных ходов (шанс storage): у дошедших до края обхода ходов двери ещё не
+      // раскрыты — заглянуть в них (иначе счёт зависит от того, где обход в ширину упёрся в 300 комнат)
+      for (const i of [...w.run().instances]) {
+        const r = roomOf(w.run(), i.id);
+        if (has(r, 'служебное') && r.connectors.some((c) => c.tag === 'slu>room' && w.doorState(i.id, c.id) === 'pending')) w.expand(i.id);
+      }
       const run = w.run();
       expect(run.instances.length).toBeGreaterThanOrEqual(250);
       const rooms = run.instances.map((i) => roomOf(run, i.id));
@@ -233,6 +239,7 @@ describe('метро: сеть', { timeout: 600000 }, () => {
       for (const i of run.instances) {
         const r = roomOf(run, i.id);
         if (!has(r, 'эскалатор')) continue;
+        if (has(r, 'бездна')) continue; // fractal: бездонный эскалатор — кладовая за дверью служебного хода
         for (const [o] of neighbours(run, i.id)) expect(roomOf(run, o).connectors.some((c) => c.tag === 'hall>esc'), i.id).toBe(true);
       }
       // отделка: залы — мрамор и гранит, переходы — кафель с цоколем, служебные — краска над кафелем

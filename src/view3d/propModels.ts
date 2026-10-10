@@ -28,6 +28,8 @@ import obshagaUrl from './assets/obshaga_props.glb?url';
 import metroUrl from './assets/metro_props.glb?url';
 // cellar: погреб из набора earth-cellar-3d и крепь по его рецепту (tools/optimize-cellar.mjs, p_cel_*)
 import cellarUrl from './assets/cellar_props.glb?url';
+// catacombs: реквизит из набора Petersburg_Catacombs и из примитивов, кирпич сводов — текстурой (tools/make-catacombs-props.mjs, p_cat_*)
+import catacombsUrl from './assets/catacombs_props.glb?url';
 
 /** Поля PBR-материала glTF, которые переносятся (без импорта класса — он тянет весь PBR). */
 interface PbrLike extends Material {
@@ -49,7 +51,7 @@ export class PropModels {
   readonly loaded: Promise<void>;
   private disposed = false;
 
-  constructor(readonly scene: Scene, urls: string[] = [basementUrl, barnUrl, factoryUrl, obshagaUrl, metroUrl, cellarUrl]) {
+  constructor(readonly scene: Scene, urls: string[] = [basementUrl, barnUrl, factoryUrl, obshagaUrl, metroUrl, cellarUrl, catacombsUrl]) {
     this.loaded = (async () => {
       for (const u of urls) {
         try {
@@ -94,6 +96,11 @@ export class PropModels {
     }
     s.diffuseColor = p.albedoTexture ? new Color3(1, 1, 1) : (p.albedoColor ?? new Color3(0.6, 0.6, 0.6)).clone();
     s.specularColor = new Color3(0.05, 0.05, 0.05);
+    // cellar: стекло банок погреба (cel_jar_*, tools/optimize-cellar.mjs) — узкий блик: под фонарём видно, что стекло
+    if (m.name.startsWith('cel_jar_')) {
+      s.specularColor = new Color3(0.16, 0.17, 0.15);
+      s.specularPower = 96;
+    }
     const em = p.emissiveColor;
     if (em && em.r + em.g + em.b > 0.01) {
       // светящееся (лампочка): свет сцены не нужен

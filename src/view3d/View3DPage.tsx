@@ -21,14 +21,23 @@ import { StairwellLayer, type LocationRequest } from './StairwellLayer';
 import { LiftLayer, type LiftRequest } from './LiftLayer';
 import { SwampLayer, type SwampRequest } from './SwampLayer';
 import { HangarLayer, type HangarRequest } from './HangarLayer';
+import { FractalLayer, type FractalRequest } from './FractalLayer'; // fractal
+import { AbyssWalk } from './fractalAbyss'; // fractal
+import { isAbyss } from '../locations/fractalEntry'; // fractal
 import { SnowWalk, type SnowHud } from './snowWalk';
 import { ObshagaWalk, type ObshagaHud } from './obshagaWalk';
+import { SmileWalk } from './smileWalk'; // smile
+import { ObshagaRoomsView } from './obshagaRoomsView'; // smile
 import { MetroWalk, type MetroHud } from './metroWalk';
+import { CellarWalk, walkCellarHost } from './cellarWalk';
+import { CatacombsWalk, type CatacombsHud } from './catacombsWalk';
 import { StoryWalk, type StoryHud } from './storyWalk';
 import { storyStep } from '../game/story';
 import { SNOWDOOR_CONN } from '../locations/snowDoor';
-import { Inventory, type InventoryHud } from './inventory';
+import { Inventory, LootFeed, type InventoryHud } from './inventory';
 import { HotbarHud } from './HotbarHud';
+import { BagHud } from './BagHud';
+import { lootOf } from '../gen4d/streamLoot';
 import { NOTE_FLAT } from './posture';
 import { collapseSite } from '../locations/snowCollapse';
 import { KEROLAMP_ITEM } from '../locations/obshaga';
@@ -49,7 +58,7 @@ import './view3d.css';
 type Source = 'run' | 'room' | 'file' | 'walk';
 
 /** Спец-локация на экране: лестница, лифт или ангар (у каждой свой слой и сцена). */
-type LocReq = (LocationRequest & { kind: 'stairwell' }) | LiftRequest | HangarRequest | SwampRequest;
+type LocReq = (LocationRequest & { kind: 'stairwell' }) | LiftRequest | HangarRequest | SwampRequest | FractalRequest;
 const SIDE_RU: Record<LiftSide, string> = { straight: 'прямо', right: 'направо' };
 
 /** Самопроверка моделей частей складчатого прогона — один раз на модель (модели кэшируются драйвером). */
@@ -219,6 +228,11 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
   // метро: эскалаторы (src/view3d/metroWalk.ts)
   const [metroHud, setMetroHud] = useState<MetroHud | null>(null);
   const metroRef = useRef<MetroWalk | null>(null);
+  // fractal: вуаль бездонного эскалатора (src/view3d/fractalAbyss.ts) — opacity пишется напрямую, без рендера React
+  const frVeilRef = useRef<HTMLDivElement | null>(null);
+  // катакомбы: наводнение, дыхание, перелаз (src/view3d/catacombsWalk.ts)
+  const [catHud, setCatHud] = useState<CatacombsHud | null>(null);
+  const catRef = useRef<CatacombsWalk | null>(null);
   /** сюжет: люк в погреб, дверь в снег — подсказка, затемнение, белая пелена (src/view3d/storyWalk.ts) */
   const [storyHud, setStoryHud] = useState<StoryHud | null>(null);
   /** мир прогулки — сюжетный (WalkSession.story): срыв на лестнице / в лифте — в общагу, без отладки в сценах */
@@ -611,8 +625,18 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
       onBreak: (id) => enterHangar(id),
       onHud: setSnowHud,
       live: () => !v.hasOverlay && v.mode === 'fps',
+      collapseMul: () => invRef.current?.fx.collapseMul ?? 1, // лут: горит зиппа — обвалы вдвое чаще
     }, walkRun.seed, v.posture);
     if (import.meta.env.DEV) (window as any).__rfSnow = snow; // для QA-скриптов
+    // погреб: боком в щелях, темнота и пыль в луче фонаря, осыпи и обвалы; HUD — свой (src/view3d/cellarWalk.ts)
+    const cellar = new CellarWalk(v, walkCellarHost(v, {
+      session: () => session,
+      driver: () => d,
+      torch: () => !!invRef.current?.torchOn,
+      busy: () => !!door || !!presence?.nearBuried || !!invRef.current?.aimed || transit.busy,
+      collapseMul: () => invRef.current?.fx.collapseMul ?? 1, // лут: горит зиппа — обвалы вдвое чаще
+    }), walkRun.seed);
+    if (import.meta.env.DEV) (window as any).__rfCellar = cellar; // для QA-скриптов
     // общага: двери, что закрываются сами, отключения света, рука, керосиновая лампа, вода в подвале (src/view3d/obshagaWalk.ts)
     const obsh = new ObshagaWalk(v.scene, v.fps, {
       rx: () => session?.rx ?? null,
@@ -638,9 +662,35 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
       propModel: (id) => v.props.get(id),
       co,
       presence: () => presence,
+      // лут (src/view3d/inventory.ts): эффекты предметов, горящий фонарик, пьяный ругается на руку
+      fx: () => invRef.current?.fx,
+      torch: () => !!invRef.current?.torchOn,
+      sawCreature: (k) => invRef.current?.sawCreature(k),
     }, walkRun.seed, v.posture);
     obshRef.current = obsh;
     if (import.meta.env.DEV) (window as any).__rfObshaga = obsh.qa(); // для QA-скриптов
+    // smile: «Улыбка» (моб общаги, src/view3d/smileWalk.ts) и номера/замки/ключи комнат (src/view3d/obshagaRoomsView.ts) —
+    // через фасад obsh (hooks, kill, hold, closeDoor); после общаги: её кадр раньше (крен позы, свет)
+    const smile = new SmileWalk(v.scene, v.fps, obsh, {
+      co,
+      presence: () => presence,
+      held: () => invRef.current?.held?.item ?? null,
+      seed: walkRun.seed,
+      rx: () => session?.rx ?? null,
+      live: () => !v.hasOverlay && v.mode === 'fps',
+    });
+    if (import.meta.env.DEV) (window as any).__rfSmile = smile.qa(); // для QA-скриптов
+    const dormView = new ObshagaRoomsView(v.scene, obsh, {
+      session: () => session,
+      inv: () => invRef.current,
+      co,
+      flash: (text, color, ms = 1300) => {
+        const seq = Date.now();
+        setFlash({ seq, text, color });
+        setTimeout(() => setFlash((f) => (f?.seq === seq ? null : f)), ms);
+      },
+      live: () => !v.hasOverlay && v.mode === 'fps',
+    });
     // метро: эскалаторы везут и изредка срываются, холодный свет и туман метро (src/view3d/metroWalk.ts) — после общаги:
     // она каждый кадр обнуляет крен позы, тряска метро пишется позже
     const metro = new MetroWalk(v.scene, v.fps, {
@@ -661,6 +711,63 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
     }, walkRun.seed, v.posture);
     metroRef.current = metro;
     if (import.meta.env.DEV) (window as any).__rfMetro = metro.qa(); // для QA-скриптов
+    // fractal: бездонный эскалатор метро — спуск во тьму (вуаль) → слой «Фрактальной станции»; выход — открытая ниша
+    // выходной копии → world.descend → вестибюль метро этажом ниже (tmp/metro-wip/FRACTAL.md §6). Каждый входит сам.
+    const enterFractal = (id: string) => {
+      const s = session;
+      if (!s || !d || v.hasOverlay) return;
+      const n = attempts.get(id) ?? 0;
+      attempts.set(id, n + 1);
+      if (frVeilRef.current) frVeilRef.current.style.opacity = '0';
+      lair.hide();
+      setLoc({
+        kind: 'fractal',
+        key: `${id}:${n}`,
+        seedKey: locKey(s, id),
+        title: 'Фрактальная станция',
+        mode: 'walk',
+        co,
+        slot: co?.players.get(co.me.id)?.slot,
+        onExit: () => exitLoc('descend', id, null),
+      });
+    };
+    const abyss = new AbyssWalk({
+      viewer: v,
+      driver: () => d,
+      live: () => !v.hasOverlay && v.mode === 'fps' && !v.paused,
+      onVeil: (x) => {
+        if (frVeilRef.current) frVeilRef.current.style.opacity = String(x);
+      },
+      onEnter: (id) => enterFractal(id),
+    });
+    if (import.meta.env.DEV) {
+      (window as any).__rfAbyss = abyss.qa(); // для QA-скриптов
+      // QA: войти во «Фрактальную станцию» из комнаты id (по умолчанию — под ногами; выход descend — только из бездны)
+      (window as any).__rfFractalEnter = (id?: string) => {
+        const room = id ?? d?.portal?.current ?? d?.current.center ?? null;
+        if (room) enterFractal(room);
+      };
+    }
+    // катакомбы: темнота (только фонарь), наводнение по часам (кооп — часы хоста), дыхание под водой, перелаз через трубы,
+    // лазы ползком (src/view3d/catacombsWalk.ts) — после общаги и метро, до сюжета
+    const cat = new CatacombsWalk(v.scene, v.fps, {
+      rx: () => session?.rx ?? null,
+      driver: () => d,
+      live: () => !v.hasOverlay && v.mode === 'fps',
+      biomeOf: (id) => session?.world.clusterAt(id)?.biome?.id ?? null,
+      flash: (text, color, ms = 1300) => {
+        const seq = Date.now();
+        setFlash({ seq, text, color });
+        setTimeout(() => setFlash((f) => (f?.seq === seq ? null : f)), ms);
+      },
+      onHud: setCatHud,
+      busy: () => !!door || !!presence?.nearBuried || transit.busy || !!invRef.current?.aimed,
+      co,
+      // лут: неуязвимость от предмета (Inventory.fx.invuln) — утопление не отнимает здоровье
+      invuln: () => !!(invRef.current as { fx?: { invuln?: boolean } } | null)?.fx?.invuln,
+    }, walkRun.seed, v.posture);
+    catRef.current = cat;
+    if (import.meta.env.DEV) (window as any).__rfCatacombs = cat.qa(); // для QA-скриптов
     // сюжет: люк в погреб, дверь в снег (src/view3d/storyWalk.ts) — после снега и общаги: её кадр перекрывает их позу
     const instOf = (id: string) => {
       const s = session;
@@ -688,6 +795,7 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
       descend: (id) => storyDescend(id),
       busy: () => !!door || !!presence?.nearBuried || !!invRef.current?.aimed,
       live: () => !v.hasOverlay && v.mode === 'fps',
+      paused: () => v.paused,
       onHud: setStoryHud,
     }, v.posture);
     if (import.meta.env.DEV) (window as any).__rfStory = transit.qa(); // для QA-скриптов
@@ -824,7 +932,8 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
         const link = s.world.run().links.find((l) => l.kind === 'lift' && l.a.inst === id && l.b.inst === target);
         dd.goTo(target);
         if (link) dd.placeAtDeadEnd(target, link.b.connector);
-        liftCool = performance.now() + 1500;
+        // игровые часы: на паузе кулдаун не тает (иначе после неё — снова в лифт)
+        liftCool = v.gameNow() + 1500;
         const fl = s.world.run().instances.find((i) => i.id === target)?.floor ?? 0;
         const text = `этаж ${fmtFloor(fl)} · ${SIDE_RU[kind]}${isLair ? ' · логово' : ''}`;
         // сюжет: лифт вывел в другой биом — вспышка его названия (liftTimer), а не этажа
@@ -839,7 +948,9 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
     };
     // ── сюжет (src/game/story.ts): срыв в общагу, люк и дверь в снег; при входе в новый биом — его название ──
     let storyBiome: string | null = null;
-    const biomeOf = (s: WalkSession, id: string) => s.world.clusterAt(id)?.biome?.id ?? null;
+    /** биом комнаты под ногами (liftTimer) */
+    let hereBiome: string | null = null;
+    const biomeOf =(s: WalkSession, id: string) => s.world.clusterAt(id)?.biome?.id ?? null;
     /** сюжет и переход из from в to сменил биом (вспышка — название шага сюжета в liftTimer, а не этаж) */
     const storyBiomeChange = (s: WalkSession, from: string, to: string) => s.story && biomeOf(s, from) !== biomeOf(s, to);
     const bigFlash = (text: string) => {
@@ -858,6 +969,8 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
             return;
           }
           dd.goTo(target);
+          // посадка на паузе (срыв: экран смерти отпустил мышь) — прогреть кадры: за меню паузы — новое место
+          if (v.paused) v.warmUp(800);
           res(true);
         };
         go(0);
@@ -914,7 +1027,7 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
     };
     const onDoorKey = (e: KeyboardEvent) => {
       const s = session;
-      if (e.code !== 'KeyE' || !s || !door || v.hasOverlay || v.mode !== 'fps' || presence?.nearBuried || transit.active) return;
+      if (e.code !== 'KeyE' || !s || !door || v.hasOverlay || v.mode !== 'fps' || v.paused || presence?.nearBuried || transit.active) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
       const { inst, connector } = door;
@@ -957,16 +1070,18 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
           setWalkHere(here);
           setWalkWet(s.world.wetAt(room));
           mood.set(here?.biome?.dark ?? 0);
-          // сюжет: вошёл в другой биом (переход, срыв, дверь общаги на улицу; и в начале игры) — название шага сюжета
-          const bid = here?.biome?.id ?? null;
-          if (s.story && bid && bid !== storyBiome) {
-            const st = storyStep(bid);
-            if (st) bigFlash(st.title);
-          }
-          if (bid) storyBiome = bid;
+          hereBiome = here?.biome?.id ?? null;
+        }
+        // сюжет: вошёл в другой биом (переход, срыв, дверь общаги на улицу; и в начале игры) — название шага сюжета;
+        // на паузе (экран входа, очнулся после срыва) — после неё, когда игрок его увидит
+        if (!v.paused && hereBiome && hereBiome !== storyBiome) {
+          const st = s.story ? storyStep(hereBiome) : null;
+          if (st) bigFlash(st.title);
+          storyBiome = hereBiome;
         }
       }
-      if (performance.now() < liftCool) return;
+      // пауза игры: в лифт не входить; кулдаун — по игровым часам
+      if (v.paused || v.gameNow() < liftCool) return;
       if (s.world.locationOf(room)?.kind === 'lift') return;
       const c = v.fps.position;
       for (const l of s.world.run().links) {
@@ -979,9 +1094,24 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
         }
       }
     }, 100);
+    /** Игра без отладки: ушёл из спец-локации ногами (лестница, ворота ангара, дверь болота) — её сцена отпускает мышь
+     *  (dispose / выход), а на прогулке без мыши — пауза. Захватить снова, как только отпустила (без жеста можно: отпустила
+     *  страница, а не игрок). Лифт мышь не отпускает — не звать. */
+    const relock = () => {
+      const c = v.engine.getRenderingCanvas();
+      if (!play || !c || document.pointerLockElement !== c) return;
+      const on = () => {
+        if (document.pointerLockElement) return;
+        document.removeEventListener('pointerlockchange', on);
+        if (alive && !v.hasOverlay) v.engine.enterPointerlock();
+      };
+      document.addEventListener('pointerlockchange', on);
+      window.setTimeout(() => document.removeEventListener('pointerlockchange', on), 1500);
+    };
     const exitLoc = async (kind: 'back' | 'descend', id: string, from: string | null) => {
       const s = session;
       const dd = d;
+      relock();
       setLoc(null);
       if (!s || !dd || !alive) return;
       const back = () => dd.placeAtDoor(from ?? neighbor(id) ?? id, id);
@@ -1071,9 +1201,11 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
         v.fps.rotation.set(...player.rot);
         v.fps.cameraDirection.setAll(0);
       }
+      // игра без отладки: до входа — пауза (мышь не захвачена); мир встаёт и виден за экраном входа — прогрев кадров
+      v.warmUp(1200);
       if (co) {
         // другие игроки: аватары, своё положение для них, «рядом — медленнее»
-        presence = new CoopPresence(v, co, () => d, () => locRef.current?.kind ?? null, () => snow.collapse.phase === 'buried', { lamp: () => obsh.holding && !obsh.dead, dead: () => obsh.dead || metro.dead, torch: () => !!invRef.current?.torchOn });
+        presence = new CoopPresence(v, co, () => d, () => locRef.current?.kind ?? null, () => snow.collapse.phase === 'buried' || cellar.buried, { lamp: () => obsh.holding && !obsh.dead, dead: () => obsh.dead || metro.dead || cat.dead, torch: () => !!invRef.current?.torchOn, mk: () => !!invRef.current?.fx.marked });
         co.onAct.add(onAct);
         co.beforeOp.add(beforeOp);
         co.afterOp.add(afterOp);
@@ -1116,8 +1248,9 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
       co.act(mate.id, 'dig');
     };
     function onAct(from: string, a: string) {
-      if (a !== 'dig' || snow.collapse.phase !== 'buried') return;
-      snow.mateDig();
+      if (a !== 'dig' || (snow.collapse.phase !== 'buried' && !cellar.buried)) return;
+      if (snow.collapse.phase === 'buried') snow.mateDig();
+      else cellar.mateDig(); // погреб: засыпало землёй
       const who = co?.players.get(from)?.name ?? 'напарник';
       const text = `${who} откапывает`;
       setFlash({ seq: Date.now(), text, color: '#9fd3ff' });
@@ -1150,6 +1283,11 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
       snow.dispose();
       setSnowHud(null);
       if (import.meta.env.DEV) delete (window as any).__rfSnow;
+      cellar.dispose();
+      if (import.meta.env.DEV) delete (window as any).__rfCellar;
+      smile.dispose(); // smile
+      dormView.dispose(); // smile
+      if (import.meta.env.DEV) delete (window as any).__rfSmile; // smile
       obsh.dispose();
       obshRef.current = null;
       setObshHud(null);
@@ -1158,6 +1296,13 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
       metroRef.current = null;
       setMetroHud(null);
       if (import.meta.env.DEV) delete (window as any).__rfMetro;
+      abyss.dispose(); // fractal
+      if (import.meta.env.DEV) delete (window as any).__rfAbyss;
+      if (import.meta.env.DEV) delete (window as any).__rfFractalEnter;
+      cat.dispose();
+      catRef.current = null;
+      setCatHud(null);
+      if (import.meta.env.DEV) delete (window as any).__rfCatacombs;
       transit.dispose();
       setStoryHud(null);
       setWalkStory(false);
@@ -1194,6 +1339,10 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
     const v = viewer.current, s = walkRef.current, dd = driver.current;
     if (!v || source !== 'walk' || !s || !dd) return;
     let pvs: { rx: RunExport; c: string; set: Set<string> } | null = null;
+    // лут: точки лута комнат набора вокруг игрока (src/gen4d/streamLoot.ts), кооп — напарник для дурака
+    const co = coopWalk ? coop : null;
+    const feed = new LootFeed();
+    let lootSet: { rx: RunExport; c: string; set: Set<string> } | null = null;
     const inv = new Inventory(v, {
       key: s.key,
       playerId: coopWalk ? (coop?.me.id ?? null) : null,
@@ -1207,10 +1356,39 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
         return pvs.set.has(inst);
       },
       drops: () => s.drops(),
+      // не подобранные точки лута комнат набора (массив новый — только на изменение: пересинк по lootRev)
+      loot: () => {
+        const c = dd.portal?.current ?? dd.current.center;
+        if (!c) return [];
+        const rx = s.rx;
+        if (lootSet?.rx !== rx || lootSet.c !== c) lootSet = { rx, c, set: dd.setOf(c) };
+        return feed.get(rx, lootSet.set, s.world.lootRev(), (inst) => lootOf(s.world, inst, rx), (id) => s.world.lootTaken(id));
+      },
       request: (op) => s.request(op),
       saveWorld: () => s.saveNow(),
+      // лут: спичка гаснет в воде; еда и дурак лечат — слой биома со здоровьем (общага, катакомбы)
+      inWater: () => !!catRef.current?.inWater,
+      heal: (hp) => {
+        obshRef.current?.heal(hp);
+        catRef.current?.heal(hp);
+      },
+      // дурак: живой напарник в той же комнате ближе r (по ногам — тот же пол)
+      partner: (r) => {
+        const room = dd.portal?.current ?? dd.current.center;
+        if (!co || !room) return null;
+        const c = v.fps.position, feet = c.y - v.posture.eye;
+        let best: { id: string; name: string; d: number } | null = null;
+        for (const p of co.players.values()) {
+          const st = p.state;
+          if (p.id === co.me.id || !st || st.loc || st.dead || !st.fps || st.room !== room) continue;
+          const dist = Math.hypot(st.p[0] - c.x, st.p[2] - c.z);
+          if (dist < r && Math.abs(st.p[1] - (st.eye ?? 1.6) - feet) < 1 && (!best || dist < best.d)) best = { id: p.id, name: p.name, d: dist };
+        }
+        return best;
+      },
+      durak: (to) => co?.act(to, 'durak'),
       // общага, метро: погиб — лампы в руке не видно
-      handsDown: () => !!obshRef.current?.dead || !!metroRef.current?.dead,
+      handsDown: () => !!obshRef.current?.dead || !!metroRef.current?.dead || !!catRef.current?.dead,
       flash: (text, color = '#cfd8e6') => {
         const seq = Date.now();
         setFlash({ seq, text, color });
@@ -1220,7 +1398,13 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
     });
     invRef.current = inv;
     if (import.meta.env.DEV) (window as any).__rfInv = inv.qa(); // для QA-скриптов
+    // напарник позвал в дурака (кооп-действие 'durak')
+    const onDurak = (from: string, a: string) => {
+      if (a === 'durak') inv.durakFrom(co?.players.get(from)?.name ?? 'напарником');
+    };
+    co?.onAct.add(onDurak);
     return () => {
+      co?.onAct.delete(onDurak);
       inv.dispose();
       invRef.current = null;
       setInvHud(null);
@@ -1236,6 +1420,41 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
   useEffect(() => {
     if (metroHud?.dead && document.pointerLockElement) document.exitPointerLock();
   }, [metroHud?.dead]);
+  // fractal: на время «Фрактальной станции» звук метро молчит — кадр прогулки стоит, MetroAudio застыл бы на последнем
+  // (гул ламп, «поршень», лента бездны); выход (любой: ниша, «выйти», закрытие) — звук возвращается
+  const frOpen = loc?.kind === 'fractal';
+  useEffect(() => {
+    if (!frOpen) return;
+    const m = metroRef.current;
+    m?.muteSound(true);
+    return () => m?.muteSound(false);
+  }, [frOpen]);
+  // катакомбы: захлебнулся — отпустить мышь (кнопка «Ещё раз»)
+  useEffect(() => {
+    if (catHud?.dead && document.pointerLockElement) document.exitPointerLock();
+  }, [catHud?.dead]);
+
+  // ── игра без отладки, одиночная: на паузе игровое время стоит (BlockoutViewer.setPaused — кадры не идут, звук на паузе):
+  // мышь отпущена (Esc, экран входа, «Меню» поверх спец-локации), окно без фокуса. В лобби мир общий — идёт дальше; на
+  // экранах смерти (общага, метро, катакомбы: «Ещё раз») — тоже идёт, как прежде ──
+  const [focused, setFocused] = useState(() => typeof document === 'undefined' || document.hasFocus());
+  useEffect(() => {
+    if (!play) return;
+    const on = () => setFocused(true);
+    const off = () => setFocused(false);
+    window.addEventListener('focus', on);
+    window.addEventListener('blur', off);
+    return () => {
+      window.removeEventListener('focus', on);
+      window.removeEventListener('blur', off);
+    };
+  }, [!!play]);
+  const gamePaused =
+    !!play && !coopOn && source === 'walk' && (pauseOpen || !locked || !focused) && !obshHud?.dead && !metroHud?.dead && !catHud?.dead;
+  useEffect(() => {
+    viewer.current?.setPaused(gamePaused);
+    if (import.meta.env.DEV) (window as any).__rfPaused = gamePaused; // для QA-скриптов
+  }, [gamePaused]);
 
   // вспышка «W 2 → 3» при переходе через порог со сдвигом
   const crossSeq = fs?.cross?.seq ?? 0;
@@ -1444,6 +1663,23 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
   const selRoom = p.rooms.find((r) => r.id === roomSel) ?? null;
   const enterRoomLoc = () => {
     const room = selRoom;
+    // fractal: бездонный эскалатор — без спец-локации: слой «Фрактальной станции» сразу, выход — назад (к двери)
+    if (room && isAbyss(room.tags)) {
+      setLoc({
+        kind: 'fractal',
+        key: `room:${room.id}:${Date.now()}`,
+        seedKey: locationSeedKey('room-' + room.id, 'i0'),
+        title: 'Фрактальная станция',
+        mode: 'room',
+        co: null,
+        onExit: () => {
+          setLoc(null);
+          if (document.pointerLockElement) document.exitPointerLock();
+          notify('Вышли из «Фрактальной станции»: в «Прогулке» это вестибюль метро этажом ниже', 'ok');
+        },
+      });
+      return;
+    }
     const spec = room?.location;
     if (!room || !spec || spec.kind === 'lair') return;
     if (spec.kind === 'hatch' || spec.kind === 'snowdoor') {
@@ -1649,6 +1885,17 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
               )}
               {selRoom?.location?.kind === 'lair' && (
                 <div className="hint">Логово босса (заглушка): в «Прогулке» сюда выводит один из выходов лифта — тёмная комната с табличкой.</div>
+              )}
+              {/* fractal: бездонный эскалатор — комната без спец-локации, вход в слой станции */}
+              {isAbyss(selRoom?.tags) && (
+                <>
+                  <Btn variant="primary" onClick={enterRoomLoc} disabled={!!loc || !!glErr} title="Сцена «Фрактальной станции» сама по себе, без мира: выход — кнопкой или нишей">
+                    Войти в локацию
+                  </Btn>
+                  <div className="hint">
+                    Спец-локация «Фрактальная станция». В «Прогулке» — бездонный эскалатор за дверью служебного хода метро: ниже середины спуска — тьма и станция-тессеракт, где все поверхности — полы; выход — светлая ниша «Выход в город» наверху эскалатора выхода, ведёт в вестибюль метро этажом ниже.
+                  </div>
+                </>
               )}
             </div>
           )}
@@ -1906,6 +2153,8 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
 
       <div className="stage v3-stage" ref={stageRef}>
         <canvas ref={canvasRef} tabIndex={0} />
+        {/* fractal: вуаль бездонного эскалатора (src/view3d/fractalAbyss.ts) — opacity пишет AbyssWalk */}
+        <div ref={frVeilRef} className="v3-fr-veil" style={{ position: 'absolute', inset: 0, background: '#000', opacity: 0, pointerEvents: 'none' }} />
         {loc &&
           (loc.kind === 'lift' ? (
             <LiftLayer viewer={viewer.current} req={loc} onClose={closeLoc} story={source === 'walk' && (walkStory || !!play)} />
@@ -1913,6 +2162,8 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
             <HangarLayer viewer={viewer.current} req={loc} onClose={closeLoc} story={source === 'walk' && (walkStory || !!play)} />
           ) : loc.kind === 'swamp' ? (
             <SwampLayer viewer={viewer.current} req={loc} onClose={closeLoc} play={play ? { onMenu: playMenu } : undefined} />
+          ) : loc.kind === 'fractal' ? ( // fractal
+            <FractalLayer viewer={viewer.current} req={loc} onClose={closeLoc} story={source === 'walk' && (walkStory || !!play)} />
           ) : (
             <StairwellLayer viewer={viewer.current} req={loc} onClose={closeLoc} story={source === 'walk' && (walkStory || !!play)} />
           ))}
@@ -2043,6 +2294,28 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
                 </button>
               </>
             )}
+            {catHud?.on && (
+              <>
+                {catHud.water && (
+                  <span className={catHud.water.phase === 'warn' ? '' : 'v3-err'} title="Уровень воды над полом ходов. Пик — 2 м: переждать на площадке убежища (лестница наверх)">
+                    вода {catHud.water.m.toFixed(1)} м{catHud.water.dir > 0 ? ' ↑' : catHud.water.dir < 0 ? ' ↓' : ''}
+                  </span>
+                )}
+                {catHud.air != null && (
+                  <span className="v3-obsh-hp v3-cat-air" title="Воздух: под водой хватит на 12 с, потом тонешь. Над водой — восстанавливается">
+                    <i style={{ width: `${Math.round(catHud.air * 100)}%` }} />
+                  </span>
+                )}
+                {catHud.hp != null && (
+                  <span className="v3-obsh-hp" title="Здоровье: без воздуха −10 в секунду. Над водой через 4 с заживает">
+                    <i style={{ width: `${catHud.hp}%` }} />
+                  </span>
+                )}
+                <button className="btn sm v3-obsh-sound" onClick={() => catRef.current?.setSound(!catHud.sound)} title="Звук катакомб (WebAudio). Esc — отпустить мышь, чтобы нажать">
+                  звук: {catHud.sound ? 'вкл' : 'выкл'}
+                </button>
+              </>
+            )}
             {coopOn ? (
               (!play || coop.status !== 'online') && (
                 <span className={coop.status === 'online' ? 'muted' : 'v3-err'} title="мир лобби хранится на сервере">
@@ -2069,6 +2342,12 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
         {source === 'walk' && mode === 'fps' && !loc && metroHud?.prompt && !doorAt && !coopDig && !storyHud?.prompt && <div className="float hud v3-lift-prompt">{metroHud.prompt}</div>}
         {source === 'walk' && mode === 'fps' && !loc && metroHud?.hint && !metroHud.dead && !obshHud?.hint && <div className="float hud v3-obsh-hint">{metroHud.hint}</div>}
         {source === 'walk' && mode === 'fps' && !loc && !!metroHud?.black && <div className="v3-obsh-black" style={{ opacity: metroHud.black }} />}
+        {/* катакомбы (src/view3d/catacombsWalk.ts): «E — перелезть», «C — ползком», муть под водой, захлебнулся — затемнение */}
+        {source === 'walk' && mode === 'fps' && !loc && catHud?.under && <div className="v3-cat-under" />}
+        {source === 'walk' && mode === 'fps' && !loc && catHud?.prompt && !doorAt && !coopDig && !invHud?.prompt && !storyHud?.prompt && <div className="float hud v3-lift-prompt">{catHud.prompt}</div>}
+        {source === 'walk' && mode === 'fps' && !loc && catHud?.hint && !catHud.dead && !obshHud?.hint && !metroHud?.hint && <div className="float hud v3-obsh-hint">{catHud.hint}</div>}
+        {source === 'walk' && mode === 'fps' && !loc && catHud?.hp != null && !catHud.dead && <div key={catHud.hit} className="v3-obsh-hurt" />}
+        {source === 'walk' && mode === 'fps' && !loc && !!catHud?.black && <div className="v3-obsh-black" style={{ opacity: catHud.black }} />}
         {/* сюжет (src/view3d/storyWalk.ts): люк — затемнение; дверь в снег — треск, белая пелена, «E — выкапываться» */}
         {source === 'walk' && mode === 'fps' && !loc && storyHud?.crack != null && <div className="v3-snow-crack" style={{ opacity: 0.25 + 0.5 * storyHud.crack }} />}
         {source === 'walk' && mode === 'fps' && !loc && storyHud?.white != null && <div className="v3-snow-buried" style={{ opacity: storyHud.white }} />}
@@ -2081,7 +2360,13 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
         {source === 'walk' && mode === 'fps' && !loc && obshHud?.dead && (
           <div className="v3-loc-dead v3-obsh-dead">
             <div>
-              {obshHud.cause === 'poke' ? (
+              {obshHud.title ? (
+                // smile: смерть не от руки — свой текст (ObshagaWalk.kill)
+                <>
+                  <h2>{obshHud.title}</h2>
+                  {obshHud.hint && <p className="hint">{obshHud.hint}</p>}
+                </>
+              ) : obshHud.cause === 'poke' ? (
                 <>
                   <h2>Рука достала тебя под кроватью</h2>
                   <p className="hint">Под кроватью она не схватит, но бьёт пальцем — долго не пролежишь. Вылезай, глядя на неё: под взглядом она замирает.</p>
@@ -2109,6 +2394,17 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
             </div>
           </div>
         )}
+        {source === 'walk' && mode === 'fps' && !loc && catHud?.dead && !obshHud?.dead && !metroHud?.dead && (
+          <div className="v3-loc-dead v3-obsh-dead">
+            <div>
+              <h2>Захлебнулся</h2>
+              <p className="hint">Вода приходит по часам: сначала гул в трубах, потом поднимается до 2 м. Переждать можно только наверху — на площадке убежища (лестница). Под водой воздуха — на 12 секунд.</p>
+              <button className="btn primary" onClick={() => catRef.current?.retry()}>
+                Ещё раз
+              </button>
+            </div>
+          </div>
+        )}
         {source === 'walk' && mode === 'fps' && !loc && (
           <div className="v3-stamina" ref={staminaRef}>
             <div className="v3-stamina-fill" />
@@ -2116,6 +2412,7 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
         )}
         {/* руки: хотбар внизу по центру; «E — подобрать» — в том же месте, что прочие «E — …» (и вместо них: E — его) */}
         {source === 'walk' && mode === 'fps' && !loc && invHud && <HotbarHud hud={invHud} />}
+        {source === 'walk' && mode === 'fps' && !loc && invHud?.bagOpen && invRef.current && <BagHud hud={invHud} act={invRef.current} />}
         {source === 'walk' && mode === 'fps' && !loc && invHud?.prompt && <div className="float hud v3-lift-prompt">{invHud.prompt}</div>}
         {flash && mode === 'fps' && !loc && (
           <div key={flash.seq} className={'v3-flash' + (flash.big ? ' v3-flash-story' : '')} style={{ color: flash.color }}>
@@ -2145,7 +2442,7 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
               </span>
               {source === 'walk' && (
                 <span>
-                  <b>1–5</b> / колесо — предмет · <b>F</b> — фонарь · <b>G</b> — выбросить · <b>E</b> — подобрать
+                  <b>1–5</b> / колесо — предмет · <b>F</b> — свет · <b>R</b> — перезарядить · <b>ЛКМ</b> — использовать · <b>Tab</b> — сумка · <b>G</b> — выбросить · <b>E</b> — подобрать
                 </span>
               )}
             </>
@@ -2176,7 +2473,7 @@ export default function View3DPage(props: { play?: PlayMode } = {}) {
             Меню
           </button>
         )}
-        {play && !msg && (pauseOpen || (!locked && !loc && mode === 'fps' && !obshHud?.dead && !metroHud?.dead)) && (
+        {play && !msg && (pauseOpen || (!locked && !loc && mode === 'fps' && !obshHud?.dead && !metroHud?.dead && !catHud?.dead && !invHud?.bagOpen)) && (
           <PlayPause
             where={walkHere?.biome?.name ?? null}
             first={!played}
@@ -2407,15 +2704,18 @@ const PLAY_KEYS: [string, string][] = [
   ['Shift', 'бежать'],
   ['C', 'на четвереньки / встать'],
   ['E', 'открыть, взять'],
-  ['F', 'фонарь'],
+  ['F', 'свет: фонарь, спичка, зиппа'],
+  ['R', 'перезарядить, заправить'],
+  ['ЛКМ', 'съесть, использовать'],
+  ['Tab', 'сумка'],
   ['1–5 · колесо', 'что в руке'],
   ['G', 'выбросить'],
   ['Esc', 'пауза'],
 ];
 
 /**
- * Пауза игры без отладки (src/play/): мышь отпущена — мир идёт дальше (в лобби — тем более), меню поверх. Первый раз —
- * экран входа. В лобби — его код (друзьям) и выход из лобби вместо «Главного меню».
+ * Пауза игры без отладки (src/play/): мышь отпущена — меню поверх; в одиночной игре мир стоит (gamePaused), в лобби идёт
+ * дальше. Первый раз — экран входа. В лобби — его код (друзьям) и выход из лобби вместо «Главного меню».
  */
 function PlayPause(props: { where: string | null; first: boolean; co: CoopSession | null; onResume: () => void; onMenu: () => void }) {
   const { co } = props;

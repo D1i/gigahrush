@@ -88,7 +88,8 @@ export function stairFloorAt(geos: readonly StairGeo[] | undefined, x: number, y
  * Кусок комнаты на своей высоте: всё — на z экземпляра выше; у комнаты с лестницей — стены и потолок выше на перепад,
  * проёмы меток с dz — на dz выше (под половиной проёма — стена), двери и тупики этих меток — на своей отметке,
  * предметы — на полу площадки под ними, лестница (StairGeo) с перилами у обрывов. Своя высота потолка (RunInstance.ceilM)
- * — стены, потолок и подвесные предметы ещё выше (на ceilM − wallHeightM). Высота проёма по метке (RunConnector.openH,
+ * — стены, потолок и подвесные предметы ещё выше (на ceilM − wallHeightM); ниже wallHeightM (лаз 0.85) — ниже, и потолок
+ * тогда — коллайдер (Surface.solid), верх проёмов — не выше него (и у соседа). Высота проёма по метке (RunConnector.openH,
  * TAG_OPEN_H): верх проёма — по метке, не выше потолков обеих комнат (сосед — other); перемычка своей половины — от верха
  * проёма до своего потолка, проём не ниже потолка — перемычки нет, половину закрывает плита потолка. Вход не мутируется;
  * без высоты, лестницы, своего потолка и высоких проёмов — тот же объект.
@@ -104,7 +105,13 @@ export function liftPiece(piece: BlockoutModel, inst: RunInstance | undefined, o
   // подъём потолка сверх стен болванки (своя высота комнаты)
   const X = r6(ceilOf(inst) - wallH);
   const tall = (inst.connectors ?? []).some((k) => num(k.openH) > 0);
-  if (!B && !R && !X && !tall) return piece;
+  // сосед с потолком ниже верха своей двери (лаз 0.85 за обычной меткой): общий проём — до его потолка
+  const lowNb = !!other && piece.openings.some((o) => {
+    const t = o.a.inst === inst.id ? o.b : o.a;
+    const n = t.inst !== inst.id ? other(t.inst) : undefined;
+    return !!n && num(n.ceilM) > 0 && num(n.z) + stairRiseOf(n) + ceilOf(n) < B + doorH - 1e-6;
+  });
+  if (!B && !R && !X && !tall && !lowNb) return piece;
   const id = inst.id;
   const c = piece.cellM > 0 ? piece.cellM : 0.1;
   const slab = Math.max(0, piece.options?.slabM ?? 0);
@@ -175,8 +182,11 @@ export function liftPiece(piece: BlockoutModel, inst: RunInstance | undefined, o
       continue;
     }
     const h = holeAt(s.rect);
-    if (!h?.custom) solids.push({ ...s, z0: r6(s.z0 + (h?.dz ?? 0) + B), z1: r6(s.z1 + R + B + X) });
-    else if (lintelUnder(h)) solids.push({ ...s, z0: r6(B + h.dz + h.top), z1: r6(s.z1 + R + B + X) });
+    if (!h?.custom) {
+      // низкий потолок (X < 0) ниже перемычки без своей метки — перемычки нет (не в минус)
+      const z0 = r6(s.z0 + (h?.dz ?? 0) + B), z1 = r6(s.z1 + R + B + X);
+      if (z1 > z0 + 1e-6) solids.push({ ...s, z0, z1 });
+    } else if (lintelUnder(h)) solids.push({ ...s, z0: r6(B + h.dz + h.top), z1: r6(s.z1 + R + B + X) });
     else plates.push({ ...s.rect });
   }
   // половины проёмов (пол, потолок без перемычек) — по высоте своей метки; под поднятой половиной — стена
@@ -205,6 +215,8 @@ export function liftPiece(piece: BlockoutModel, inst: RunInstance | undefined, o
     return rest.length ? [{ ...s, rects: rest }] : [];
   }), R + X);
   if (plates.length && piece.options?.ceilings !== false) ceilings.push({ inst: null, owner: id, rects: plates, finish: null, z: r6(CA) });
+  // низкий потолок (ниже стен болванки — лаз): плиты потолка — коллайдер (во весь рост не встать; объекты — свои копии)
+  if (X < -1e-6) for (const s of ceilings) s.solid = true;
   for (const f of piece.floors) {
     if (f.inst !== null || f.owner !== id) continue;
     for (const r of f.rects) {
@@ -215,7 +227,10 @@ export function liftPiece(piece: BlockoutModel, inst: RunInstance | undefined, o
   const faces: WallFace[] = piece.faces.flatMap((f): WallFace[] => {
     if (f.part !== 'lintel') return [{ ...f, z0: r6(f.z0 + B), z1: r6(f.z1 + R + B + X) }];
     const h = holeAtLine(f.line);
-    if (!h?.custom) return [{ ...f, z0: r6(f.z0 + (h?.dz ?? 0) + B), z1: r6(f.z1 + R + B + X) }];
+    if (!h?.custom) {
+      const z0 = r6(f.z0 + (h?.dz ?? 0) + B), z1 = r6(f.z1 + R + B + X);
+      return z1 > z0 + 1e-6 ? [{ ...f, z0, z1 }] : [];
+    }
     return lintelUnder(h) ? [{ ...f, z0: r6(B + h.dz + h.top), z1: r6(f.z1 + R + B + X) }] : [];
   });
   // высота дверей и тупиков высоких проёмов: у проёма связи — общий верх, у свободной метки — свой

@@ -438,6 +438,8 @@ export class SwampScene {
   async begin() {
     if (this.disposed) return;
     if (!this.engine.isPointerLock) this.engine.enterPointerlock();
+    // вошли с уже захваченной мышью (шагнули из «Прогулки») — смены захвата (onLock) не будет
+    this.locked = document.pointerLockElement === this.canvas;
     this.audio.start();
     this.started = true;
     this.emitHud(true);

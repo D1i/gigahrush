@@ -43,6 +43,7 @@ import { straightStair } from '../model/stairs';
 import type { Room, RoomElite, StairSpec } from '../model/types';
 import { PROP_BY_ID } from './props';
 import { I, room, type RoomBuilder } from './roomBuilder';
+import { ABYSS_TAG } from '../locations/fractalEntry'; // fractal
 
 const C_ITEM = '#2a9d8f';
 const NONE: RoomElite[] = [];
@@ -219,9 +220,13 @@ function hallTee(): Room {
 
 const VEST_TAGS = ['метро', 'вестибюль', 'зал', 'хаб', LONG];
 
-/** Ряд турникетов поперёк зала на линии y: n штук через 0.8 м (проходы 0.6), центр ряда — x. */
+/** Шаг турникетов, м: тумба 0.2 (коллайдер — по корпусу модели) + проход 0.8. Капсула игрока — 0.6 м: при прежнем шаге
+ *  0.8 (проход 0.6) проходы между тумбами были видны, но не пускали — невидимая стена вестибюля. */
+const TURN_PITCH = 1.0;
+
+/** Ряд турникетов поперёк зала на линии y: n штук через TURN_PITCH (проходы 0.8), центр ряда — x. */
 function turnstiles(b: RoomBuilder, x: number, y: number, n: number): RoomBuilder {
-  for (let k = 0; k < n; k++) b.put('p_metro_turnstile', x + (k - (n - 1) / 2) * 0.8, y);
+  for (let k = 0; k < n; k++) b.put('p_metro_turnstile', x + (k - (n - 1) / 2) * TURN_PITCH, y);
   return b;
 }
 
@@ -240,7 +245,8 @@ function vest(): Room {
     .open('S', 3.45, 'stair', 'Выход в город')
     .open('S', 5.45, 'stair', 'Выход в город')
     .open('S', 7.45, 'stair', 'Выход в город');
-  turnstiles(b, 6, 5.6, 8);
+  // 7 тумб x 3.3–9.5: от будки (x 0.95–2.25) проход 1.05, к восточной стене — 2.5
+  turnstiles(b, 6.4, 5.6, 7);
   b.put('p_metro_esc_booth', 1.6, 5.6)
     .wall('p_metro_kassa', 'W', 6.4)
     .wall('p_metro_kassa', 'E', 6.4)
@@ -271,7 +277,8 @@ function vestHall(): Room {
     .open('S', 10.45, 'stair', 'Выход в город');
   // ряды пилонов зала заходят в аванзал одним пилоном
   for (const x of colsX(BIG)) b.cut(x, 1.6, BIG.col[0], BIG.col[1]);
-  turnstiles(b, 9, 5.6, 8);
+  // 6 тумб x 6.4–11.6: до будок (x 3.95–5.25 и 12.75–14.05) проходы по 1.15
+  turnstiles(b, 9, 5.6, 6);
   b.put('p_metro_esc_booth', 4.6, 5.6)
     .put('p_metro_esc_booth', 13.4, 5.6)
     .wall('p_metro_kassa', 'S', 3.4)
@@ -636,5 +643,36 @@ export function buildMetroRooms(): Room[] {
     ...escalators(), escHall('S'), escHall('T'), escHall('L'), burntHall(),
     ...service(), sluTurn(), sluTee(), micro(),
     duty(), switchRoom(), machine(), rest(),
+    escAbyss(), // fractal
   ];
+}
+
+// fractal ─────────────────────────── «Фрактальная станция»: бездонный эскалатор ───────────────────────────
+// Кладовая за дверью служебного хода (кусок 'storage', тупик; вес — ~6 % кладовых метро): с площадки у двери три дорожки
+// уходят вниз, во тьму. Спец-локации у комнаты нет (Room.location не ставится ростом): вход во «Фрактальную станцию» —
+// на спуске (src/view3d/fractalAbyss.ts), выход — StreamWorld.descend → вестибюль метро (tmp/metro-wip/FRACTAL.md §6).
+
+/**
+ * Бездонный эскалатор 6.0 × 23.7 м: верхняя площадка 2.5 м на +10.8 (четыре этажа по 2.7) у северного торца во всю
+ * ширину, на ней — единственная дверь 'room>slu'; три марша style 'escalator' по 1.2 м, как у тоннеля (марш 18.7 м,
+ * ~30°); нижняя площадка 2.5 м — пол комнаты, её не видно (тьма). Дорожки: все вниз, средняя стоит (ABYSS_DIRS); не
+ * срывается.
+ */
+function escAbyss(): Room {
+  const top = 2.5, flight = 18.7, rise = 10.8, len = top + flight + 2.5;
+  const r = room('metro_esc_abyss', 'Бездонный эскалатор', meta(['метро', 'эскалатор', 'лестница', ABYSS_TAG, LONG], 0.22,
+    'Бездонный эскалатор 6.0×23.7 м за дверью служебного хода: площадка у двери, три дорожки по 1.2 м уходят вниз ' +
+      '(подъём 10.8 м — четыре этажа, марш 18.7 м, ~30°) — две едут вниз, средняя стоит; ниже середины — тьма, и ' +
+      'эскалатор привозит во «Фрактальную станцию». Не срывается.'))
+    .rect(0, 0, 6, len)
+    .open('N', 2.5, 'room>slu', 'Дверь в служебный ход')
+    .build();
+  const c = (m: number) => Math.round(m * 10);
+  // дорожка = индекс марша (0…2): так их понимает механика эскалатора
+  const spec: StairSpec = {
+    flights: [0.4, 2.4, 4.4].map((x) => ({ x: c(x), y: c(top), w: 12, h: c(flight), up: 'N' as const, z0: 0, z1: rise, style: 'escalator' as const })),
+    pads: [{ x: 0, y: 0, w: 60, h: c(top), z: rise }],
+  };
+  r.stair = spec;
+  return ceil(r, CEIL_ESC);
 }

@@ -14,6 +14,12 @@ import type { Assign, CellKey, InstanceContent, Project, Prop, Room, Segment, Si
 
 /** Радиус капсулы игрока, м (Babylon ellipsoid 0.3 / 0.85 / 0.3). */
 export const PLAYER_RADIUS_M = 0.3;
+// cellar: в погребе тело игрока — эллипс (плечи ±0.23, грудь ±0.13 м, src/view3d/cellarWalk.ts): щель 0.4 м проходят
+// боком, поэтому проходимость комнат погреба — по полуглубине груди
+/** Радиус «капсулы» в комнатах с тегом «погреб», м: боком — полуглубина груди. */
+export const CELLAR_RADIUS_M = 0.13;
+/** Радиус проверки проходимости комнаты по умолчанию: погреб — CELLAR_RADIUS_M, иначе PLAYER_RADIUS_M. */
+export const walkRadiusM = (room: Pick<Room, 'tags'>): number => (room.tags.includes('погреб') ? CELLAR_RADIUS_M : PLAYER_RADIUS_M);
 /** Ниже этой высоты prop не препятствие (ковёр 0.01 м), м. */
 export const FLAT_HEIGHT_M = 0.1;
 const FLAT_WORDS = ['ковер', 'коврик', 'половик', 'дорожка'];
@@ -67,7 +73,7 @@ export interface WalkResult {
 export interface WalkOpts {
   /** размер клетки, м (по умолчанию 0.1) */
   cellM?: number;
-  /** радиус капсулы, м (по умолчанию PLAYER_RADIUS_M) */
+  /** радиус капсулы, м (по умолчанию walkRadiusM(комната): PLAYER_RADIUS_M, в погребе — CELLAR_RADIUS_M) */
   radiusM?: number;
 }
 
@@ -362,12 +368,16 @@ function stamp(b: Base, f: Free, sd: Solid): void {
   stampGrid(f.m, b.w, b.h, b.x0 + 0.5, b.y0 + 0.5, sd.x, sd.y, c, s, sd.hw, sd.hh, b.R);
 }
 
-/** Препятствия из списка: плоские и неизвестные prop отбрасываются. */
+/** catacombs: трубы поперёк хода — через них перелезают (E, тег prop 'перелаз') или проходят под ними пригнувшись
+ *  ('пригнуться'): в плане проход не перегораживают. */
+const OVER_TAGS = ['перелаз', 'пригнуться'];
+
+/** Препятствия из списка: плоские, неизвестные и перелазы (catacombs) prop отбрасываются. */
 function solidsOf(list: readonly WalkProp[], props: PropLookup, cellM: number): Solid[] {
   const out: Solid[] = [];
   for (const d of list) {
     const p = getProp(props, d.propId);
-    if (!p || isFlatProp(p)) continue;
+    if (!p || isFlatProp(p) || OVER_TAGS.some((t) => p.tags?.includes(t))) continue;
     const hw = p.w / cellM / 2, hh = p.h / cellM / 2;
     if (!(hw > 0 && hh > 0)) continue;
     out.push({ key: `${d.propId}:${p.w}:${p.h}:${d.x}:${d.y}:${d.rot}`, x: d.x, y: d.y, rot: d.rot, hw, hh });
@@ -460,7 +470,7 @@ function evaluate(b: Base, f: Free): WalkResult {
  */
 export function walkCheck(room: Room, propsById: PropLookup, extra?: readonly WalkProp[], opts: WalkOpts = {}): WalkResult {
   const cellM = opts.cellM && opts.cellM > 0 ? opts.cellM : 0.1;
-  const ctx = staticOf(room, propsById, cellM, opts.radiusM ?? PLAYER_RADIUS_M);
+  const ctx = staticOf(room, propsById, cellM, opts.radiusM ?? walkRadiusM(room));
   return checkWith(ctx, propsById, extra, cellM);
 }
 

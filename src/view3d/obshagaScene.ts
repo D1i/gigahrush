@@ -8,7 +8,8 @@
 //  • Вода по пояс в затопленных помещениях: мутная полупрозрачная плоскость на 0.9 м над полом комнаты, рябь.
 //  • Темнота за запертой дверью: распахнутая (рукой) дверь на глухой стене — чёрный проём.
 //  • Рука-заглушка (пока нет src/view3d/obshagaHand.ts): трубки по следу и кисть (тычет под кровать — палец у пола к
-//    игроку); невидимые коллайдеры по следу — рука занимает весь проход.
+//    игроку); невидимые коллайдеры по следу — рука занимает весь проход. Кровати комнат руки (ctx.beds) — и настоящая
+//    рука, и заглушка ложатся поверх них (поле высот bedLift), палец тычка цель не огибает.
 // Всё, что стоит в мире «Прогулки», рисуется портальным рендером вместе со своей комнатой (PortalRenderer.extraProviders,
 // слой PORTAL_LAYER): меши по комнатам — byRoom.
 import type { Scene } from '@babylonjs/core/scene';
@@ -26,11 +27,11 @@ import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { PointLight } from '@babylonjs/core/Lights/pointLight';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { LANTERN_LIGHT_R, pokeReach, type HandView, type Pt } from '../locations/obshaga';
+import { LANTERN_LIGHT_R, pokeReach, rectGap, type HandView, type Pt, type Rect } from '../locations/obshaga';
 import { PORTAL_LAYER } from './portal';
 import type { ObshDoor } from './obshagaNav';
 import { hash01 } from '../locations/stairLoop';
-import { HandMesh } from './obshagaHand';
+import { bedsLift, HandMesh } from './obshagaHand';
 
 /** Свет сцены в общаге при горящих лампах и в темноте (множитель hemi / sun) и тёплый оттенок. */
 export const LIT_MUL = 0.62;
@@ -362,8 +363,9 @@ export class VoidPlanes {
 
 /** Как рисовать руку по виду механики: HandMeshRender (src/view3d/obshagaHand.ts) или заглушка HandPlaceholder. */
 export interface HandRender {
-  /** вид руки (null — нет); zOf — пол комнаты точки, м; roomOf — комната точки (по полу); doorway — проём двери руки */
-  update(v: HandView | null, dt: number, ctx: { zOf(room: string | undefined): number; roomOf(p: Pt): string | null; doorway?: Pt | null }): void;
+  /** вид руки (null — нет); zOf — пол комнаты точки, м; roomOf — комната точки (по полу); doorway — проём двери руки;
+   *  beds — кровати комнаты (рамки плана, NavRoom.beds): рука ложится поверх них (нет — пол плоский, кроме view.bed) */
+  update(v: HandView | null, dt: number, ctx: { zOf(room: string | undefined): number; roomOf(p: Pt): string | null; doorway?: Pt | null; beds?(room: string): readonly Rect[] | null | undefined }): void;
   /** меши руки, что рисуются вместе с комнатой room */
   meshes(room: string): readonly Mesh[] | undefined;
   /** свои коллайдеры: включить у комнат с коллизиями (нет метода — коллайдеры ArmColliders) */
@@ -377,16 +379,30 @@ export interface HandRender {
   dispose(): void;
 }
 
+/** Кровати комнат руки (след, кончик, цель тычка) по ctx.beds — в out (переиспользуется; rooms — скретч). */
+export function handBeds(v: HandView, of: (room: string) => readonly Rect[] | null | undefined, out: Rect[] = [], rooms = new Set<string>()): Rect[] {
+  rooms.clear();
+  for (const p of v.trail) if (p.room) rooms.add(p.room);
+  if (v.tip.room) rooms.add(v.tip.room);
+  if (v.pokeAt?.room) rooms.add(v.pokeAt.room);
+  out.length = 0;
+  for (const r of rooms) for (const b of of(r) ?? []) if (!out.includes(b)) out.push(b);
+  return out;
+}
+
 /** Настоящая рука (src/view3d/obshagaHand.ts): модель во весь коридор, пальцы, кулак, свои коллайдеры по комнатам. */
 export class HandMeshRender implements HandRender {
   private readonly hm: HandMesh;
+  private readonly beds: Rect[] = [];
+  private readonly bedRooms = new Set<string>();
 
   constructor(scene: Scene) {
     this.hm = new HandMesh(scene, { corridorW: 2, ceilH: 2.5 });
   }
 
-  update(v: HandView | null, _dt: number, ctx: { zOf(room: string | undefined): number; doorway?: Pt | null }) {
-    this.hm.update(v, (p) => new Vector3(p.x, ctx.zOf(p.room), -p.y), performance.now() / 1000, ctx.doorway ?? null);
+  update(v: HandView | null, _dt: number, ctx: { zOf(room: string | undefined): number; doorway?: Pt | null; beds?(room: string): readonly Rect[] | null | undefined }) {
+    const beds = v?.visible && ctx.beds ? handBeds(v, ctx.beds, this.beds, this.bedRooms) : null;
+    this.hm.update(v, (p) => new Vector3(p.x, ctx.zOf(p.room), -p.y), performance.now() / 1000, ctx.doorway ?? null, beds);
   }
 
   meshes(room: string): readonly Mesh[] | undefined {
@@ -502,13 +518,23 @@ export class HandPlaceholder implements HandRender {
     m.computeWorldMatrix(true);
   }
 
-  update(v: HandView | null, _dt: number, ctx: { zOf(room: string | undefined): number; roomOf(p: Pt): string | null }) {
+  update(v: HandView | null, _dt: number, ctx: { zOf(room: string | undefined): number; roomOf(p: Pt): string | null; beds?(room: string): readonly Rect[] | null | undefined }) {
     this.byRoom.clear();
     for (const m of [...this.segs, this.palm, ...this.fingers]) m.setEnabled(false);
     if (!v || !v.visible || v.trail.length < 2) return;
+    // кровати под рукой: всё поднято полем bedLift (рука поверх них); палец тычка цель не огибает
+    const beds = ctx.beds ? handBeds(v, ctx.beds) : [];
+    const same = (a: Rect, b: Rect) => Math.abs(a.x0 - b.x0) + Math.abs(a.y0 - b.y0) + Math.abs(a.x1 - b.x1) + Math.abs(a.y1 - b.y1) < 1e-6;
+    let tgt: Rect | null = v.bed ? (beds.find((b) => same(b, v.bed!)) ?? null) : null;
+    if (v.bed && !tgt) beds.push((tgt = v.bed));
+    if (!tgt && v.poke && v.pokeAt) tgt = beds.find((b) => rectGap(v.pokeAt!, b) < 0.05) ?? null;
+    const up = (p: Vector3, skip: Rect | null = null) => {
+      p.y += bedsLift(beds, p.x, -p.z, skip);
+      return p;
+    };
     const pts = armSamples(v.trail);
     const rooms = pts.map((p) => ctx.roomOf(p) ?? p.room ?? null);
-    const P = pts.map((p, i) => new Vector3(p.x, ctx.zOf(rooms[i] ?? p.room) + ARM_Y, -p.y));
+    const P = pts.map((p, i) => up(new Vector3(p.x, ctx.zOf(rooms[i] ?? p.room) + ARM_Y, -p.y)));
     const n = pts.length;
     for (let i = 1; i < n; i++) {
       const m = this.seg(i - 1);
@@ -518,12 +544,13 @@ export class HandPlaceholder implements HandRender {
       this.put(rooms[i], m);
     }
     // кисть: ладонь вниз по направлению руки, пальцы вперёд и в стороны (подёргиваются)
-    const tip = P[n - 1];
     const room = rooms[n - 1];
+    const tip = new Vector3(P[n - 1].x, ctx.zOf(room ?? v.tip.room) + ARM_Y, P[n - 1].z);
     const h = v.heading;
     const fx = Math.cos(h), fz = -Math.sin(h);
     const t = performance.now() / 1000;
     this.palm.position.set(tip.x + fx * 0.35, tip.y - 0.15, tip.z + fz * 0.35);
+    up(this.palm.position);
     Quaternion.FromEulerAnglesToRef(0, Math.atan2(fx, fz), 0, this.palm.rotationQuaternion!);
     this.palm.scaling.set(1.15, 0.36, 0.95);
     this.palm.setEnabled(true);
@@ -539,16 +566,16 @@ export class HandPlaceholder implements HandRender {
       const base = new Vector3(tip.x + fx * 0.55 + Math.cos(a) * 0.15, tip.y - 0.2, tip.z + fz * 0.55 - Math.sin(a) * 0.15);
       if (i === 0 && pk) {
         const floor = ctx.zOf(pk.room ?? room ?? undefined);
-        const from = new Vector3(base.x, floor + 0.3, base.z);
-        const to = new Vector3(pk.x, floor + 0.15, -pk.y).subtract(from);
+        const from = up(new Vector3(base.x, floor + 0.3, base.z), tgt);
+        const to = up(new Vector3(pk.x, floor + 0.15, -pk.y), tgt).subtract(from);
         const reach = Math.max(0.2, to.length() - 0.3) * (0.65 + 0.35 * pokeReach(v.poke01));
         this.orient(this.fingers[i], from, from.add(to.normalize().scale(reach)), 0.075);
         this.put(room, this.fingers[i]);
         continue;
       }
       const L = thumb ? 0.55 : 0.85 + 0.1 * Math.sin(i * 2.1);
-      const end = base.add(new Vector3(Math.cos(a) * L, -0.25 - twitch * (i % 2 ? 1 : -1), -Math.sin(a) * L));
-      this.orient(this.fingers[i], base, end, thumb ? 0.09 : 0.075);
+      const end = up(base.add(new Vector3(Math.cos(a) * L, -0.25 - twitch * (i % 2 ? 1 : -1), -Math.sin(a) * L)));
+      this.orient(this.fingers[i], up(base), end, thumb ? 0.09 : 0.075);
       this.put(room, this.fingers[i]);
     }
   }

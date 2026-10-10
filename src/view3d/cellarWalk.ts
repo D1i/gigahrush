@@ -7,7 +7,7 @@
 //  • Поворот в тесноте (cam.onAfterCheckInputsObservable — после ввода и коллизий, до кадра): лучи от середины тела
 //    вдоль ±X / ±Z на двух высотах (середина эллипсоида и плечи) в коллайдеры рядом (probeFree); поворот, при котором
 //    тело не влезает, — до последнего влезающего (clampYaw; инерция поворота сброшена — без дрожи), середина тела
-//    сдвигается к середине хода на сколько он стал «в» стене (fitAt). В щели — ~±53° от «лицом к стене».
+//    сдвигается к середине хода на сколько он стал «в» стене (fitAt). В щели — ~±50° от «лицом к стене».
 //  • Боком (Posture.side — ширина поперёк хода < 0.5 м): скорость ×0.36, бега нет, фонарь ниже (свет остаётся), руки
 //    плашмя на стене перед лицом перехватывают её по приставному шагу (./cellarHands.ts), голова чуть ходит вбок и
 //    вниз и кренится на шаг (только на время кадра — как бег, ./sprint.ts), плечо скребёт по стене — из-под него
@@ -19,7 +19,8 @@
 //    падает комок; шипение и дробь со стороны осыпи, лёгкая дрожь.
 //  • Обвалы (src/locations/snowCollapse.ts, числа CELLAR_COLLAPSE): метры по узким ходам → место (host.pickSite) →
 //    треск крепей, скрип, сыплется земля 2 с → обвал: проём завален навсегда (host.collapse → WorldOp 'collapse'),
-//    густая пыль (туман 0.3…1.5 м, оседает ~8 с), куча земли у завала (p_cel_heap или своя), игрок ближе 1.1 м —
+//    густая пыль (туман 0.3…1.5 м, оседает ~8 с), куча земли у завала (оболочка погреба кладёт её сама —
+//    src/view3d/cellarMesh.ts; без оболочки — p_cel_heap или своя из примитивов), игрок ближе 1.1 м —
 //    засыпан: почти чёрный экран, глухо, E — откапываться (digSelf), напарник — mateDig (кооп: действие 'dig').
 //    Завал можно разгрести: у кучи E (host.dig → WorldOp 'dig'; в коопе нажатия всех складываются), куча меньше.
 //  • Звук — ./cellarAudio.ts (localStorage 'room-forge/cellar-sound' = '0' — выключить); заводится жестом.
@@ -30,27 +31,28 @@ import type { Camera } from '@babylonjs/core/Cameras/camera';
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import type { Observer } from '@babylonjs/core/Misc/observable';
 import type { Particle } from '@babylonjs/core/Particles/particle';
-import type { Matrix } from '@babylonjs/core/Maths/math.vector';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
-import type { PointLight } from '@babylonjs/core/Lights/pointLight';
+import { PointLight } from '@babylonjs/core/Lights/pointLight';
 import { Ray } from '@babylonjs/core/Culling/ray';
 import { Color3, Color4 } from '@babylonjs/core/Maths/math.color';
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
 import '@babylonjs/core/Particles/particleSystemComponent';
 import type { RunInstance } from '../blockout/types';
 import { makeRng, type Rng } from '../model/rng';
 import { collapseSite, createCollapse, digCollapse, postponeCollapse, startCollapse, stepCollapse, type CollapseEvent, type CollapseSite, type CollapseState } from '../locations/snowCollapse';
 import {
-  BODY, CELLAR_COLLAPSE, HINT_SLIT, HINT_TURN, NARROW_M, cellarCollapseRoom, clampYaw, crossWidth, crumbDelay, dustFog, dustLevel,
-  facingAxis, fitAt, isCellarTags, isSlitTags, newShuffle, slitAhead, squeezing, stepShuffle, widthOf, wrapAngle, type Free, type Span,
+  BODY, CELLAR_COLLAPSE, HINT_SLIT, HINT_TURN, NARROW_M, cellarCollapseRoom, clampYaw, clearance, crossWidth, crumbDelay, dustFog,
+  dustLevel, facingAxis, fitAt, isCellarTags, isSlitTags, newShuffle, slitAhead, squeezing, stepOk, stepShuffle, widthOf, wrapAngle,
+  type Free, type Span,
 } from '../locations/cellarSqueeze';
 import { puffTexture } from '../locations/liftTextures';
 import { CellarAudio, CELLAR_SOUND_KEY } from './cellarAudio';
-import { WallHands } from './cellarHands';
+import { WallHands, type WallProbe } from './cellarHands';
+import { cellarField, cellarRay, cellarShellSpec, type CellarField } from './cellarMesh';
 import { CellarHudView, HUD_OFF, hudKey, type CellarHud } from './cellarHud';
 import type { Posture } from './posture';
 import type { FoldDriver } from './fold';
@@ -61,6 +63,8 @@ const CELL = 0.1;
 export const CELLAR_FOG = { start: 0.6, end: 4.5, color: new Color3(0.016, 0.012, 0.008) };
 /** свет у игрока в погребе: почти погашен (без фонаря почти черно) */
 export const CELLAR_LAMP = { intensity: 0.06, range: 1.5, color: new Color3(1, 0.72, 0.45) };
+/** отсвет фонаря на стену вплотную (боком в щели): яркость и дальность точечного света у груди */
+export const NEAR_FILL = { intensity: 0.55, range: 0.9 };
 /** лучи «свободно вокруг» — не дальше, м */
 const PROBE_M = 1.2;
 /** смещения начала лучей поперёк (доля полуразмера тела) */
@@ -112,6 +116,8 @@ export interface CellarWalkHost {
   propModel?(id: string): Mesh | null;
   /** фонарь горит в руке (пыль в луче) */
   torch(): boolean;
+  /** множитель метров к обвалу (зажигалка в руке — обвалы чаще: 2); нет — 1 */
+  collapseMul?(): number;
   /** у игрока своя подсказка E (подобрать, дверь, откопать напарника) — свою не показывать */
   busy?(): boolean;
   /** можно ли сейчас управлять (нет спец-сцены поверх, режим от первого лица) */
@@ -122,7 +128,7 @@ export interface CellarWalkHost {
 /** Хозяин для «Прогулки» (View3DPage): комната — по порталу / центру набора, мир — операциями сессии. */
 export function walkCellarHost(
   v: { props?: { get(id: string): Mesh | null } | null; hasOverlay: boolean; mode: string },
-  get: { session(): WalkSession | null; driver(): FoldDriver | null; torch(): boolean; busy?(): boolean },
+  get: { session(): WalkSession | null; driver(): FoldDriver | null; torch(): boolean; busy?(): boolean; collapseMul?(): number },
 ): CellarWalkHost {
   let idx: { rx: unknown; by: Map<string, RunInstance> } = { rx: null, by: new Map() };
   const inst = (id: string): RunInstance | null => {
@@ -148,12 +154,14 @@ export function walkCellarHost(
     dig: (i, c, amount) => void get.session()?.request({ k: 'dig', inst: i, conn: c, amount }),
     propModel: (id) => v.props?.get(id) ?? null,
     torch: get.torch,
+    collapseMul: get.collapseMul,
     busy: get.busy,
     live: () => !v.hasOverlay && v.mode === 'fps',
   };
 }
 
 const RAY = new Ray(Vector3.Zero(), new Vector3(1, 0, 0), 1);
+const PO = new Vector3(), PD = new Vector3();
 
 /** Коллайдеры рядом с (x, z) в пределах range по горизонтали и [y0, y1] по высоте. */
 function collidersNear(scene: Scene, x: number, z: number, range: number, y0: number, y1: number): AbstractMesh[] {
@@ -168,13 +176,33 @@ function collidersNear(scene: Scene, x: number, z: number, range: number, y0: nu
   return out;
 }
 
-/** Луч из (ox, oy, oz) по (dx, dy, dz) до len в меши near: расстояние до ближайшего попадания или len. */
+/** Луч входит в коробку [mn, mx] (мир) раньше far: расстояние входа (0 — начало внутри) или Infinity — мимо. */
+function boxEntry(mn: Vector3, mx: Vector3, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, far: number): number {
+  const span = { t0: 0, t1: far };
+  if (!slab(span, ox, dx, mn.x, mx.x) || !slab(span, oy, dy, mn.y, mx.y) || !slab(span, oz, dz, mn.z, mx.z)) return Infinity;
+  return span.t0;
+}
+
+/** Слой коробки по одной оси: сужает [t0, t1]; false — луч мимо. */
+function slab(s: { t0: number; t1: number }, o: number, d: number, lo: number, hi: number): boolean {
+  if (Math.abs(d) < 1e-9) return o >= lo && o <= hi;
+  const a = (lo - o) / d, b = (hi - o) / d;
+  s.t0 = Math.max(s.t0, Math.min(a, b));
+  s.t1 = Math.min(s.t1, Math.max(a, b));
+  return s.t0 <= s.t1;
+}
+
+/** Луч из (ox, oy, oz) по (dx, dy, dz) до len в меши near: расстояние до ближайшего попадания или len. Меш, в чью рамку
+ *  (мир) луч не входит раньше ближайшего попадания, не проверяется (точная проверка Babylon обращает матрицу меша —
+ *  дорого: лучей «свободно вокруг» за кадр — десятки). */
 function cast(near: readonly AbstractMesh[], ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, len: number): number {
   RAY.origin.set(ox, oy, oz);
   RAY.direction.set(dx, dy, dz);
   RAY.length = len;
   let best = len;
   for (const m of near) {
+    const b = m.getBoundingInfo().boundingBox;
+    if (boxEntry(b.minimumWorld, b.maximumWorld, ox, oy, oz, dx, dy, dz, best) >= best) continue;
     const h = RAY.intersectsMesh(m as Mesh, false);
     if (h.hit && h.distance < best) best = h.distance;
   }
@@ -241,6 +269,11 @@ export class CellarWalk {
   private free: Free | null = null;
   private freeAt = { x: NaN, z: NaN, yaw: NaN };
   private prevYaw: number | null = null;
+  /** запас тела на принятом месте (clearance), м; ход в этом кадре упёрся (тело не влезло бы) */
+  private clear = 0;
+  private stepHit = false;
+  /** сдвиг середины тела при повороте (не ход) — кадр вычитает его из хода */
+  private shifted = { x: 0, z: 0 };
   private inAt: { x: number; z: number } | null = null;
   /** поворот упёрся в этом кадре; сколько упирался (затухает) */
   private turnHit = false;
@@ -253,6 +286,12 @@ export class CellarWalk {
   private hands: WallHands | null = null;
   /** стена перед лицом (руки): до неё по нормали и угол от взгляда */
   private wall: { dist: number; delta: number } | null = null;
+  /** оболочка куска под ногами (руки ложатся на её бугры): меш, поле полости, обратная мировая матрица; нет — когда
+   *  проверить снова */
+  private shell: { id: string; mesh: AbstractMesh; F: CellarField; floorY: number; inv: Matrix; flag: number } | null = null;
+  private shellMiss = { id: '', until: 0 };
+  /** цена кадра (мс, сглажено; QA): весь кадр погреба, руки */
+  private perf = { frame: 0, hands: 0, input: 0 };
   private fwd = new Set<string>();
   private pushT = 0;
   private hint: { text: string; until: number } | null = null;
@@ -267,6 +306,9 @@ export class CellarWalk {
   private trickle: ParticleSystem | null = null;
   private scrape: ParticleSystem | null = null;
   private motes: ParticleSystem | null = null;
+  /** отсвет фонаря вплотную (боком) и его сила 0…1 */
+  private near: PointLight | null = null;
+  private nearK = 0;
   private clods: Clod[] = [];
   private clodMat: StandardMaterial | null = null;
   private heapMat: StandardMaterial | null = null;
@@ -274,7 +316,11 @@ export class CellarWalk {
   private heapCheck = 0;
   private nearPlug: { inst: string; conn: string; x: number; y: number } | null = null;
   /** вид на время кадра (качание головы боком) — снять после кадра */
-  private applied: { x: number; y: number; z: number } | null = null;
+  private applied: { x: number; y: number; z: number; rz: number } | null = null;
+  /** крен этого кадра (шаг боком, тряска) — на время кадра */
+  private rollNow = 0;
+  /** засыпан — Posture.frozen поставили сами */
+  private froze = false;
   private hudKey = '';
   private readonly hud: CellarHudView;
   private hudState: CellarHud = HUD_OFF;
@@ -387,9 +433,21 @@ export class CellarWalk {
     this.freeAt = { x: c.x, z: c.z, yaw: this.cam.rotation.y };
   }
 
-  /** После ввода и коллизий этого кадра (до кадра): поворот, при котором тело не влезает, — до последнего влезающего;
-   *  середина тела — от стен, на сколько поворот вдвинул её в них. */
+  /**
+   * После ввода и коллизий этого кадра (до кадра):
+   *  • ход — тело на новом месте должно влезать (clearance): коллизии Babylon пропускают эллипсоид углом в проём, если
+   *    он шире проёма на несколько см (плечи 0.46 — в щель 0.4 грудью вперёд проходили), — такой ход назад (по оси,
+   *    из-за которой не влезает; не вышло — весь);
+   *  • поворот, при котором тело не влезает, — до последнего влезающего; середина тела — от стен, на сколько поворот
+   *    вдвинул её в них.
+   */
   private afterInput() {
+    const t0 = performance.now();
+    this.afterInputRun();
+    this.perf.input += (performance.now() - t0 - this.perf.input) * 0.05;
+  }
+
+  private afterInputRun() {
     const P = this.posture, body = P.body;
     const c = this.cam.position;
     this.turnHit = false;
@@ -400,13 +458,43 @@ export class CellarWalk {
     }
     const jumped = !this.inAt || Math.hypot(c.x - this.inAt.x, c.z - this.inAt.z) > 0.5;
     this.measure();
-    const free = this.free!;
     const want = this.cam.rotation.y;
     if (this.prevYaw === null || jumped) {
       this.prevYaw = want;
       this.inAt = { x: c.x, z: c.z };
+      this.clear = clearance(body, want, this.free!);
       return;
     }
+    // ход: эллипсоид этого кадра — по прошлому повороту
+    const prev = this.inAt!;
+    this.stepHit = false;
+    if (c.x !== prev.x || c.z !== prev.z) {
+      const y0 = this.prevYaw;
+      if (!stepOk(clearance(body, y0, this.free!), this.clear)) {
+        this.stepHit = true;
+        const nx = c.x, nz = c.z;
+        let ok = false;
+        // по одной оси (скольжение вдоль стены), дальше — назад целиком
+        const tries: [number, number][] = Math.abs(nx - prev.x) >= Math.abs(nz - prev.z) ? [[prev.x, nz], [nx, prev.z]] : [[nx, prev.z], [prev.x, nz]];
+        for (const [x, z] of tries) {
+          if (x === prev.x && z === prev.z) continue;
+          c.x = x;
+          c.z = z;
+          this.measure();
+          if (stepOk(clearance(body, y0, this.free!), this.clear)) {
+            ok = true;
+            break;
+          }
+        }
+        if (!ok) {
+          c.x = prev.x;
+          c.z = prev.z;
+          this.measure();
+        }
+        this.cam.movement?.resetPanVelocity?.();
+      }
+    }
+    const free = this.free!;
     let y = want;
     if (Math.abs(wrapAngle(want - this.prevYaw)) > 1e-7) {
       y = clampYaw(body, this.prevYaw, want, free);
@@ -421,16 +509,28 @@ export class CellarWalk {
       if (f.ok && (f.dx || f.dz)) {
         c.x += f.dx;
         c.z += f.dz;
+        // это не ход (кадр не должен счесть его шагом поперёк щели)
+        this.shifted.x += f.dx;
+        this.shifted.z += f.dz;
       }
     }
     this.prevYaw = y;
     this.inAt = { x: c.x, z: c.z };
+    // запас на принятом месте; сдвинули от стен — не меньше зазора сдвига
+    const cl = clearance(body, y, free);
+    this.clear = c.x !== this.freeAt.x || c.z !== this.freeAt.z ? Math.max(cl, 0.003) : cl;
   }
 
   // ───────────────────────── кадр ─────────────────────────
 
   private frame() {
     if (this.disposed) return;
+    const t0 = performance.now();
+    this.frameRun();
+    this.perf.frame += (performance.now() - t0 - this.perf.frame) * 0.05;
+  }
+
+  private frameRun() {
     const dt = Math.min(0.1, this.scene.getEngine().getDeltaTime() / 1000 || 1 / 60);
     this.t += dt;
     // комната на миг не определилась (мир пересобирается) — состояние не трогать
@@ -449,6 +549,7 @@ export class CellarWalk {
     if (!cellar || !r) {
       if (this.side) this.side = P.side = false;
       this.hands?.update(false, this.shuffle.phase, this.shuffle.dir, null, dt);
+      this.nearFill(dt, false);
       this.motesOn(false);
       this.emit(HUD_OFF);
       return;
@@ -461,14 +562,16 @@ export class CellarWalk {
     const p = new Vector3(c.x, 0, c.z);
     let mx = 0, mz = 0;
     if (this.last) {
-      mx = p.x - this.last.x;
-      mz = p.z - this.last.z;
+      mx = p.x - this.last.x - this.shifted.x;
+      mz = p.z - this.last.z - this.shifted.z;
       if (Math.hypot(mx, mz) > 0.5) mx = mz = 0; // перенос, не ход
     }
+    this.shifted.x = this.shifted.z = 0;
     this.last = p;
     const moved = Math.hypot(mx, mz);
     const buried = this.col.phase === 'buried';
-    P.frozen = buried;
+    // засыпан — не двигаться (пишем только смену: сюжет и другие тоже держат позу)
+    if (buried !== this.froze) P.frozen = this.froze = buried;
     // ── боком: ширина поперёк хода
     const was = this.side;
     this.side = squeezing(crossWidth(free, mx, mz), this.side);
@@ -498,13 +601,16 @@ export class CellarWalk {
     if (this.fwd.size && !buried && moved < 0.003) this.pushT += dt;
     else this.pushT = 0;
     if (this.pushT > PUSH_S && this.slitAheadNow(fx, fz)) this.hint = { text: HINT_SLIT, until: now + HINT_S };
-    this.turnT = Math.max(0, this.turnT + (this.turnHit ? dt : -dt * 0.5));
+    // упирался поворот: копится (не больше 2·TURN_S — отпустил мышь, подсказка уходит за ~0.6 с)
+    this.turnT = Math.min(2 * TURN_S, Math.max(0, this.turnT + (this.turnHit ? dt : -dt)));
     if (this.turnT > TURN_S && !(this.hint?.text === HINT_SLIT && this.hint.until > now)) this.hint = { text: HINT_TURN, until: now + 1.6 };
     if (this.hint && this.hint.until < now) this.hint = null;
     // ── обвалы: метры по узким ходам (залы и ниши — нет)
     const narrow = Math.min(widthOf(free.x), widthOf(free.z)) < NARROW_M;
     const px = c.x, py = -c.z;
-    for (const e of stepCollapse(this.spec, this.col, dt, narrow && !buried && moved < 0.5 ? moved : 0, { x: px, y: py })) this.onEvent(e, r.id);
+    const walkedM = narrow && !buried && moved < 0.5 ? moved : 0;
+    const mul = this.host.collapseMul?.() ?? 1;
+    for (const e of stepCollapse(this.spec, this.col, dt, walkedM * (Number.isFinite(mul) && mul > 0 ? mul : 1), { x: px, y: py })) this.onEvent(e, r.id);
     // ── осыпи (косметика)
     this.crumbIn -= dt;
     if (this.crumbIn <= 0) {
@@ -517,10 +623,10 @@ export class CellarWalk {
     const dust = dustLevel(this.dustT);
     this.fog(dust);
     this.dimLamp();
-    // ── крен: шаг боком, тряска
+    // ── крен: шаг боком, тряска — только на время кадра (view): Posture.roll каждый кадр обнуляет общага
     this.shake = Math.max(0, this.shake - dt * 1.5);
     const shuffleRoll = this.side ? 0.012 * Math.sin(this.shuffle.phase) * this.gait : 0;
-    P.roll = shuffleRoll + (this.shake > 0 ? (Math.random() - 0.5) * 0.03 * this.shake : 0);
+    this.rollNow = shuffleRoll + (this.shake > 0 ? (Math.random() - 0.5) * 0.03 * this.shake : 0);
     // ── куча у завала, раскопка
     this.heapsStep(dt, r.id, r.inst);
     this.nearPlug = null;
@@ -551,8 +657,61 @@ export class CellarWalk {
     // ── руки на стене, пыль в луче
     const torch = this.host.torch();
     if (this.side && !this.hands) this.hands = new WallHands(this.scene, this.cam);
-    this.hands?.update(this.side && !buried, this.shuffle.phase, this.shuffle.dir, this.wall, dt, torch ? 1 : 0);
+    if (this.hands) {
+      const th = performance.now();
+      this.hands.update(this.side && !buried, this.shuffle.phase, this.shuffle.dir, this.wall, dt, torch ? 1 : 0, this.side ? this.shellOf(r.id) && this.probe : null);
+      this.perf.hands += (performance.now() - th - this.perf.hands) * 0.05;
+    }
+    this.nearFill(dt, this.side && torch && !buried);
     this.motesOn(torch && !buried);
+  }
+
+  /** Оболочка куска id (меш `cellar:${id}:earth` портального рендера) — лучи рук в её бугры; нет — null (ищется
+   *  снова не чаще раза в секунду). */
+  private shellOf(id: string) {
+    const s = this.shell;
+    if (s && s.id === id && !s.mesh.isDisposed()) return s;
+    this.shell = null;
+    if (this.shellMiss.id === id && this.t < this.shellMiss.until) return null;
+    const mesh = this.scene.getMeshByName(`cellar:${id}:earth`);
+    const spec = mesh ? cellarShellSpec(mesh) : null;
+    if (!mesh || !spec) {
+      this.shellMiss = { id, until: this.t + 1 };
+      return null;
+    }
+    return (this.shell = { id, mesh, F: cellarField(spec), floorY: spec.floorY, inv: new Matrix(), flag: -1 });
+  }
+
+  /** Луч рук в землю оболочки (мир Babylon): в местные координаты меша → план (x = X, y = −Z, z = Y − пол). */
+  private readonly probe: WallProbe = (o, d, max) => {
+    const s = this.shell;
+    if (!s) return null;
+    const wm = s.mesh.getWorldMatrix();
+    if (s.flag !== wm.updateFlag) {
+      wm.invertToRef(s.inv);
+      s.flag = wm.updateFlag;
+    }
+    Vector3.TransformCoordinatesToRef(o, s.inv, PO);
+    Vector3.TransformNormalToRef(d, s.inv, PD);
+    return cellarRay(s.F, PO.x, -PO.z, PO.y - s.floorY, PD.x, -PD.z, PD.y, max);
+  };
+
+  /** Боком лицом к стене фонарь светит почти в упор (его источник — у глаза, вплотную к стене, стена вне конуса): отсвет
+   *  на стену и перчатки — тёплый точечный свет у груди, плавно появляется и гаснет. */
+  private nearFill(dt: number, on: boolean) {
+    if (!on && !this.near) return;
+    if (!this.near) {
+      const l = (this.near = new PointLight('cellar:near', Vector3.Zero(), this.scene));
+      l.diffuse = new Color3(1, 0.86, 0.68);
+      l.specular = Color3.Black();
+      l.range = NEAR_FILL.range;
+      l.intensity = 0;
+    }
+    const l = this.near;
+    this.nearK += ((on ? 1 : 0) - this.nearK) * Math.min(1, dt * 6);
+    l.intensity = NEAR_FILL.intensity * this.nearK;
+    const c = this.cam.position, f = this.cam.getDirection(Vector3.Forward());
+    l.position.set(c.x + f.x * 0.03, c.y - 0.16, c.z + f.z * 0.03);
   }
 
   /** Сторона звука (−1 слева … 1 справа) к точке Babylon (x, z). */
@@ -651,8 +810,8 @@ export class CellarWalk {
     this.on = false;
     const s = this.scene, sv = this.saved;
     const P = this.posture;
-    P.frozen = false;
-    P.roll = 0;
+    if (this.froze) P.frozen = this.froze = false;
+    this.rollNow = 0;
     P.side = this.side = false;
     this.hint = null;
     this.crumbs?.stop();
@@ -677,20 +836,27 @@ export class CellarWalk {
 
   // ───────────────────────── вид: качание головы боком ─────────────────────────
 
-  /** Перед матрицами кадра: голова чуть ходит вбок и вниз на каждый приставной шаг, грудь — с дыханием. */
+  /** Перед матрицами кадра (как бег, ./sprint.ts): боком голова чуть ходит вбок и вниз на каждый приставной шаг и
+   *  кренится, грудь — с дыханием; тряска осыпи / обвала — крен. Физика и поза этого не видят (снимается после кадра). */
   private view() {
     this.unview();
-    if (!this.on || !this.side || !this.host.live() || this.scene.activeCamera !== this.cam) return;
-    const ph = this.shuffle.phase, g = this.gait, yaw = this.cam.rotation.y;
-    const lat = 0.011 * Math.sin(ph) * g;
-    const y = -0.009 * Math.abs(Math.sin(ph)) * g + 0.003 * Math.sin(this.t * 2.6);
-    const x = lat * Math.cos(yaw), z = -lat * Math.sin(yaw);
-    if (!x && !y && !z) return;
+    if (!this.on || !this.host.live() || this.scene.activeCamera !== this.cam) return;
+    let x = 0, y = 0, z = 0;
+    if (this.side) {
+      const ph = this.shuffle.phase, g = this.gait, yaw = this.cam.rotation.y;
+      const lat = 0.011 * Math.sin(ph) * g;
+      y = -0.009 * Math.abs(Math.sin(ph)) * g + 0.003 * Math.sin(this.t * 2.6);
+      x = lat * Math.cos(yaw);
+      z = -lat * Math.sin(yaw);
+    }
+    const rz = this.rollNow;
+    if (!x && !y && !z && !rz) return;
     const c = this.cam.position;
     c.x += x;
     c.y += y;
     c.z += z;
-    this.applied = { x, y, z };
+    this.cam.rotation.z += rz;
+    this.applied = { x, y, z, rz };
   }
 
   private unview() {
@@ -701,6 +867,7 @@ export class CellarWalk {
     c.x -= a.x;
     c.y -= a.y;
     c.z -= a.z;
+    this.cam.rotation.z -= a.rz;
   }
 
   // ───────────────────────── обвал ─────────────────────────
@@ -746,10 +913,15 @@ export class CellarWalk {
     this.prevYaw = null;
   }
 
+  /** Текстура частиц (клуб пыли); без DOM (тесты на NullEngine) — без текстуры. */
+  private puffTex() {
+    return typeof document === 'undefined' ? null : puffTexture(this.scene);
+  }
+
   /** Сыплются частицы земли (unlit: цвет — тусклый бурый, на свету фонаря — тёмные крошки). */
   private grains(name: string, cap: number): ParticleSystem {
     const p = new ParticleSystem(name, cap, this.scene);
-    p.particleTexture = puffTexture(this.scene);
+    p.particleTexture = this.puffTex();
     p.minSize = 0.008;
     p.maxSize = 0.03;
     p.minLifeTime = 0.5;
@@ -786,7 +958,7 @@ export class CellarWalk {
   private dustBurst(at: Vector3, n: number, power: number) {
     if (!this.puff) {
       const p = (this.puff = new ParticleSystem('cellar:puff', 400, this.scene));
-      p.particleTexture = puffTexture(this.scene);
+      p.particleTexture = this.puffTex();
       p.minSize = 0.3;
       p.maxSize = 0.9;
       p.minLifeTime = 1.5;
@@ -899,13 +1071,16 @@ export class CellarWalk {
 
   // ───────────────────────── куча земли у завала ─────────────────────────
 
-  /** Кучи у заваленных проёмов комнаты игрока (по ширине проёма); меньше с раскопкой; раскопан — убрать. */
+  /** Кучи у заваленных проёмов комнаты игрока (по ширине проёма); меньше с раскопкой; раскопан — убрать. Кусок с
+   *  оболочкой погреба (портальный рендер, src/view3d/cellarMesh.ts) кладёт кучу сам — тогда своей нет (запасная — для
+   *  болванки без оболочки). */
   private heapsStep(dt: number, id: string, inst: RunInstance) {
     this.heapCheck -= dt;
     if (this.heapCheck > 0) return;
     this.heapCheck = 0.25;
     const feet = this.posture.feet;
-    for (const k of inst.connectors) {
+    const shell = (rid: string) => !!this.scene.getMeshByName(`cellar:${rid}:earth`);
+    for (const k of shell(id) ? [] : inst.connectors) {
       if (!k.collapsed || k.len < 1) continue;
       const key = `${id}/${k.id}`;
       if (this.heaps.has(key)) continue;
@@ -918,12 +1093,13 @@ export class CellarWalk {
       const w = k.len * CELL;
       const node = this.heapMesh(key, w);
       node.position.set(cx + ux * 0.18, feet - 0.02, -(cy + uy * 0.18));
-      node.rotation.y = Math.atan2(ux, -uy) + Math.PI / 2;
+      // местная z узла — внутрь комнаты (план y вниз → Babylon −z), x — вдоль проёма
+      node.rotation.y = Math.atan2(ux, -uy);
       this.heaps.set(key, { node, inst: id, conn: k.id, w });
     }
     for (const [key, h] of this.heaps) {
       const pr = this.host.digProgress(h.inst, h.conn);
-      if (pr === null) {
+      if (pr === null || shell(h.inst)) {
         h.node.dispose(false, false);
         this.heaps.delete(key);
         continue;
@@ -992,12 +1168,16 @@ export class CellarWalk {
   /** Пылинки — только внутри конуса фонаря 0.3…3 м впереди, мелкие, медленные, едва видны; фонарь не горит — нет. */
   private motesOn(on: boolean) {
     if (!on) {
-      if (this.motes) this.motes.emitRate = 0;
+      // фонарь погас — пылинок не видно сразу
+      if (this.motes && this.motes.emitRate > 0) {
+        this.motes.emitRate = 0;
+        this.motes.reset();
+      }
       return;
     }
     if (!this.motes) {
       const p = (this.motes = new ParticleSystem('cellar:motes', 260, this.scene));
-      p.particleTexture = puffTexture(this.scene);
+      p.particleTexture = this.puffTex();
       p.minSize = 0.005;
       p.maxSize = 0.014;
       p.minLifeTime = 2.5;
@@ -1066,6 +1246,9 @@ export class CellarWalk {
       heaps: [...this.heaps.keys()],
       audio: this.audio.counters,
       motes: this.motes?.getActiveCount() ?? 0,
+      shell: !!this.shell,
+      rays: this.hands?.rays ?? 0,
+      perf: { ...this.perf },
     };
   }
 
@@ -1097,5 +1280,6 @@ export class CellarWalk {
     this.heaps.clear();
     this.clodMat?.dispose();
     this.heapMat?.dispose();
+    this.near?.dispose();
   }
 }

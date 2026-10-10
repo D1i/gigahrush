@@ -19,6 +19,14 @@ import bsmWaterUrl from './assets/basement/water.jpg?inline';
 import barnVerticalUrl from './assets/barn/planks_vertical.jpg?inline';
 import barnRustUrl from './assets/barn/planks_rust.jpg?inline';
 import barnHorizontalUrl from './assets/barn/planks_horizontal.jpg?inline';
+// catacombs: процедурные бесшовные 512 px (tools/make-catacombs-textures.mjs)
+import catBrickUrl from './assets/catacombs/brick.jpg?inline';
+import catStoneUrl from './assets/catacombs/stone.jpg?inline';
+import catConcreteUrl from './assets/catacombs/concrete.jpg?inline';
+import catGreenUrl from './assets/catacombs/green.jpg?inline';
+import catPeelUrl from './assets/catacombs/peel.jpg?inline';
+import catFloorUrl from './assets/catacombs/floor.jpg?inline';
+import catSiltUrl from './assets/catacombs/silt.jpg?inline';
 import { makeFinishTexture, type FinishTexKind, type FinishTexOpts } from './finishTextures';
 
 /** Текстура пользователя: зелёные обои «Дамаск» (фото → бесшовная плитка, см. tools/make-seamless.html).
@@ -121,6 +129,81 @@ const METRO_FINISHES: FinishDef[] = [
   { id: 'f_metro_soot_floor', name: 'Метро: гранитный пол в пепле и копоти', surface: 'floor', color: '#6b6258', tileW: 1.2, tileH: 1.2, tags: ['гранит', 'копоть', 'метро'], tex: { kind: 'soot_floor', w: 512, h: 512, opts: { base: '#c2b196', accent: '#1b1918', low: '#5d6064', n: 2 } } },
 ];
 
+// cellar
+/** Отделки погреба (src/data/roomsCellar.ts): чёрная рыхлая земля — стены (крошки, бледные корешки, редкие полосы
+ *  глины; повтор 1 м) и утоптанный пол (темнее, пыль); на полу изредка старые тёмные доски. В «Прогулке» стены и пол —
+ *  земляная оболочка (src/view3d/cellarMesh.ts); отделка — для болванки и движка без оболочки. */
+const CELLAR_FINISHES: FinishDef[] = [
+  { id: 'f_cel_soil', name: 'Погреб: чёрная рыхлая земля, корешки', surface: 'wall', color: '#2a2119', tileW: 1, tileH: 1, tags: ['погреб', 'земля'], tex: { kind: 'soil', w: 512, h: 512 } },
+  { id: 'f_cel_floor', name: 'Погреб: утоптанная земля (пол)', surface: 'floor', color: '#221a13', tileW: 1, tileH: 1, tags: ['погреб', 'земля'], tex: { kind: 'soil', w: 512, h: 512, opts: { base: '#221a13', cracks: true } } },
+  { id: 'f_cel_boards', name: 'Погреб: старые тёмные доски на земле (пол)', surface: 'floor', color: '#3d3024', tileW: 1.2, tileH: 0.6, tags: ['погреб', 'доски'], tex: { kind: 'boards', w: 512, h: 256, opts: { base: '#3d3024' } } },
+];
+
+// catacombs
+/** Отделки катакомб (по эпохе хода — правила биома в src/gen4d/biomes.ts): имперский — кирпич (крестовая перевязка,
+ *  старый кирпич ~290 × 65 + шов, 16 рядов → повтор 1.2 м; тот же кирпич — текстурой у сводов-вкладышей p_cat_vault_*)
+ *  и путиловская плита на полу (ряды по 0.5 м → 1.5 м); советский — бетон по опалубке (доски 0.15 м → 1.5 м) и
+ *  бетонный пол, двухцветная стена: зелёная облупленная масляная панель 1.3 м (картинка — на всю высоту панели, поверху
+ *  отбивка, понизу след воды) + бетон выше; смешанный — штукатурка отвалилась пятнами, под ней кирпич (кладка — как у
+ *  кирпича, 1.2 м); ил после наводнения на полу (1.5 м). Яркость текстур — не ниже ~95 из 255: светит только фонарь. */
+const CATACOMBS_FINISHES: FinishDef[] = [
+  { id: 'f_cat_brick', name: 'Катакомбы: старый имперский кирпич, высолы и потёки', surface: 'wall', color: '#735b4f', tileW: 1.2, tileH: 1.2, tags: ['катакомбы', 'кирпич'], tex: { url: catBrickUrl } },
+  { id: 'f_cat_concrete', name: 'Катакомбы: советский бетон по опалубке, потёки', surface: 'wall', color: '#797771', tileW: 1.5, tileH: 1.5, tags: ['катакомбы', 'бетон'], tex: { url: catConcreteUrl } },
+  { id: 'f_cat_green_panel', name: 'Катакомбы: зелёная масляная панель 1.3 м, облупленная', surface: 'wall', color: '#5c7159', tileW: 1.3, tileH: 1.3, tags: ['катакомбы', 'краска'], tex: { url: catGreenUrl } },
+  {
+    id: 'f_cat_green', name: 'Катакомбы: зелёная панель 1.3 м + бетон', surface: 'wall', color: '#797771', tileW: 1.5, tileH: 1.5,
+    tags: ['катакомбы', 'двухцветная'], tex: { url: catConcreteUrl }, dado: { finishId: 'f_cat_green_panel', heightM: 1.3 },
+  },
+  { id: 'f_cat_peel', name: 'Катакомбы: штукатурка, местами отвалилась до кирпича', surface: 'wall', color: '#847a6e', tileW: 1.2, tileH: 1.2, tags: ['катакомбы', 'штукатурка', 'кирпич'], tex: { url: catPeelUrl } },
+  { id: 'f_cat_stone', name: 'Катакомбы: путиловская плита, ил в швах (пол)', surface: 'floor', color: '#817a63', tileW: 1.5, tileH: 1.5, tags: ['катакомбы', 'камень'], tex: { url: catStoneUrl } },
+  { id: 'f_cat_floor', name: 'Катакомбы: мокрый бетонный пол (пол)', surface: 'floor', color: '#6c685f', tileW: 1.5, tileH: 1.5, tags: ['катакомбы', 'бетон'], tex: { url: catFloorUrl } },
+  { id: 'f_cat_silt', name: 'Катакомбы: ил после наводнения (пол)', surface: 'floor', color: '#655f4a', tileW: 1.5, tileH: 1.5, tags: ['катакомбы', 'ил'], tex: { url: catSiltUrl } },
+];
+
+// sanatorium
+/** Отделки санатория (src/data/roomsSanatorium.ts; цвета — по референсам tmp/sanatorium-wip/ref): коридоры, кабинеты,
+ *  часть палат — приглушённо-бирюзовая масляная панель 1.2 м с бордюром и деревянным плинтусом (картинка на всю высоту
+ *  панели), выше побелка; палаты, вестибюль, столовая — белая штукатурка с волосяными трещинами и потёками; водолечебница —
+ *  светлый шпон панелями 0.6 м; душ, грязелечебница — белый кафель 15×15 с ржавыми подтёками и сколами; бассейн —
+ *  бледно-голубой кафель 10×10 панелью 1.6 м с синим бордюрным рядом (выше 1.6 dado не бывает — инвариант пресетов), выше
+ *  побелка, на полу голубой кафель партиями; комната в ремонте — ободранная стена (кирпич, дранка, остатки штукатурки и
+ *  побелки; повтор 1.5 м) и жёлтые крашеные доски, вытертые до дерева, в шпаклёвке; полы — паркет «ёлочкой» (медовый дуб,
+ *  лак вытерт до серо-бежевого; два периода узора — 1.4 м), в вестибюле — терраццо с латунными жилами по квадрату 1.2 м.
+ *  В биоме «Санаторий» — правила биома по второму тегу (src/gen4d/biomes.ts), у проекта — правила тегов, которых нет у
+ *  других групп. */
+const SANATORIUM_FINISHES: FinishDef[] = [
+  {
+    id: 'f_san_teal_panel', name: 'Санаторий: бирюзовая масляная панель 1.2 м (бордюр, плинтус)', surface: 'wall', color: '#5c968c',
+    tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'краска'], tex: { kind: 'paint_panel', w: 512, h: 512, opts: { base: '#5f9e94', accent: '#3e6b64', low: '#4d3a2c' } },
+  },
+  {
+    id: 'f_san_wall_teal', name: 'Санаторий: бирюзовая панель 1.2 м + побелка', surface: 'wall', color: '#e8e6dc', tileW: 1, tileH: 1,
+    tags: ['санаторий', 'двухцветная'], tex: { kind: 'whitewash', w: 256, h: 256, opts: { base: '#e8e6dc' } }, dado: { finishId: 'f_san_teal_panel', heightM: 1.2 },
+  },
+  { id: 'f_san_plaster', name: 'Санаторий: белая штукатурка, волосяные трещины, потёки', surface: 'wall', color: '#e2dfd6', tileW: 1.5, tileH: 1.5, tags: ['санаторий', 'штукатурка'], tex: { kind: 'plaster_cracked', w: 512, h: 512, opts: { base: '#e6e3da' } } },
+  { id: 'f_san_wood_panel', name: 'Санаторий: светлый шпон панелями 0.6 м', surface: 'wall', color: '#c19f68', tileW: 1.2, tileH: 1.5, tags: ['санаторий', 'панели'], tex: { kind: 'veneer', w: 512, h: 640, opts: { base: '#c8a66c', n: 2 } } },
+  { id: 'f_san_tile_white', name: 'Санаторий: белый кафель 15×15, ржавые подтёки, сколы', surface: 'wall', color: '#dfe3e2', tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'кафель'], tex: { kind: 'tile_worn', w: 512, h: 512, opts: { base: '#e9edee', accent: '#a2aaaa', n: 8 } } },
+  {
+    id: 'f_san_reno_wall', name: 'Санаторий: ободранная стена — кирпич, дранка, остатки штукатурки', surface: 'wall', color: '#a88e78', tileW: 1.5, tileH: 3,
+    tags: ['санаторий', 'ремонт', 'кирпич'], tex: { kind: 'lath_brick', w: 512, h: 1024, opts: { base: '#e8e5dc', accent: '#a65a42', low: '#c48b55', high: '#b9b2a4' } },
+  },
+  {
+    id: 'f_san_pool_tile', name: 'Санаторий: бледно-голубой кафель 10×10 панелью 1.6 м', surface: 'wall', color: '#a5ccd4',
+    tileW: 0.6, tileH: 1.6, tags: ['санаторий', 'кафель'], tex: { kind: 'tile_mix', w: 384, h: 1024, opts: { base: '#a9d0d8', accent: '#e3ecea', high: '#4e8fa3', n: 6 } },
+  },
+  {
+    id: 'f_san_pool_wall', name: 'Санаторий: голубой кафель 1.6 м + побелка (бассейн)', surface: 'wall', color: '#e3e6e2', tileW: 1, tileH: 1,
+    tags: ['санаторий', 'двухцветная'], tex: { kind: 'whitewash', w: 256, h: 256, opts: { base: '#e3e6e2' } }, dado: { finishId: 'f_san_pool_tile', heightM: 1.6 },
+  },
+  { id: 'f_san_parquet', name: 'Санаторий: паркет ёлочкой, медовый дуб, вытертый', surface: 'floor', color: '#b0905f', tileW: 1.4, tileH: 1.4, tags: ['санаторий', 'паркет'], tex: { kind: 'parquet_worn', w: 768, h: 768, opts: { base: '#b39062', accent: '#c2b59b' } } },
+  { id: 'f_san_terrazzo', name: 'Санаторий: терраццо с латунными жилами (пол)', surface: 'floor', color: '#c6bcab', tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'терраццо'], tex: { kind: 'terrazzo', w: 512, h: 512, opts: { base: '#c8beac', accent: '#b48d3e', n: 1 } } },
+  { id: 'f_san_pool_floor', name: 'Санаторий: голубой кафель 10×10 партиями (пол бассейна)', surface: 'floor', color: '#a6cad0', tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'кафель'], tex: { kind: 'tile_mix', w: 576, h: 576, opts: { base: '#a3c8cf', accent: '#dfe9e7', n: 12 } } },
+  {
+    id: 'f_san_boards_yellow', name: 'Санаторий: жёлтые крашеные доски, вытертые, в шпаклёвке (пол)', surface: 'floor', color: '#c69a4a', tileW: 1.5, tileH: 0.75,
+    tags: ['санаторий', 'доска', 'ремонт'], tex: { kind: 'boards_painted', w: 768, h: 384, opts: { base: '#c49428', accent: '#d2b48a', high: '#e7e2d5', n: 5 } },
+  },
+];
+
 export const FINISH_DEFS: FinishDef[] = [
   // ── Стены: обои ──
   { id: 'f_wp_damask', name: 'Обои «Дамаск», зелёные', surface: 'wall', color: DAMASK.color, tileW: DAMASK.tileW, tileH: DAMASK.tileH, tags: ['обои', 'жилая'], tex: 'damask' },
@@ -164,6 +247,12 @@ export const FINISH_DEFS: FinishDef[] = [
   ...OBSHAGA_FINISHES,
   // metro
   ...METRO_FINISHES,
+  // cellar
+  ...CELLAR_FINISHES,
+  // catacombs
+  ...CATACOMBS_FINISHES,
+  // sanatorium
+  ...SANATORIUM_FINISHES,
 ];
 
 /** Правила по тегу (первому тегу комнаты из групп спавна): варианты стен и пола с весами. */
@@ -206,6 +295,29 @@ const RULES: [string, [string, number][], [string, number][]][] = [
   ['зал', [['f_metro_marble', 1]], [['f_metro_granite', 1]]],
   ['переход', [['f_metro_tile', 1]], [['f_metro_granite', 1]]],
   ['эскалатор', [['f_metro_marble_dark', 1]], [['f_metro_granite', 1]]],
+  // cellar — земля (в «Прогулке» вместо стен и пола — земляная оболочка); в биоме «Погреб» — то же правило биома
+  ['погреб', [['f_cel_soil', 1]], [['f_cel_floor', 5], ['f_cel_boards', 1]]],
+  // catacombs — по эпохе и виду (тег после 'катакомбы'; правила 'катакомбы' нет — иначе оно бы победило); те же правила —
+  // у биома «Катакомбы» (biomes.ts): имперский кирпич и плита, советский бетон с зелёной панелью, смешанный — облупленная
+  // облицовка и ил, лаз — бетонный короб с илом, станция — бетон и панель, убежище — кирпич
+  ['имперский', [['f_cat_brick', 1]], [['f_cat_stone', 3], ['f_cat_silt', 1]]],
+  ['советский', [['f_cat_green', 3], ['f_cat_concrete', 2]], [['f_cat_floor', 3], ['f_cat_silt', 1]]],
+  ['смешанный', [['f_cat_peel', 1]], [['f_cat_silt', 2], ['f_cat_stone', 1]]],
+  ['лаз', [['f_cat_concrete', 2], ['f_cat_brick', 1]], [['f_cat_silt', 1]]],
+  ['станция', [['f_cat_green', 2], ['f_cat_concrete', 1]], [['f_cat_floor', 1]]],
+  ['убежище', [['f_cat_brick', 2], ['f_cat_peel', 1]], [['f_cat_floor', 1], ['f_cat_stone', 1]]],
+  // sanatorium — по виду помещения (тег после 'санаторий'; правила 'санаторий' нет — иначе оно бы победило): теги, которых
+  // нет у других групп (у квартир 'кабинет' идёт после 'жилая' — их не трогает); коридор и душ санатория — по общим
+  // правилам, вестибюль — по 'холл' ('вестибюль' перебил бы 'зал' у метро); в биоме «Санаторий» — правила биома
+  // (biomes.ts), они находятся раньше
+  ['холл', [['f_san_plaster', 1]], [['f_san_terrazzo', 1]]],
+  ['палата', [['f_san_plaster', 3], ['f_san_wall_teal', 1]], [['f_san_parquet', 1]]],
+  ['бассейн', [['f_san_pool_wall', 1]], [['f_san_pool_floor', 1]]],
+  ['ремонт', [['f_san_reno_wall', 1]], [['f_san_boards_yellow', 1]]],
+  ['водолечебница', [['f_san_wood_panel', 1]], [['f_metlakh', 1]]],
+  ['грязелечебница', [['f_san_tile_white', 1]], [['f_metlakh', 1]]],
+  ['кабинет', [['f_san_wall_teal', 1]], [['f_san_parquet', 1]]],
+  ['столовая', [['f_san_plaster', 1]], [['f_san_parquet', 1]]],
 ];
 
 function texOf(d: FinishDef): string | null {

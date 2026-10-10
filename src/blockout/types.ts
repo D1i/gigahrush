@@ -84,7 +84,8 @@ export interface RunInstance {
   /** лестница с перепадом высоты (ступени, площадки, перила) — src/blockout/stairs.ts */
   stair?: RunStair;
   /** своя высота потолка, м от пола комнаты (Room.ceilM; у зала с лестницей — над подъёмом): стены, потолок, перемычки,
-   *  пропы «потолок» — до неё; нет поля — wallHeightM. Куски портального рендера (src/blockout/stairs.ts liftPiece) */
+   *  пропы «потолок» — до неё; нет поля — wallHeightM. Бывает и ниже wallHeightM (лаз 0.85): тогда потолок — коллайдер
+   *  (Surface.solid). Куски портального рендера (src/blockout/stairs.ts liftPiece) */
   ceilM?: number;
   /** метро: сорвавшиеся дорожки эскалатора — номера маршей (WorldOp 'esc'); их марши убраны из stair.flights (нет
    *  пандуса и опоры), обломки рисует src/view3d/metroScene.ts. Нет поля — все целы */
@@ -268,6 +269,9 @@ export interface Surface {
   finish?: string | null;
   /** отметка верхней грани пола / нижней грани потолка, м */
   z: number;
+  /** потолок — коллайдер (babylon.ts): низкий потолок комнаты (RunInstance.ceilM ниже wallHeightM — лаз катакомб 0.85)
+   *  — во весь рост не встать, поза (src/view3d/posture.ts headroom) видит его лучами. Нет поля — потолок без коллизий */
+  solid?: true;
 }
 
 /** Связанный проём: сквозное отверстие в стене между двумя комнатами. */

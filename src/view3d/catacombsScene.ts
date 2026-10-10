@@ -18,6 +18,10 @@ import { hash01 } from '../locations/stairLoop';
 
 /** Ниже такого уровня (м над полом) — лужи: вода пятнами. */
 export const PUDDLE_M = 0.12;
+/** Прозрачность воды по глубине: мелко — сквозь неё виден пол, глубже — муть (alpha от и до, м до полной мути). */
+const ALPHA_SHALLOW = 0.55;
+const ALPHA_DEEP = 0.9;
+const MURK_M = 1.0;
 /** Туман в катакомбах (линейный, м): лёгкий — фонарь бьёт на 16 м, дальше и так темно. */
 export const CAT_FOG = { start: 3, end: 18 };
 /** Под водой: густая муть, м; цвет — тёмный зелёно-бурый. */
@@ -33,7 +37,7 @@ function waterTexture(scene: Scene, puddle: boolean): DynamicTexture {
   const g = tex.getContext() as unknown as CanvasRenderingContext2D;
   g.clearRect(0, 0, 256, 256);
   if (!puddle) {
-    g.fillStyle = '#272a1c';
+    g.fillStyle = '#6a6447';
     g.fillRect(0, 0, 256, 256);
   }
   // бесшовно — по модулю (копии пятна со сдвигом ±256)
@@ -48,16 +52,16 @@ function waterTexture(scene: Scene, puddle: boolean): DynamicTexture {
   };
   if (puddle) {
     // лужи: тёмные непрозрачные пятна разного размера
-    for (let i = 0; i < 26; i++) blob(hash01(i, 11) * 256, hash01(i, 12) * 256, 18 + hash01(i, 13) * 46, 'rgba(34,38,24,0.95)');
+    for (let i = 0; i < 26; i++) blob(hash01(i, 11) * 256, hash01(i, 12) * 256, 18 + hash01(i, 13) * 46, 'rgba(52,52,34,0.95)');
   } else {
     for (let i = 0; i < 150; i++) {
       const light = hash01(i, 4) > 0.55;
-      blob(hash01(i, 1) * 256, hash01(i, 2) * 256, 8 + hash01(i, 3) * 36, light ? 'rgba(88,84,52,0.32)' : 'rgba(12,16,8,0.42)');
+      blob(hash01(i, 1) * 256, hash01(i, 2) * 256, 8 + hash01(i, 3) * 36, light ? 'rgba(150,140,96,0.3)' : 'rgba(40,46,26,0.38)');
     }
   }
-  g.strokeStyle = puddle ? 'rgba(120,124,96,0.10)' : 'rgba(140,138,104,0.12)';
-  g.lineWidth = 1.2;
-  for (let i = 0; i < 24; i++) {
+  g.strokeStyle = puddle ? 'rgba(120,124,96,0.10)' : 'rgba(176,168,124,0.22)';
+  g.lineWidth = puddle ? 1.2 : 1.6;
+  for (let i = 0; i < (puddle ? 24 : 34); i++) {
     const y0 = hash01(i, 7) * 256;
     g.beginPath();
     for (let x = 0; x <= 256; x += 8) g.lineTo(x, y0 + 4 * Math.sin((x / 256) * Math.PI * 4 + i));
@@ -75,11 +79,11 @@ function materials(scene: Scene): { flood: StandardMaterial; puddle: StandardMat
     const m = new StandardMaterial(name, scene);
     m.diffuseTexture = waterTexture(scene, puddle);
     if (puddle) m.useAlphaFromDiffuseTexture = true;
-    m.diffuseColor = new Color3(0.62, 0.62, 0.5);
-    // блик фонаря на мокрой поверхности
-    m.specularColor = new Color3(0.3, 0.29, 0.22);
-    m.specularPower = 48;
-    m.emissiveColor = new Color3(0.006, 0.007, 0.004);
+    m.diffuseColor = new Color3(0.95, 0.93, 0.78);
+    // блик фонаря на мокрой поверхности — главное, что выдаёт воду в темноте
+    m.specularColor = new Color3(0.62, 0.58, 0.44);
+    m.specularPower = 40;
+    m.emissiveColor = new Color3(0.008, 0.009, 0.005);
     m.alpha = puddle ? 0.9 : 0.86;
     m.backFaceCulling = false;
     return m;
@@ -146,6 +150,7 @@ export class CatacombsWater {
     this.flow = flow;
     const M = materials(this.scene);
     const shallow = level < PUDDLE_M;
+    M.flood.alpha = ALPHA_SHALLOW + (ALPHA_DEEP - ALPHA_SHALLOW) * Math.min(1, Math.max(0, (level - PUDDLE_M) / MURK_M));
     for (const m of [M.flood, M.puddle]) {
       const tex = m.diffuseTexture as Texture | null;
       if (!tex) continue;

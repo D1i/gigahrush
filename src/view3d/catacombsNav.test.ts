@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { CATACOMBS } from '../locations/catacombsFlood';
 import {
-  CLIMB_BEYOND, PLAYER_R, blocked, climbDuration, climbEye, climbTarget, depthAt, dryPads, isBottle, isCatacombs, isClimbPipe, isDuct, landingOf,
+  CLIMB_BEYOND, PLAYER_R, blocked, climbDuration, climbEye, climbTarget, depthAt, dryPads, freeFloor, freeSpot, isBottle, isCatacombs, isClimbPipe, isDuct, landingOf,
   nearestDry, nearestRoom, obstacleOf, onFloor, pipeApproach, pipeGeo, underNow, waterPlaneY, type PlanProp,
 } from './catacombsNav';
 
@@ -66,10 +66,30 @@ describe('сухие площадки', () => {
     expect(nearestRoom(rx.links, 'a', (id) => id === 'b')).toBe('b');
     expect(nearestRoom(rx.links, 'a', () => false)).toBeNull();
   });
+
+  it('свободное место на площадке: колонна посередине — рядом с ней, не в ней; всё занято — null', () => {
+    const p = dryPads(inst('h', ['катакомбы', 'хаб'], [pad(0, 0, 40, 20, 2.1)]), 0.1)[0];
+    expect(freeSpot(p, [])).toEqual({ x: 2, y: 1 });
+    const col = obstacleOf({ inst: 'h', propId: 'p_cat_column_square', x: 2, y: 1, rot: 0, w: 0.8, d: 0.8, h: 3.3, z: 2.1 }, 0)!;
+    const s = freeSpot(p, [col])!;
+    expect(s).not.toBeNull();
+    expect(blocked([col], s.x, s.y, 2.1)).toBe(false);
+    // внутри площадки с запасом от края
+    expect(s.x).toBeGreaterThanOrEqual(0.35 - 1e-9);
+    expect(s.x).toBeLessThanOrEqual(4 - 0.35 + 1e-9);
+    // колонна на полу под площадкой (её низ — ниже ног на площадке, верх — ниже) не мешает
+    const low = obstacleOf({ inst: 'h', propId: 'p_cat_post', x: 2, y: 1, rot: 0, w: 0.2, d: 0.2, h: 2.1 }, 0)!;
+    expect(freeSpot(p, [low])).toEqual({ x: 2, y: 1 });
+    const wall = obstacleOf({ inst: 'h', propId: 'p_x', x: 2, y: 1, rot: 0, w: 5, d: 3, h: 3, z: 2.1 }, 0)!;
+    expect(freeSpot(p, [wall])).toBeNull();
+  });
 });
 
 /** Труба поперёк хода вдоль x: пролёт 2 м (w), толщина 0.3 м (d), высота h. */
 const pipe = (over: Partial<PlanProp> = {}): PlanProp => ({ inst: 'r', propId: 'p_cat_pipe_low', x: 1, y: 5, rot: 0, w: 2, d: 0.3, h: 0.7, tags: ['перелаз'], ...over });
+/** Трубы набора (src/data/props.ts, PROP_HEIGHTS / PROP_COVER ядра): пролёт 2.0, толщина 0.52. */
+const LOW = pipe({ d: 0.52, h: 0.8 });
+const MID = pipe({ propId: 'p_cat_pipe_mid', d: 0.52, h: 1.3, clear: 0.83, tags: ['перелаз', 'подлаз'] });
 /** Ход 2 × 10 м: x 0…2, y 0…10. */
 const hall = [{ x0: 0, y0: 0, x1: 2, y1: 10 }];
 
@@ -133,8 +153,9 @@ describe('перелаз: геометрия трубы', () => {
     expect(Math.abs(t!.x - 1)).toBeGreaterThan(0.5);
     const wall = obstacleOf({ inst: 'r', propId: 'p_cat_rubble', x: 1, y: 5.8, rot: 0, w: 2, d: 0.6, h: 1 }, 0)!;
     expect(climbTarget(g, a, hall, [wall])).toBeNull();
-    // мусор и подвесное под потолком — не помеха; высоко над телом — не помеха
-    expect(obstacleOf({ inst: 'r', propId: 'p_cat_bottle', x: 1, y: 5.8, rot: 0, w: 0.3, d: 0.1, h: 0.1, tags: ['мусор'] }, 0)).toBeNull();
+    // мелочь под ногами и подвесное под потолком — не помеха; завал (тоже «мусор») — помеха; высоко над телом — не помеха
+    expect(obstacleOf({ inst: 'r', propId: 'p_cat_bottle', x: 1, y: 5.8, rot: 0, w: 0.26, d: 0.08, h: 0.01, tags: ['мусор', 'россыпь'] }, 0)).toBeNull();
+    expect(obstacleOf({ inst: 'r', propId: 'p_cat_rubble', x: 1, y: 5.8, rot: 0, w: 2.2, d: 1.5, h: 1.2, tags: ['мусор', 'обломки'] }, 0)).not.toBeNull();
     expect(obstacleOf({ inst: 'r', propId: 'p_cat_vault_1', x: 1, y: 5.8, rot: 0, w: 2, d: 1, h: 1, tags: ['потолок'] }, 0)).toBeNull();
     const high = obstacleOf({ inst: 'r', propId: 'p_cat_pipe_high', x: 1, y: 5.8, rot: 0, w: 2, d: 0.3, h: 1.9, clear: 1.8 }, 0)!;
     expect(blocked([high], 1, 5.8, 0)).toBe(false);
@@ -145,6 +166,33 @@ describe('перелаз: геометрия трубы', () => {
     expect(blocked([rotBox], 1, 6.6, 0)).toBe(true);
     expect(blocked([rotBox], 1.5, 5.8, 0)).toBe(false);
     expect(blocked([rotBox], 1, 7.2, 0)).toBe(false);
+  });
+
+  it('трубы набора: низкая (0.8) и средняя (плита 0.83…1.3) — перелезть в ходе 2 м, встать за гранью 0.26 м', () => {
+    for (const p of [LOW, MID]) {
+      expect(isClimbPipe(p)).toBe(true);
+      const g = pipeGeo(p, 0);
+      expect(g.half).toBeCloseTo(0.26);
+      const a = pipeApproach(g, { x: 1, y: 5 - 0.26 - 0.6 }, { x: 0, y: 1 })!;
+      expect(a).not.toBeNull();
+      const to = climbTarget(g, a, hall, [])!;
+      expect(to.y - 5).toBeCloseTo(0.26 + CLIMB_BEYOND);
+      // дуга — над верхом трубы с запасом 0.35 м (стоя)
+      expect(climbEye(0.5, 1.6, 1.62, g.top)).toBeGreaterThanOrEqual(g.top + 0.35 - 1e-9);
+    }
+    // за средней — коридор кончается стеной через 0.5 м: не лезть
+    const g = pipeGeo(MID, 0);
+    const a = pipeApproach(g, { x: 1, y: 4.2 }, { x: 0, y: 1 })!;
+    expect(climbTarget(g, a, [{ x0: 0, y0: 0, x1: 2, y1: 5.76 }], [])).toBeNull();
+  });
+
+  it('свободное место на полу: ближе к игроку, не на лестнице и не в предмете', () => {
+    const stairBox = obstacleOf({ inst: 'r', propId: 'stair', x: 1, y: 2, rot: 0, w: 2, d: 4, h: 2.1 }, 0)!;
+    const at = freeFloor(hall, [stairBox], 0, { x: 1, y: 1 })!;
+    expect(at).not.toBeNull();
+    expect(at.y).toBeGreaterThan(4 + PLAYER_R);
+    expect(onFloor(hall, at.x, at.y)).toBe(true);
+    expect(freeFloor(hall, [obstacleOf({ inst: 'r', propId: 'x', x: 1, y: 5, rot: 0, w: 2, d: 10, h: 2 }, 0)!], 0, { x: 1, y: 1 })).toBeNull();
   });
 
   it('на полу: круг радиуса игрока целиком в прямоугольниках (стык кусков — внутри)', () => {

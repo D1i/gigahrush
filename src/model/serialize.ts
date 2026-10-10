@@ -35,6 +35,9 @@ import { areaM2, decodeCells, encodeCells } from './cells';
 import { uid } from './ops';
 import { cloneLocation, parseLocation } from '../locations/stairwell';
 import { cloneStair, parseStair } from './stairs';
+// бестиарий: правки ручек (src/game/bestiary.ts); записи — чтобы разбор знал ручки и их рамки
+import { cloneBestiary, parseBestiary } from '../game/bestiary';
+import '../data/bestiaryEntries';
 
 export const FORMAT = 'room-forge';
 export const FORMAT_VERSION = 1;
@@ -89,8 +92,13 @@ export function serializeProject(p: Project): ProjectJSON {
       floor: r.floor.map((x) => ({ finishId: x.finishId, weight: x.weight })),
     })),
     world: cloneWorld(p.world ?? newWorldSettings()),
+    // бестиарий: поле пишется, только если есть правки
+    ...bestiaryField(cloneBestiary(p.bestiary)),
   };
 }
+
+// бестиарий
+const bestiaryField = (b: Project['bestiary']): { bestiary?: Project['bestiary'] } => (b ? { bestiary: b } : {});
 
 export function serializeRoom(r: Room, cellM: number): RoomJSON {
   // явный порядок полей — для читаемого экспорта
@@ -495,7 +503,8 @@ export function parseProject(json: unknown): Project {
   // бесконечный мир (4D): биомы, квартиры, переходы; в старых проектах нет — по умолчанию
   const world = normWorld(json.world);
 
-  return { settings, props, items, rooms, generator, economy, finishes, finishRules, world };
+  // бестиарий: только известные ручки, числа в рамках; пусто — поля нет
+  return { settings, props, items, rooms, generator, economy, finishes, finishRules, world, ...bestiaryField(parseBestiary(json.bestiary)) };
 }
 
 /** Пустой проект со значениями по умолчанию (без пресетов). */

@@ -26,6 +26,7 @@ import { runMeters, SIGHT_DIRS, sightLimits } from '../gen/sight';
 import { walkWarning } from '../gen/walk';
 import { runWorld } from '../gen/world';
 import { connDz } from '../model/stairs';
+import { isAbyss } from '../locations/fractalEntry'; // fractal
 import {
   ATTEMPTS, buildPool, doorPoint, failWhy, longSight, growFrom, GROW_BONUS, growOthers, layerKey, LEAF_BONUS, LIMIT, localCells, newLay, normFold, place,
   pickWeighted, PVS_TOL_M, RESERVE, RESERVE_MAX, RESERVE_STEP, SUPPLY_FACTOR, tryLink,
@@ -778,7 +779,9 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
       // вниз — из лестницы, ангара, люка, двери в снег (у неё бывает 0 этажей); срыв (сюжет, fall) — с лестницы, из лифта
       const from = l.fall ? ['stairwell', 'lift'] : ['stairwell', 'hangar', 'hatch', 'snowdoor'];
       const minDown = !l.fall && kind === 'snowdoor' ? 0 : 1;
-      if (!up && !from.includes(kind ?? '')) err(`${name}: переход вниз не из спец-локации`);
+      // fractal: выход из «Фрактальной станции» — спуск из бездонного эскалатора метро (комната без спец-локации)
+      const abyss = !up && !l.fall && isAbyss(p.rooms.find((r) => r.id === wa.inst.roomId)?.tags);
+      if (!up && !abyss && !from.includes(kind ?? '')) err(`${name}: переход вниз не из спец-локации`);
       if (up && kind !== 'lift') err(`${name}: выход лифта не из лифта`);
       if (up && l.side !== 'straight' && l.side !== 'right') err(`${name}: выход лифта side = ${l.side}`);
       const B = wb.connectors.find((c) => c.id === l.b.connector);
@@ -816,7 +819,8 @@ export function validateFoldRun(p: Project, run: Run, opts: ValidateOpts = {}): 
     const exp = wOf(l.b.inst) - wOf(l.a.inst);
     const dw = l.dw ?? 0;
     if (dw !== exp) err(`${name}: dw = ${dw}, а w(b) − w(a) = ${exp}`);
-    if (Math.abs(exp) > f.maxShift) err(`${name}: |dw| = ${Math.abs(exp)} > maxShift = ${f.maxShift}`);
+    // sanatorium: вход во flat-биом на свежий слой (Link.fresh) — сдвиг любой
+    if (!l.fresh && Math.abs(exp) > f.maxShift) err(`${name}: |dw| = ${Math.abs(exp)} > maxShift = ${f.maxShift}`);
     const ma = A.shift ?? 'auto', mb = B.shift ?? 'auto';
     if ((ma === 'never' || mb === 'never') && exp !== 0) err(`${name}: порог 'never' сдвигает W на ${exp}`);
     if ((ma === 'always' || mb === 'always') && exp === 0) err(`${name}: порог 'always' не сдвигает W`);

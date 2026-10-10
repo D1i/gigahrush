@@ -335,6 +335,15 @@ function BiomeFields(props: { b: Biome; p: Project; tags: string[]; onChange: (f
         onChange={(v) => onChange((x) => (v ? (x.layout = 'tunnels') : delete x.layout))}
         title="Растёт не квартирами, а ходами на ходу (параметры — «Подвал: сеть ходов» выше): нужны куски ходов с тегами «ход», «поворот», «развилка», «хаб»"
       />
+      {/* sanatorium: евклидова сеть ходов (Biome.flat) */}
+      {tunnels && (
+        <Check
+          label="3D, без 4D-сдвигов"
+          value={!!b.flat}
+          onChange={(v) => onChange((x) => (v ? (x.flat = true) : delete x.flat))}
+          title="Обычное трёхмерное здание: все комнаты сети в одном слое W, ни одна не стоит в другой; вход — на свежий слой, без колец, бесконечных участков и петель со сдвигом (санаторий)"
+        />
+      )}
       <Check
         label="свои параметры генератора"
         value={own}

@@ -1580,14 +1580,22 @@ export function validateBlockout(model: BlockoutModel): string[] {
   // точка на стыке двух объёмов считается закрытой: при владении (ownership) масса режется и по
   // полуклеткам — стык попадает ровно на середину клетки, где лежат точки проверки края пола
   const onRect = (r: Rect, x: number, y: number): boolean => x >= r.x0 - 1e-9 && x <= r.x1 + 1e-9 && y >= r.y0 - 1e-9 && y <= r.y1 + 1e-9;
-  // высоты — от пола (у кусков портального рендера комнаты бывают на своей высоте, src/blockout/stairs.ts)
-  const closedAt = (x: number, y: number, z0 = 0): boolean => {
+  // высоты — от пола (у кусков портального рендера комнаты бывают на своей высоте, src/blockout/stairs.ts); h — нужная
+  // высота массы (низкий потолок лаза — до него)
+  const closedAt = (x: number, y: number, z0 = 0, h = wallH): boolean => {
     let ok = false;
     si.query(x, y, x, y, (i) => {
       const s = solids[i];
-      if (!ok && s.kind !== 'lintel' && s.z0 <= z0 + EPS && s.z1 >= z0 + wallH - EPS && onRect(s.rect, x, y)) ok = true;
+      if (!ok && s.kind !== 'lintel' && s.z0 <= z0 + EPS && s.z1 >= z0 + h - EPS && onRect(s.rect, x, y)) ok = true;
     });
     return ok;
+  };
+  // своя высота потолка ниже стен болванки (лаз, RunInstance.ceilM < wallHeightM): край пола закрыт массой до потолка
+  const lowCeil = new Map<string, number>();
+  for (const s of model.ceilings) if (s.inst !== null && s.solid) lowCeil.set(s.inst, Math.min(lowCeil.get(s.inst) ?? Infinity, s.z));
+  const needH = (surf: Surface): number => {
+    const c = surf.inst !== null ? lowCeil.get(surf.inst) : undefined;
+    return c !== undefined ? Math.min(wallH, Math.max(0, c - surf.z)) : wallH;
   };
   const baseOf = new Map<string, number>();
   for (const s of model.floors) if (s.inst !== null && !baseOf.has(s.inst)) baseOf.set(s.inst, s.z);
@@ -1648,15 +1656,15 @@ export function validateBlockout(model: BlockoutModel): string[] {
         const qx = px + nx * delta, qy = py + ny * delta;
         // перегородка (gap = 0) стоит на ребре; при владении она поделена по ребру на половины — у края
         // пола своя половина внутри пола, чужая снаружи: смотрим по обе стороны ребра
-        const inner = closedAt(px - nx * delta, py - ny * delta, surf.z);
+        const inner = closedAt(px - nx * delta, py - ny * delta, surf.z, needH(surf));
         const other = floorAt(qx, qy);
         if (other === s) continue;
         if (other >= 0) {
           const o = model.floors[other];
           if (o.inst === null || surf.inst === null || o.inst === surf.inst) continue;
-          if (closedAt(px, py, surf.z) || inner || closedAt(qx, qy, surf.z)) closedEdge(surf.inst, px, py, nx, ny, len / n);
+          if (closedAt(px, py, surf.z, needH(surf)) || inner || closedAt(qx, qy, surf.z, needH(surf))) closedEdge(surf.inst, px, py, nx, ny, len / n);
           else if (!openingAt(px, py)) report(`Полы ${surf.inst} и ${o.inst} соприкасаются у (${f2(px)}; ${f2(py)}) без перегородки`);
-        } else if (closedAt(qx, qy, surf.z) || inner) {
+        } else if (closedAt(qx, qy, surf.z, needH(surf)) || inner) {
           closedEdge(surf.inst, px, py, nx, ny, len / n);
         } else if (!(openMode && (surf.inst === null || openingAt(px, py)))) {
           // открытый край допустим только в режиме 'open': пол проёма наружу или (gap = 0) ребро проёма,
@@ -1774,6 +1782,16 @@ export function validateBlockout(model: BlockoutModel): string[] {
 /** Правила по порядку: первое совпадение побеждает. Основа слова (≥ 4 букв) — по началу слова,
  *  короткие и помеченные «=» — только целое слово. */
 const PROP_HEIGHTS: [string[], number][] = [
+  // catacombs: свои теги — в начале, раньше общих (первое совпадение побеждает): мелочь под ногами («россыпь»: бутылки,
+  // банки, газеты, тряпьё, сапог, огарки, матрас) — 1 см, раньше «бутылк» / «банка» / «мусор»; колонны зала станции
+  // («колоннада», набор — 3.31 м) — раньше «колонн» (2.1); трубы поперёк хода — раньше «труба» (0.4): на оси 1.05
+  // («подлаз», плита 0.83…1.3 — PROP_COVER), на оси 1.65 («пригнуться», плита 1.43…1.9), на оси 0.55 («перелаз» —
+  // сплошная от пола до верха фланца 0.8)
+  [['россыпь'], 0.01],
+  [['колоннада'], 3.3],
+  [['подлаз'], 1.3],
+  [['пригнуться'], 1.9],
+  [['перелаз'], 0.8],
   // подвесное (лампа, труба под потолком) и плоское на полу (лужа, вода) — болванка-коллайдер в 1 см, не мешает пройти
   [['потолок', 'лужа', 'затоплено'], 0.01],
   [['доска'], 0.05],
@@ -1858,6 +1876,9 @@ export const PROP_COVER: Readonly<Record<string, { cover: PropCoverKind; clear: 
   p_table_kitchen: { cover: 'table', clear: TABLE_CLEAR_M },
   p_table_round: { cover: 'table', clear: TABLE_CLEAR_M },
   p_obsh_table: { cover: 'table', clear: TABLE_CLEAR_M },
+  // catacombs: трубы поперёк хода — низ трубы (ось − 0.22), высота — теги «подлаз» / «пригнуться» в PROP_HEIGHTS
+  p_cat_pipe_mid: { cover: 'table', clear: 0.83 },
+  p_cat_pipe_high: { cover: 'table', clear: 1.43 },
 };
 
 /** Укрытие предмета по id (PROP_COVER) или null — сплошной до пола. */

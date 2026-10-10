@@ -513,6 +513,9 @@ export interface NetsSpec {
   uvM: number;
   /** цвет вершины (x, y, z плана; нормаль к воздуху gx, gy, gz; at — поле по решётке) → out[o … o + 3] */
   color(x: number, y: number, z: number, gx: number, gy: number, gz: number, at: (x: number, y: number, z: number) => number, out: Float32Array, o: number): void;
+  /** поправить нормаль вершины (к воздуху, план; n — по решётке, единичная) — например, у плоскости проёма взять её из
+   *  точного профиля, одинакового у соседей; нет — нормаль по решётке */
+  normal?(x: number, y: number, z: number, n: [number, number, number]): void;
 }
 
 /**
@@ -637,6 +640,7 @@ export function surfaceNets(s: NetsSpec, step: number, noise: boolean): SnowMesh
   const positions = new Float32Array(n * 3), normals = new Float32Array(n * 3), colors = new Float32Array(n * 4), uvs = new Float32Array(n * 2);
   // градиент — по решётке (у соседей по проёму значения на плоскости и за ней одинаковы — одинаковы и нормали шва)
   const e = step;
+  const nn: [number, number, number] = [0, 0, 0];
   for (let v = 0; v < n; v++) {
     const x = pos[v * 3], y = pos[v * 3 + 1], z = pos[v * 3 + 2];
     let gx = at(x + e, y, z) - at(x - e, y, z);
@@ -647,6 +651,13 @@ export function surfaceNets(s: NetsSpec, step: number, noise: boolean): SnowMesh
     gx = -gx / gl;
     gy = -gy / gl;
     gz = -gz / gl;
+    if (s.normal) {
+      nn[0] = gx;
+      nn[1] = gy;
+      nn[2] = gz;
+      s.normal(x, y, z, nn);
+      [gx, gy, gz] = nn;
+    }
     // Babylon: X = x, Y = z (+ пол этажа), Z = −y
     positions[v * 3] = x;
     positions[v * 3 + 1] = z + s.floorY;

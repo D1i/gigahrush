@@ -1,4 +1,4 @@
-// Эскалаторы метро (биом «Метро», docs/LOCATIONS.md §16) — механика без движка.
+// Эскалаторы метро (биом «Метро», docs/LOCATIONS.md §18) — механика без движка.
 //
 //  • Эскалатор — комната с тегом «эскалатор» (metro_esc_tunnel): марши её лестницы (RunInstance.stair) со стилем
 //    'escalator' — дорожки; номер дорожки (lane) — индекс марша в stair.flights. У экземпляра со сломанными дорожками
@@ -20,6 +20,7 @@
 import { makeRng } from '../model/rng';
 import type { RunInstance, RunStair, Side } from '../blockout/types';
 import { fallPose, FALL_BREAK_S, FALL_LAND_S, FALL_LIE_EYE } from './hangar';
+import { ABYSS_DIRS, isAbyss } from './fractalEntry'; // fractal
 
 export const ESC = {
   /** скорость ленты по наклону, м/с */
@@ -137,7 +138,8 @@ export function escLanes(inst: Pick<RunInstance, 'stair' | 'escLanes' | 'escBrok
   const fl = escFlights(inst);
   const flags = laneFlags(inst);
   const idx = fl.map((_, i) => i).filter((i) => flags[i]);
-  const dirs = laneDirs(key, idx.length);
+  // fractal: бездонный эскалатор — все вниз, средняя стоит (src/locations/fractalEntry.ts)
+  const dirs = isAbyss(inst.roomTags) && idx.length === ABYSS_DIRS.length ? ABYSS_DIRS : laneDirs(key, idx.length);
   const broken = new Set(inst.escBroken ?? []);
   const B = num(inst.z);
   const c = cellM > 0 ? cellM : 0.1;

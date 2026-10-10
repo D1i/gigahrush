@@ -1,0 +1,14 @@
+/* «Фрактальная станция» (FractalLayer.tsx): кольцо упора в стену, тревога срыва эскалатора, подсказки. Общее — .v3-loc-*
+   из view3d.css. */
+.v3-fr-ring { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none !important; opacity: 0.85; }
+.v3-fr-ring circle { fill: none; stroke-width: 3; }
+.v3-fr-ring .bg { stroke: #ffffff22; }
+.v3-fr-ring .fg { stroke: #dfe8ff; stroke-linecap: round; filter: drop-shadow(0 0 4px #dfe8ffaa); transition: stroke-dasharray 0.12s linear; }
+.v3-fr-alarm {
+  position: absolute; left: 50%; top: 18%; transform: translateX(-50%); pointer-events: none !important;
+  font-family: var(--font-c); font-size: 26px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+  color: #ffb4a8; text-shadow: 0 0 14px #ff3a2a, 0 0 2px #000; animation: v3-fr-alarm 0.45s ease-in-out infinite alternate;
+}
+.v3-fr-alarm.fall { color: #ffd0c8; }
+@keyframes v3-fr-alarm { from { opacity: 0.55; } to { opacity: 1; } }
+.v3-fr-hint { color: #dfe8ff; text-shadow: 0 0 8px #0008; }

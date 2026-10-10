@@ -20,6 +20,14 @@
 //    Вылез из-под кровати рядом с невидимой рукой — обычная хватка. Кровать рука знает (HandPlayer.cover — её рамка):
 //    кончик не заходит в рамку, расширенную на pokeStandM (кисть и упёртые пальцы остаются снаружи кровати, под неё
 //    уходит только указательный), и тычет только снаружи неё; к свободному боку кровати руку ведёт навигация (goal).
+//    Ближе не подойти (бока у стен, лежит глубоко от изножья) — указательный вытягивается до pokeMaxM от кончика.
+//  • Рука бьёт одного: цель (HandState.target, aimHand) — один игрок, лучший по счёту «агро − путь, м»: агро — шум
+//    шага (память шума по горизонтальной скорости: бег громче шага, ползком и лёжа — тихо, спадает за несколько
+//    секунд), горящий фонарик, метка (предмет), прилипание к нынешней цели; при равном агро — ближайший. Цель держится,
+//    пока другой не обгоняет её на aggroSwitchM дольше aggroSwitchS или сама не выбыла (лампа / поле лампы, нет в
+//    списке — погиб или ушёл, недостижима); открытый игрок в GRAB_R невидимой кисти — цель сразу (касание — хватка).
+//    Хватает и тычет только цель, к ней одной ведёт путь (HandView.target → handGoal). Кровати не-целей — не преграда:
+//    рука ползёт поверх них (кисть и предплечье ложатся на матрас — рендер), упор кончика — только у кровати цели.
 //
 // Рука беззвучна по замыслу: события руки — для логики и картинки, своих звуков у неё нет и быть не должно (ни шороха,
 // ни скрежета; крик/дыхание схваченного игрока — на усмотрение интеграции, но не звук самой руки).
@@ -62,8 +70,8 @@ export const OBSHAGA = {
   /** ход закрывания, с */
   doorCloseS: 1.4,
   // ── лампа ──
-  /** радиус поля лампы, м: рука в него не заходит, игроки внутри не хватаются */
-  lanternR: 3,
+  /** радиус поля лампы, м: рука в него не заходит (не ближе 1 м к лампе — и палец тоже), игроки внутри не хватаются */
+  lanternR: 1,
   /** радиус видимого света лампы, м (> поля: руку видно раньше, чем она упрётся в поле) */
   lanternLightR: 6,
   /** «касание» поля: рука отступает, если поле накрыло руку глубже этого, м (хорды следа на дуге поля — не касание) */
@@ -96,6 +104,11 @@ export const OBSHAGA = {
    *  круге 1.2 м у кончика (src/view3d/obshagaHand.ts, проверено тестом), под кровать уходят только дальние фаланги
    *  указательного ниже 0.2 м; досягаемость под кровать от её края — pokeR − pokeStandM ≈ 0.9 м (кровать — 0.8) */
   pokeStandM: 1.3,
+  /** вытянутый указательный достаёт до стольких метров от кончика — тычет так, только если ближе не подойти (кровать
+   *  известна; кончик пришёл к цели навигации или упёрся в зону кровати); дальше pokeR палец удлиняется сверх своей
+   *  длины (рендер). 1.9 м кровать в нише (оба длинных бока у стен): лежащий до ~1.65 м от свободного торца + отступ
+   *  pokeStandM + 0.08 (цель навигации) ≈ 3.03 м */
+  pokeMaxM: 3.2,
   /** кровать «рядом» (HandView.bed), если кончик ближе pokeStandM + столько, м */
   bedNearM: 2.5,
   /** тычок пальцем раз в столько секунд */
@@ -108,6 +121,26 @@ export const OBSHAGA = {
   /** заживает через столько секунд без тычков — по hpRegenPerS в секунду (с нуля до полного ~33 с) */
   hpRegenDelayS: 4,
   hpRegenPerS: 3,
+  // ── цель и агро (aimHand): счёт игрока = агро − путь от кончика, м ──
+  /** шум шага по горизонтальной скорости, м/с (noiseOfSpeed): до noiseQuietV — 0 (ползком ~0.58, лёжа ~0.39; присед
+   *  ~0.85 — почти тихо), шаг (noiseWalkV, стоя 1.7) — noiseWalk, бег (noiseRunV: шаг × RUN_MUL 1.7) — 1; быстрее —
+   *  дальше по прямой, не больше noiseMax (предметы — HandPlayer.loud — в тех же единицах) */
+  noiseQuietV: 0.7,
+  noiseWalkV: 1.7,
+  noiseWalk: 0.4,
+  noiseRunV: 2.9,
+  noiseMax: 2,
+  /** память шума спадает как e^(−t / noiseTauS): через 3 с — ~30%, через 6 с — ~9% */
+  noiseTauS: 2.5,
+  /** агро, м «ближе»: шум × aggroNoiseM (бег — 5 м, шаг — 2), горящий фонарик — aggroLightM, метка (предмет) —
+   *  aggroMarkM (сильнее любой разницы пути в карте руки), нынешняя цель — ещё aggroStickM (прилипание) */
+  aggroNoiseM: 5,
+  aggroLightM: 2.5,
+  aggroMarkM: 15,
+  aggroStickM: 1,
+  /** смена цели: другой обгоняет цель (с её прилипанием) больше чем на aggroSwitchM — непрерывно aggroSwitchS, с */
+  aggroSwitchM: 1,
+  aggroSwitchS: 1.2,
   // ── режиссёр ──
   /** рука появляется через столько секунд после отключения */
   spawnDelayS: [1, 3],
@@ -118,7 +151,7 @@ export const OBSHAGA = {
   /** запасная дверь — ближайшая невидимая не ближе стольких метров пути */
   spawnMinM: 3,
   /** дверь появления не ближе стольких метров к лампе (LANTERN_R + 1.5): рука вылезает рядом, но не в поле */
-  spawnLanternM: 4.5,
+  spawnLanternM: 2.5,
   /** «сзади или сбоку»: косинус угла между взглядом ближайшего игрока и направлением на проём — не больше */
   spawnBehindCos: 0.3,
 } as const;
@@ -133,6 +166,8 @@ export const GRAB_R: number = OBSHAGA.grabR;
 export const POKE_R: number = OBSHAGA.pokeR;
 /** Кончик держится от рамки кровати не ближе, м. */
 export const POKE_STAND: number = OBSHAGA.pokeStandM;
+/** Вытянутый указательный достаёт от кончика, м. */
+export const POKE_MAX: number = OBSHAGA.pokeMaxM;
 
 /** Прямоугольник плана, м (x0 < x1, y0 < y1) — рамка кровати (как Rect болванки, src/blockout/types.ts). */
 export interface Rect {
@@ -443,13 +478,15 @@ export interface FloorItem {
   inst: string;
   x: number;
   z: number;
+  /** горит ли (лампа: false — кончился керосин, поля нет); нет поля — горит */
+  on?: boolean;
 }
 
-/** Лампы на полу — точки поля в плане (лежащие KEROLAMP_ITEM); inRoom — только эти комнаты (прочие не в счёт).
- *  У всех копий мира (кооп) список предметов один — поле у хоста и у клиентов одно. */
+/** Лампы на полу — точки поля в плане (лежащие KEROLAMP_ITEM, кроме погасших: on === false); inRoom — только эти
+ *  комнаты (прочие не в счёт). У всех копий мира (кооп) список предметов один — поле у хоста и у клиентов одно. */
 export function floorLanterns(drops: readonly FloorItem[], inRoom?: (room: string) => boolean): Pt[] {
   const out: Pt[] = [];
-  for (const d of drops) if (d.item === KEROLAMP_ITEM && (!inRoom || inRoom(d.inst))) out.push({ x: d.x, y: -d.z, room: d.inst });
+  for (const d of drops) if (d.item === KEROLAMP_ITEM && d.on !== false && (!inRoom || inRoom(d.inst))) out.push({ x: d.x, y: -d.z, room: d.inst });
   return out;
 }
 
@@ -501,9 +538,14 @@ export interface HandState {
   poke: string | null;
   pokeT: number;
   pokeAt: Pt | null;
-  /** кровать рядом (stalking): рамка ближайшей кровати, под которой лежат, если кончик ближе pokeStandM + bedNearM к
-   *  ней (рендер заранее подбирает пальцы — не лезут в неё на подходе); нет поля (старый срез) — null */
+  /** кровать рядом (stalking): рамка кровати цели (лежит под ней), если кончик ближе pokeStandM + bedNearM к ней
+   *  (рендер заранее подбирает пальцы — не лезут в неё на подходе); нет поля (старый срез) — null */
   bed?: Rect | null;
+  /** цель (aimHand): id игрока, которого рука хватает или тычет, — одна; null — нет годных (все с лампой / в поле) */
+  target?: string | null;
+  /** кто обгоняет цель на aggroSwitchM и сколько секунд подряд (смена — через aggroSwitchS) */
+  rival?: string | null;
+  rivalT?: number;
 }
 
 export interface HandPlayer {
@@ -516,8 +558,21 @@ export interface HandPlayer {
   /** под кроватью: не хватается — рука тычет пальцем (не путать с protected: тот — ещё и поле лампы у интеграции) */
   sheltered?: boolean;
   /** под какой кроватью (рамка на плане, вместе с sheltered): кончик не заходит ближе pokeStandM к ней (по худшей оси —
-   *  rectGap) и тычет только оттуда; нет — тычет, откуда достаёт */
+   *  rectGap) и тычет только оттуда — если это цель; кровати прочих — не преграда; нет — тычет, откуда достаёт */
   cover?: Rect;
+  // ── агро (aimHand; всё необязательно — нет: тихо, без света, путь по прямой) ──
+  /** горизонтальная скорость, м/с — хост меряет у всех одинаково, по смещениям; шум шага — noiseOfSpeed */
+  speed?: number;
+  /** добавочный шум (предметы), в единицах шума: 1 — бег */
+  loud?: number;
+  /** память шума 0…noiseMax (режиссёр подставляет свою, stepNoise); шум сейчас — не меньше speed / loud */
+  noise?: number;
+  /** горит фонарик */
+  light?: boolean;
+  /** помечен (предмет): +aggroMarkM — рука выбирает его */
+  marked?: boolean;
+  /** путь от кончика по навигации, м; null — не дойти (не цель); нет — по прямой */
+  dist?: number | null;
 }
 
 export interface HandInput {
@@ -525,13 +580,15 @@ export interface HandInput {
   lightsOn: boolean;
   /** руку видит хоть кто-то (обычно players.some(p => p.sees)) */
   seen: boolean;
-  /** следующая точка пути кончика к ближайшему незащищённому игроку (навигация интеграции, видна по прямой); null — стоять */
+  /** следующая точка пути кончика к цели (HandView.target; навигация интеграции, видна по прямой); null — стоять */
   goal: Pt | null;
   players: readonly HandPlayer[];
   /** где лампы (у кого бы ни были, в том числе стоящие на полу) */
   lanterns: readonly Pt[];
   /** скорость ходьбы игрока, м/с */
   playerSpeed: number;
+  /** цель в этом шаге уже выбрана (aimHand до goal — так делает stepDirector); нет — stepHand выбирает сам */
+  aimed?: boolean;
 }
 
 export type HandEvent =
@@ -579,6 +636,9 @@ export function createHand(seed: string, door: Pt, mouth: Pt): HandState {
     pokeT: 0,
     pokeAt: null,
     bed: null,
+    target: null,
+    rival: null,
+    rivalT: 0,
   };
 }
 
@@ -715,43 +775,143 @@ function retract(h: HandState, d: number): boolean {
   return h.trail.length === 1 && h.lay < 1e-9;
 }
 
-/** Ближайший к кончику незащищённый игрок в GRAB_R (защищён: сам — p.protected, или стоит в поле любой лампы; под
- *  кроватью — не хватается). */
-function pickVictim(h: HandState, input: HandInput): string | null {
-  let best: HandPlayer | null = null;
-  let bd = Infinity;
-  for (const pl of input.players) {
-    if (pl.protected || pl.sheltered || isProtected(pl.p, input.lanterns)) continue;
-    const d = dist(h.tip, pl.p);
-    if (d > GRAB_R) continue;
-    if (d < bd || (d === bd && best && pl.id < best.id)) {
-      best = pl;
-      bd = d;
-    }
-  }
-  return best ? best.id : null;
+// ── цель и агро ──
+
+/** Шум шага по горизонтальной скорости v, м/с (OBSHAGA.noise*): тише noiseQuietV — 0, шаг — noiseWalk, бег — 1. */
+export function noiseOfSpeed(v: number): number {
+  const { noiseQuietV: q, noiseWalkV: w, noiseRunV: r, noiseWalk: nw, noiseMax } = OBSHAGA;
+  if (!fin(v) || v <= q) return 0;
+  if (v <= w) return (nw * (v - q)) / (w - q);
+  return Math.min(noiseMax, nw + ((1 - nw) * (v - w)) / (r - w));
+}
+
+/** Шум игрока сейчас: шаг (speed) + предметы (loud), не меньше заданной памяти noise; 0…noiseMax. */
+function noiseNow(pl: HandPlayer): number {
+  const s = fin(pl.speed) ? noiseOfSpeed(pl.speed) : 0;
+  const l = fin(pl.loud) && pl.loud > 0 ? pl.loud : 0;
+  const n = fin(pl.noise) && pl.noise > 0 ? pl.noise : 0;
+  return clamp(Math.max(n, s + l), 0, OBSHAGA.noiseMax);
 }
 
 /**
- * Кого тычет: ближайший к кончику игрок под кроватью в POKE_R — не с лампой, не в поле ламп и в той же комнате, что
- * кончик (если обе метки есть: сквозь стену палец не достаёт — рука ползёт по пути дальше, в комнату); кровать известна
- * (cover) — только если кончик не ближе pokeStandM к её рамке (иначе кисть и пальцы легли бы на кровать).
+ * Память шума за шаг dt: у каждого из players — max(шум сейчас, прошлое × e^(−dt / noiseTauS)): громкий шаг слышен
+ * сразу, тишина — спадает за несколько секунд; при неизменном шуме дробление dt итога не меняет. Ушедших из списка нет
+ * (состояние маленькое), почти ноль не хранится.
  */
-function pokeTarget(h: HandState, input: HandInput): HandPlayer | null {
-  let best: HandPlayer | null = null;
-  let bd = Infinity;
-  for (const pl of input.players) {
-    if (!pl.sheltered || pl.protected || isProtected(pl.p, input.lanterns)) continue;
-    if (pl.p.room !== undefined && h.tip.room !== undefined && pl.p.room !== h.tip.room) continue;
-    if (pl.cover && rectGap(h.tip, pl.cover) < OBSHAGA.pokeStandM - 1e-4) continue;
-    const d = dist(h.tip, pl.p);
-    if (d > POKE_R) continue;
-    if (d < bd || (d === bd && best && pl.id < best.id)) {
-      best = pl;
-      bd = d;
+export function stepNoise(mem: Readonly<Record<string, number>>, dt: number, players: readonly HandPlayer[]): Record<string, number> {
+  const k = Math.exp(-pos(dt) / OBSHAGA.noiseTauS);
+  const out: Record<string, number> = {};
+  for (const pl of players) {
+    const m = Math.max(noiseNow(pl), memOf(mem, pl.id) * k);
+    if (m >= 1e-4) out[pl.id] = m;
+  }
+  return out;
+}
+
+/** Память шума игрока id (нет — 0). */
+export function memOf(mem: Readonly<Record<string, number>> | undefined, id: string): number {
+  return mem && Object.prototype.hasOwnProperty.call(mem, id) && fin(mem[id]) ? mem[id] : 0;
+}
+
+/** Агро игрока, м «ближе»: шум × aggroNoiseM + фонарик aggroLightM + метка aggroMarkM (без прилипания к цели). */
+export function aggroOf(pl: HandPlayer): number {
+  return noiseNow(pl) * OBSHAGA.aggroNoiseM + (pl.light ? OBSHAGA.aggroLightM : 0) + (pl.marked ? OBSHAGA.aggroMarkM : 0);
+}
+
+/** Годится в цели: не с лампой, не в поле ламп, достижим (dist не null). */
+function validTarget(pl: HandPlayer, lanterns: readonly Pt[]): boolean {
+  if (pl.protected || isProtected(pl.p, lanterns)) return false;
+  return pl.dist === undefined || fin(pl.dist);
+}
+
+/** Счёт игрока для руки h, м: агро (+ aggroStickM, если он — цель) − путь от кончика (dist; нет — по прямой). */
+export function targetScore(h: HandState, pl: HandPlayer): number {
+  const d = fin(pl.dist) ? pl.dist : dist(h.tip, pl.p);
+  return aggroOf(pl) + (pl.id === h.target ? OBSHAGA.aggroStickM : 0) - d;
+}
+
+/**
+ * Цель руки (h.target) на шаг dt — одна:
+ *  • годны (validTarget): не с лампой, не в поле ламп, достижимы; цель выбыла (нет в списке — погиб, ушёл; взял лампу;
+ *    недостижима) — сразу лучшая по targetScore (равный счёт — меньший id); годных нет — null;
+ *  • касание: невидимая кисть (stalking) в GRAB_R от открытого (не под кроватью) годного — он цель сразу (ближайший),
+ *    если цель — не такой же;
+ *  • иначе цель держится: другой лучший сменит её, только обгоняя (её счёт — с aggroStickM) больше чем на aggroSwitchM
+ *    непрерывно aggroSwitchS (обгоняющий сменился — отсчёт заново).
+ * В grabbing (цель — жертва), withdrawn и gone — ничего.
+ */
+export function aimHand(h: HandState, dt: number, input: HandInput): void {
+  if (h.phase === 'grabbing' || h.phase === 'withdrawn' || h.phase === 'gone') return;
+  const ok = input.players.filter((pl) => validTarget(pl, input.lanterns));
+  const cur = ok.find((pl) => pl.id === h.target) ?? null;
+  const set = (id: string | null) => {
+    h.target = id;
+    h.rival = null;
+    h.rivalT = 0;
+  };
+  if (!input.seen && h.phase === 'stalking') {
+    const touch = (pl: HandPlayer) => !pl.sheltered && dist(h.tip, pl.p) <= GRAB_R;
+    if (!(cur && touch(cur))) {
+      let c: HandPlayer | null = null;
+      let cd = Infinity;
+      for (const pl of ok) {
+        if (!touch(pl)) continue;
+        const d = dist(h.tip, pl.p);
+        if (d < cd || (d === cd && c && pl.id < c.id)) (c = pl), (cd = d);
+      }
+      if (c) return set(c.id);
     }
   }
-  return best;
+  let best: HandPlayer | null = null;
+  let bs = -Infinity;
+  for (const pl of ok) {
+    if (pl === cur) continue;
+    const s = targetScore(h, pl);
+    if (s > bs + 1e-9 || (Math.abs(s - bs) <= 1e-9 && best && pl.id < best.id)) (best = pl), (bs = s);
+  }
+  if (!cur) return set(best ? best.id : null);
+  if (best && bs > targetScore(h, cur) + OBSHAGA.aggroSwitchM) {
+    if (h.rival !== best.id) (h.rival = best.id), (h.rivalT = 0);
+    h.rivalT = (fin(h.rivalT) ? h.rivalT : 0) + pos(dt);
+    if (h.rivalT >= OBSHAGA.aggroSwitchS - 1e-9) set(best.id);
+  } else {
+    h.rival = null;
+    h.rivalT = 0;
+  }
+}
+
+/** Цель среди игроков шага — если ещё годна (иначе null: ни хватки, ни тычка до следующего aimHand). */
+function targetOf(h: HandState, input: HandInput): HandPlayer | null {
+  if (h.target == null) return null;
+  const pl = input.players.find((x) => x.id === h.target);
+  return pl && validTarget(pl, input.lanterns) ? pl : null;
+}
+
+/** Кого хватает: цель, если она открыта (не под кроватью) и ближе GRAB_R к кончику. */
+function pickVictim(h: HandState, T: HandPlayer | null): string | null {
+  return T && !T.sheltered && dist(h.tip, T.p) <= GRAB_R ? T.id : null;
+}
+
+/**
+ * Кого тычет: цель T под кроватью — в той же комнате, что кончик (если обе метки есть: сквозь стену палец не достаёт —
+ * рука ползёт по пути дальше, в комнату); кровать известна (cover) — кончик не ближе pokeStandM к её рамке (иначе кисть
+ * и пальцы легли бы на кровать); отрезок кончик → игрок не задевает поле лампы (палец — тоже рука). Ближе POKE_R —
+ * тычет; до pokeMaxM — палец вытягивается, только если кровать известна и ближе не подойти: goal нет, кончик в нём или
+ * шаг к нему упирается в зону кровати.
+ */
+function pokeTarget(h: HandState, input: HandInput, T: HandPlayer | null): HandPlayer | null {
+  if (!T || !T.sheltered) return null;
+  if (T.p.room !== undefined && h.tip.room !== undefined && T.p.room !== h.tip.room) return null;
+  if (T.cover && rectGap(h.tip, T.cover) < OBSHAGA.pokeStandM - 1e-4) return null;
+  const d = dist(h.tip, T.p);
+  if (d > POKE_MAX) return null;
+  for (const l of input.lanterns) if (segDist(l, h.tip, T.p) < LANTERN_R) return null;
+  if (d <= POKE_R) return T;
+  if (!T.cover) return null;
+  const g = input.goal;
+  const L = g ? dist(h.tip, g) : 0;
+  if (!g || L <= 1e-3) return T;
+  return bedStop(h.tip, (g.x - h.tip.x) / L, (g.y - h.tip.y) / L, Math.min(L, 0.05), T.cover, OBSHAGA.pokeStandM) <= 1e-6 ? T : null;
 }
 
 /** Цикл тычка на rest секунд: 'poke' в момент удара (pokeHitU цикла); новая жертва — цикл с начала. */
@@ -783,16 +943,10 @@ function endPoke(h: HandState) {
   h.pokeAt = null;
 }
 
-/** Кровать рядом: рамка ближайшей (по rectGap) кровати, под которой лежат, в pokeStandM + bedNearM от кончика; нет — null. */
-function nearBed(h: HandState, input: HandInput): Rect | null {
-  let best: Rect | null = null;
-  let bd = OBSHAGA.pokeStandM + OBSHAGA.bedNearM;
-  for (const pl of input.players) {
-    if (!pl.sheltered || !pl.cover) continue;
-    const g = rectGap(h.tip, pl.cover);
-    if (g < bd) (bd = g), (best = pl.cover);
-  }
-  return best && { x0: best.x0, y0: best.y0, x1: best.x1, y1: best.y1 };
+/** Кровать рядом: рамка кровати цели (лежит под ней) в pokeStandM + bedNearM от кончика; нет — null. */
+function nearBed(h: HandState, T: HandPlayer | null): Rect | null {
+  const b = T && T.sheltered ? T.cover : undefined;
+  return b && rectGap(h.tip, b) < OBSHAGA.pokeStandM + OBSHAGA.bedNearM ? { x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 } : null;
 }
 
 function vanish(h: HandState, ev: HandEvent[]): HandEvent[] {
@@ -804,6 +958,8 @@ function vanish(h: HandState, ev: HandEvent[]): HandEvent[] {
   h.t = 0;
   endPoke(h);
   h.bed = null;
+  h.target = h.rival = null;
+  h.rivalT = 0;
   ev.push({ type: 'vanish' });
   return ev;
 }
@@ -821,6 +977,9 @@ function toRetreat(h: HandState, ev: HandEvent[]) {
 function toGrab(h: HandState, victim: string, ev: HandEvent[]) {
   h.phase = 'grabbing';
   h.victim = victim;
+  h.target = victim;
+  h.rival = null;
+  h.rivalT = 0;
   h.dragLen = armLength(h);
   h.drag = 0;
   h.t = 0;
@@ -836,13 +995,16 @@ function toGrab(h: HandState, victim: string, ev: HandEvent[]) {
  *
  *  • lightsOn — сразу 'vanish' → gone (тащила — сначала 'released').
  *  • emerging: кончик растёт door → mouth за emergeS (только пока не видят), дорос — 'emerged' → stalking.
+ *  • Цель — aimHand в начале шага (input.aimed — уже выбрана): хватает и тычет только её.
  *  • stalking: видят — замерла (ни шага, ни захвата). Не видят — кончик к goal со скоростью handSpeedK·playerSpeed
- *    (упор на границе поля лампы, не длиннее armMaxM); затем незащищённый игрок в GRAB_R от кончика — 'grab' → grabbing.
- *    Игрока под кроватью (sheltered) не хватает: он в POKE_R от кончика (та же комната, не в поле лампы) — рука дальше
- *    не ползёт и тычет пальцем: 'poke' раз в pokePeriodS (удар — pokeHitU цикла), и под взглядом тоже. Открытый игрок
- *    в GRAB_R рядом с тычущей невидимой рукой — хватка важнее. Кровать известна (cover) — кончик не заходит ближе
- *    pokeStandM к её рамке (упор на границе расширенной рамки; уже внутри — только наружу) и тычет только снаружи;
- *    тыча, невидимая доползает до goal (бок кровати у навигации), пока конец шага не дальше POKE_R от жертвы.
+ *    (упор на границе поля лампы, не длиннее armMaxM); затем цель, открытая и в GRAB_R от кончика, — 'grab' → grabbing.
+ *    Цель под кроватью (sheltered) не хватается: она в POKE_R от кончика (та же комната, палец не задевает поле лампы)
+ *    — рука дальше не ползёт и тычет пальцем: 'poke' раз в pokePeriodS (удар — pokeHitU цикла), и под взглядом тоже.
+ *    Открытый годный игрок в GRAB_R рядом с тычущей невидимой рукой — сразу цель (aimHand), хватка. Кровать цели
+ *    известна (cover) — кончик не заходит ближе pokeStandM к её рамке (упор на границе расширенной рамки; уже внутри —
+ *    только наружу) и тычет только снаружи; ближе не подойти (goal нет / достигнут / шаг упирается в зону) — палец
+ *    тянется до pokeMaxM; тыча, невидимая доползает до goal (бок кровати у навигации), пока конец шага не дальше от
+ *    цели, чем max(POKE_R, сейчас). Кровати прочих игроков (не цели) — не преграда.
  *  • Поле лампы накрыло руку (любую её точку глубже fieldSlackM) в emerging/stalking — 'retreat': втягивается кончиком
  *    вперёд со скоростью retreatK·playerSpeed (и под взглядом), пока рука не дальше поля на retreatClearM — 'stalk'
  *    (недоросла — снова emerging); дотянулась до двери — 'withdrawn'.
@@ -900,9 +1062,11 @@ export function stepHand(h: HandState, dt: number, input: HandInput): HandEvent[
   }
 
   h.frozen = input.seen;
-  h.bed = h.phase === 'stalking' ? nearBed(h, input) : null;
-  // под кроватью в досягаемости пальца — тычет (и под взглядом: взгляд останавливает только ползание)
-  const pk = h.phase === 'stalking' ? pokeTarget(h, input) : null;
+  if (!input.aimed) aimHand(h, rest, input);
+  const T = targetOf(h, input);
+  h.bed = h.phase === 'stalking' ? nearBed(h, T) : null;
+  // цель под кроватью в досягаемости пальца — тычет (и под взглядом: взгляд останавливает только ползание)
+  const pk = h.phase === 'stalking' ? pokeTarget(h, input, T) : null;
   if (!pk) endPoke(h);
   if (input.seen) {
     h.blocked = false;
@@ -924,30 +1088,25 @@ export function stepHand(h: HandState, dt: number, input: HandInput): HandEvent[
     return ev;
   }
 
-  // кровати, под которыми лежат: кончик в их расширенные рамки не заходит (вылезание из двери — без них)
-  const beds: Rect[] = [];
-  for (const pl of input.players) if (pl.sheltered && pl.cover) beds.push(pl.cover);
-  // stalking: тычет — стоит (открытый рядом — хватает его); кровать известна — тыча, доползает до цели навигации (бок
-  // кровати, по нормали — кисть повернётся к кровати), пока палец достаёт (конец шага не дальше POKE_R от жертвы)
+  // кровать цели: кончик в её расширенную рамку не заходит (вылезание из двери — без неё); чужие кровати — пол
+  const beds: Rect[] = T && T.sheltered && T.cover ? [T.cover] : [];
+  // stalking: тычет — стоит; кровать известна — тыча, доползает до цели навигации (бок кровати, по нормали — кисть
+  // повернётся к кровати), пока палец достаёт (конец шага не дальше от цели, чем max(POKE_R, сейчас))
   if (pk) {
     h.blocked = false;
-    const open = pickVictim(h, input);
-    if (open !== null) toGrab(h, open, ev);
-    else {
-      const g = input.goal, step = OBSHAGA.handSpeedK * v * rest;
-      if (pk.cover && g) {
-        const L = dist(h.tip, g), k = L > 1e-9 ? Math.min(1, step / L) : 0;
-        const end = { x: h.tip.x + (g.x - h.tip.x) * k, y: h.tip.y + (g.y - h.tip.y) * k };
-        if (k > 0 && dist(end, pk.p) <= POKE_R) advance(h, g, step, lanterns, beds);
-        h.blocked = false;
-      }
-      pokeStep(h, pk, rest, ev);
+    const g = input.goal, step = OBSHAGA.handSpeedK * v * rest;
+    if (pk.cover && g) {
+      const L = dist(h.tip, g), k = L > 1e-9 ? Math.min(1, step / L) : 0;
+      const end = { x: h.tip.x + (g.x - h.tip.x) * k, y: h.tip.y + (g.y - h.tip.y) * k };
+      if (k > 0 && dist(end, pk.p) <= Math.max(POKE_R, dist(h.tip, pk.p)) + 1e-9) advance(h, g, step, lanterns, beds);
+      h.blocked = false;
     }
+    pokeStep(h, pk, rest, ev);
     return ev;
   }
   if (input.goal) advance(h, input.goal, OBSHAGA.handSpeedK * v * rest, lanterns, beds);
   else h.blocked = false;
-  const victim = pickVictim(h, input);
+  const victim = pickVictim(h, T);
   if (victim !== null) toGrab(h, victim, ev);
   return ev;
 }
@@ -996,12 +1155,16 @@ export interface HandView {
   /** 0…1 по сиду — вариация (подёргивание пальцев, фаза анимации) */
   variant: number;
   /** тычет пальцем под кровать: кого (null — нет), куда (план, точка игрока), фаза цикла 0…1 (выпад — pokeReach,
-   *  удар — OBSHAGA.pokeHitU; клиент между срезами досчитывает её сам: + dt / pokePeriodS) */
+   *  удар — OBSHAGA.pokeHitU; клиент между срезами досчитывает её сам: + dt / pokePeriodS). pokeAt бывает до pokeMaxM
+   *  от кончика: дальше pokeR указательный вытягивается сверх своей длины */
   poke: string | null;
   pokeAt: Pt | null;
   poke01: number;
-  /** кровать рядом (HandState.bed): ближе pokeStandM + bedNearM — пальцы подобраны (не на кровати); нет — null */
+  /** кровать рядом (HandState.bed): кровать цели ближе pokeStandM + bedNearM — пальцы подобраны (не на кровати); нет —
+   *  null. Прочие кровати — не преграда: кисть и рука ложатся на них сверху */
   bed?: Rect | null;
+  /** цель руки (HandState.target): к кому ползёт, кого хватает или тычет; null — нет */
+  target?: string | null;
 }
 
 export function handView(h: HandState): HandView {
@@ -1031,6 +1194,7 @@ export function handView(h: HandState): HandView {
     pokeAt: h.pokeAt ? pt(h.pokeAt) : null,
     poke01: h.poke ? clamp((h.pokeT || 0) / OBSHAGA.pokePeriodS, 0, 1) : 0,
     bed: h.bed ? { x0: h.bed.x0, y0: h.bed.y0, x1: h.bed.x1, y1: h.bed.y1 } : null,
+    target: h.target ?? null,
   };
 }
 
@@ -1055,6 +1219,7 @@ export interface SpawnCandidate {
 }
 
 export interface ObshagaInput {
+  /** игроки (агро: speed / loud / light / marked / dist — HandPlayer; память шума ведёт режиссёр — ObshagaState.noise) */
   players: readonly HandPlayer[];
   lanterns: readonly Pt[];
   playerSpeed: number;
@@ -1081,6 +1246,8 @@ export interface ObshagaState {
   doors: Record<string, DoorState>;
   /** счётчик открытий дверей (сиды новых записей) */
   doorOpens: number;
+  /** память шума игроков (stepNoise; id → 0…noiseMax, тихих нет) — агро руки; нет поля (старый срез) — пусто */
+  noise?: Record<string, number>;
 }
 
 export type ObshagaEvent = BlackoutEvent | HandEvent | { type: 'spawn'; door: string; n: number };
@@ -1096,6 +1263,7 @@ export function createObshagaDirector(seed: string, opts?: { firstLitS?: number 
     spawnIn: null,
     doors: {},
     doorOpens: 0,
+    noise: {},
   };
 }
 
@@ -1195,11 +1363,13 @@ export function withdrawHand(dir: ObshagaState): HandEvent[] {
  * Шаг режиссёра: свет → рука. На 'blackout' — рука через spawnDelay (только в темноте); одна за раз; после
  * 'withdrawn' / 'killed' — следующая через respawnDelay из ДРУГОЙ двери, если ещё темно; на 'lightsBack' рука
  * исчезает ('released' / 'vanish'), до следующего отключения рук нет. Новая рука распахивает свою дверь.
- * Двери — отдельно: stepDoors.
+ * Память шума игроков (stepNoise) — каждый шаг, и при свете; руке игроки идут с ней (noise). Цель руки выбирается
+ * (aimHand) до goal: goal получает вид руки с target. Двери — отдельно: stepDoors.
  */
 export function stepDirector(dir: ObshagaState, dt: number, input: ObshagaInput): ObshagaEvent[] {
   const ev: ObshagaEvent[] = [];
   const rest = pos(dt);
+  const noise = (dir.noise = stepNoise(dir.noise ?? {}, rest, input.players));
   for (const e of stepBlackout(dir.blackout, rest)) {
     ev.push(e);
     if (e.type === 'blackout') {
@@ -1218,8 +1388,11 @@ export function stepDirector(dir: ObshagaState, dt: number, input: ObshagaInput)
   const h = dir.hand;
   if (h) {
     const seen = input.seen ?? input.players.some((p) => p.sees);
-    const goal = typeof input.goal === 'function' ? input.goal(handView(h)) : input.goal;
-    const hev = stepHand(h, darkDt, { lightsOn: false, seen, goal, players: input.players, lanterns: input.lanterns, playerSpeed: input.playerSpeed });
+    const players = input.players.map((p) => ({ ...p, noise: memOf(noise, p.id) }));
+    const hin: HandInput = { lightsOn: false, seen, goal: null, players, lanterns: input.lanterns, playerSpeed: input.playerSpeed, aimed: true };
+    aimHand(h, darkDt, hin);
+    hin.goal = typeof input.goal === 'function' ? input.goal(handView(h)) : input.goal;
+    const hev = stepHand(h, darkDt, hin);
     for (const e of hev) {
       ev.push(e);
       if (e.type === 'withdrawn' || e.type === 'killed') {

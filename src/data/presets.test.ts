@@ -45,7 +45,13 @@ function coveredCells(rc: { x0: number; x1: number; y0: number; y1: number }, sh
   return out;
 }
 
-const GROUPS = ['лестница', 'коридор', 'лифт', 'подвал', 'сарай', 'снег', 'завод', 'общага', 'служебное', 'общежитие', 'прихожая', 'кухня', 'санузел', 'жилая', 'балкон', 'кладовка', 'метро'];
+const GROUPS = ['лестница', 'коридор', 'лифт', 'подвал', 'сарай', 'снег', 'завод', 'общага', 'служебное', 'общежитие', 'прихожая', 'кухня', 'санузел', 'жилая', 'балкон', 'кладовка', 'метро',
+  // cellar
+  'погреб',
+  // catacombs
+  'катакомбы',
+  // sanatorium
+  'санаторий'];
 // на полу (ковёр, лужа, доска) и под потолком (лампа, труба): проёмы и проход не загораживают
 const isFloorProp = (propId: string) => propById.get(propId)!.tags.includes('пол') || isFlatProp(propById.get(propId)!);
 
@@ -292,6 +298,8 @@ describe('стартовый проект', () => {
     // пресетах их нет
     expect(p.rooms.filter((x) => x.location).map((x) => x.id)).toEqual([
       'snow_thaw', 'fac_swamp_roof', 'stair_loop', 'lift_rusty', 'lift_carriage', 'boss_lair', 'barn_hatch', 'cellar_snowdoor', 'obsh_snowdoor',
+      // cellar: выход погреба — камера с дверью в снег (хаб сети, растёт по правилу хабов)
+      'cel_hub_snowdoor',
     ]);
   });
 
@@ -404,7 +412,7 @@ describe('стартовый проект', () => {
 
     it('dado — только у стен, на существующую стеновую отделку, высота 1–1.6 м', () => {
       const two = p.finishes.filter((f) => f.dado);
-      expect(two.map((f) => f.id).sort()).toEqual(['f_metro_slu', 'f_metro_tile', 'f_obsh_corridor', 'f_two_bath', 'f_two_entrance', 'f_two_kitchen']);
+      expect(two.map((f) => f.id).sort()).toEqual(['f_cat_green', 'f_metro_slu', 'f_metro_tile', 'f_obsh_corridor', 'f_san_pool_wall', 'f_san_wall_teal', 'f_two_bath', 'f_two_entrance', 'f_two_kitchen']);
       for (const f of two) {
         expect(f.surface).toBe('wall');
         expect(fin.get(f.dado!.finishId)?.surface, f.id).toBe('wall');

@@ -13,7 +13,12 @@ export type FinishTexKind =
   | 'tile' | 'paint' | 'whitewash' | 'plaster' | 'concrete' | 'brick' | 'dvp'
   | 'lino_parquet' | 'lino_speckle' | 'herringbone' | 'metlakh' | 'boards' | 'tile_floor' | 'tile_panel'
   // metro
-  | 'marble' | 'granite_floor' | 'tile_plinth' | 'soot' | 'soot_floor';
+  | 'marble' | 'granite_floor' | 'tile_plinth' | 'soot' | 'soot_floor'
+  // cellar
+  | 'soil'
+  // sanatorium
+  | 'paint_panel' | 'plaster_cracked' | 'veneer' | 'tile_worn' | 'tile_mix' | 'lath_brick' | 'parquet_worn' | 'terrazzo'
+  | 'boards_painted';
 
 export interface FinishTexOpts {
   /** основной цвет */
@@ -956,6 +961,672 @@ function drawSootFloor(t: T, o: FinishTexOpts): void {
   t.specks(400, [soot, '#2b2420'], 0.6, 2.2, 0.6);
 }
 
+// ---------------------------------------------------------------- погреб (cellar)
+
+/** Извилистая линия-полилиния с повтором через край: n шагов длиной step, поворот на ±turn за шаг. */
+function wander(t: T, x: number, y: number, a: number, n: number, step: number, turn: number): [number, number][] {
+  const pts: [number, number][] = [[x, y]];
+  for (let i = 0; i < n; i++) {
+    a += t.u(-turn, turn);
+    const [px, py] = pts[pts.length - 1];
+    pts.push([px + Math.cos(a) * step, py + Math.sin(a) * step]);
+  }
+  return pts;
+}
+
+function strokeWrapped(t: T, pts: [number, number][], color: string, width: number): void {
+  const c = t.c;
+  t.wrap((ox, oy) => {
+    c.strokeStyle = color;
+    c.lineWidth = width;
+    c.beginPath();
+    pts.forEach(([x, y], i) => (i ? c.lineTo(x + ox, y + oy) : c.moveTo(x + ox, y + oy)));
+    c.stroke();
+  });
+}
+
+/**
+ * Чёрная рыхлая земля погреба: бурая основа (base), комья и впадины (фрактальный шум), мелкие крошки — тёмные и с
+ * бликом; редкие полосы глины (accent) и тонкие бледные корешки (low) с отростками. cracks — утоптанный пол: комья
+ * ниже, корешков меньше, пыль.
+ */
+function drawSoil(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#2a2119';
+  const clay = o.accent ?? '#6e4a2c';
+  const root = o.low ?? '#a39072';
+  const floor = !!o.cracks;
+  const { W, H } = t;
+  t.fill(base);
+  t.modulate(t.fbm(3, 3, 5), floor ? 0.16 : 0.24);
+  t.modulate(t.fbm(4, 4, 3), floor ? 0.3 : 0.45, shade(base, -0.55)); // тёмные впадины
+  // глина: 1–2 размытые полосы вдоль пласта
+  for (let k = 0; k < (floor ? 1 : 2); k++) {
+    const pts = wander(t, t.u(0, W), t.u(0, H), t.u(-0.4, 0.4) + (t.r() < 0.5 ? 0 : Math.PI), 14, W * 0.035, 0.35);
+    strokeWrapped(t, pts, rgba(clay, 0.16), t.u(W * 0.025, W * 0.05));
+    strokeWrapped(t, pts, rgba(clay, 0.28), t.u(W * 0.006, W * 0.012));
+  }
+  // крошки: тени и сколы с бликом
+  const area = W * H;
+  t.specks(Math.round(area / 45), ['#120e0a', '#18130e', '#0e0b08'], 0.6, 2.3, 0.7);
+  t.specks(Math.round(area / 140), [shade(base, 0.22), shade(base, 0.35)], 0.5, 1.5, 0.55);
+  t.specks(Math.round(area / 2600), [clay], 0.8, 1.8, 0.6);
+  if (floor) t.specks(Math.round(area / 90), ['#4a4036', '#3d342b'], 0.4, 1.2, 0.3); // пыль
+  // корешки: бледные, тонкие, с отростками
+  for (let k = 0; k < (floor ? 1 : 4); k++) {
+    const pts = wander(t, t.u(0, W), t.u(0, H), t.u(0, Math.PI * 2), Math.round(t.u(10, 22)), W * 0.025, 0.5);
+    strokeWrapped(t, pts, rgba('#000000', 0.35), 2.2);
+    strokeWrapped(t, pts, rgba(root, 0.7), t.u(0.9, 1.5));
+    for (let j = 2; j < pts.length - 2; j += 4) {
+      if (t.r() < 0.5) continue;
+      const side = wander(t, pts[j][0], pts[j][1], t.u(0, Math.PI * 2), Math.round(t.u(3, 6)), W * 0.015, 0.7);
+      strokeWrapped(t, side, rgba(root, 0.5), 0.7);
+    }
+  }
+  t.modulate(t.fbm(6, 6, 2), 0.06);
+}
+
+// ---------------------------------------------------------------- санаторий (sanatorium)
+
+/** Сглаженная ступенька: 0 до a, 1 после b. */
+function smoothstep(a: number, b: number, x: number): number {
+  const k = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return k * k * (3 - 2 * k);
+}
+
+/** Пятна: к цвету col с силой alpha там, где шум n выше порога (мягкий край lo..hi). */
+function blotch(t: T, n: Float32Array, lo: number, hi: number, col: string, alpha: number): void {
+  const id = t.c.getImageData(0, 0, t.W, t.H);
+  const d = id.data;
+  const c = hex(col);
+  for (let p = 0, i = 0; p < n.length; p++, i += 4) {
+    const k = alpha * smoothstep(lo, hi, n[p]);
+    if (k <= 0) continue;
+    for (let ch = 0; ch < 3; ch++) d[i + ch] += (c[ch] - d[i + ch]) * k;
+  }
+  t.c.putImageData(id, 0, 0);
+}
+
+/** Неровный многоугольник (скол, крошка, клякса) вокруг нуля: nv вершин, радиус r·(0.6…1.15), по Y сжат в squash. */
+function chipPoly(t: T, r: number, nv: number, squash = 1): [number, number][] {
+  const a0 = t.u(0, Math.PI * 2);
+  return Array.from({ length: nv }, (_, k) => {
+    const a = a0 + (k / nv) * Math.PI * 2 + t.u(-0.35, 0.35), rr = r * t.u(0.6, 1.15);
+    return [Math.cos(a) * rr, Math.sin(a) * rr * squash] as [number, number];
+  });
+}
+
+function fillPoly(t: T, x: number, y: number, pts: [number, number][], fill: string): void {
+  const c = t.c;
+  c.fillStyle = fill;
+  c.beginPath();
+  pts.forEach(([px, py], i) => (i ? c.lineTo(x + px, y + py) : c.moveTo(x + px, y + py)));
+  c.closePath();
+  c.fill();
+}
+
+/** Подтёк сверху вниз: полоса ширины w, к низу сужается и бледнеет; повтор через край по X (wrapY — и по Y). */
+function drip(t: T, x: number, y0: number, len: number, w: number, col: string, a: number, wrapY: boolean): void {
+  const c = t.c;
+  const draw = (ox: number, oy: number) => {
+    const X = x + ox, Y = y0 + oy;
+    if (X < -w || X > t.W + w || Y > t.H || Y + len < 0) return;
+    const gr = c.createLinearGradient(0, Y, 0, Y + len);
+    gr.addColorStop(0, rgba(col, a));
+    gr.addColorStop(0.2, rgba(col, a * 0.75));
+    gr.addColorStop(1, rgba(col, 0));
+    c.fillStyle = gr;
+    c.beginPath();
+    c.moveTo(X - w / 2, Y);
+    c.lineTo(X + w / 2, Y);
+    c.lineTo(X + w * 0.12, Y + len);
+    c.lineTo(X - w * 0.12, Y + len);
+    c.closePath();
+    c.fill();
+  };
+  if (wrapY) t.wrap(draw);
+  else for (const ox of [-t.W, 0, t.W]) draw(ox, 0);
+}
+
+/**
+ * Масляная панель стены до dado (коридоры и кабинеты санатория, реф. 3): краска base с горизонтальными мазками кисти и
+ * выгоревшими разводами; сверху — бордюр accent (~2 см) с тенью и светлой отбивкой, снизу — деревянный плинтус low
+ * (~7 см) с тенью над ним; у пола — серые следы обуви и швабры, краска сбита до светлого грунта, выше — редкие сколы и
+ * царапины. Картинка — на всю высоту панели (tileH отделки = высота dado, низ картинки у пола), повтор только по X.
+ */
+function drawPaintPanel(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#5f9e94';
+  const border = o.accent ?? shade(base, -0.4);
+  const plinth = o.low ?? '#4d3a2c';
+  const { W, H } = t;
+  const c = t.c;
+  const bh = Math.max(3, Math.round(H * 0.017)), ph = Math.round(H * 0.06), py = H - ph;
+  t.fill(base);
+  t.modulate(t.noise(4, 120), 0.022); // мазки кисти
+  t.modulate(t.fbm(3, 3, 3), 0.045);
+  t.modulate(t.fbm(2, 2, 3), 0.2, shade(base, 0.16)); // выгоревшие разводы
+  // следы обуви и швабры у пола — вытянутые серые пятна
+  for (let k = 0; k < 26; k++) {
+    const x = t.u(0, W), y = py - t.u(2, H * 0.22), rx = t.u(6, 30), ry = t.u(1.5, 5), a = t.u(0.05, 0.16), rot = t.u(-0.15, 0.15);
+    for (const ox of [-W, 0, W]) {
+      if (x + ox < -rx || x + ox > W + rx) continue;
+      c.fillStyle = rgba('#2c2a26', a);
+      c.beginPath();
+      c.ellipse(x + ox, y, rx, ry, rot, 0, Math.PI * 2);
+      c.fill();
+    }
+  }
+  // сколы до грунта (чаще внизу): тёмная кромка слоя краски, светлый грунт
+  for (let k = 0; k < 9; k++) {
+    const low = k < 5;
+    const x = t.u(0, W), y = low ? py - t.u(6, H * 0.25) : t.u(bh + 6, py - 6);
+    const r = low ? t.u(2, 6) : t.u(1.2, 3.5);
+    const pts = chipPoly(t, r, 6 + Math.floor(t.r() * 3), t.u(0.5, 0.9));
+    const primer = mix('#c4c2b6', base, t.u(0, 0.35));
+    for (const ox of [-W, 0, W]) {
+      if (x + ox < -2 * r || x + ox > W + 2 * r) continue;
+      fillPoly(t, x + ox + 0.8, y + 0.8, pts, rgba('#1d2a27', 0.3));
+      fillPoly(t, x + ox, y, pts, primer);
+    }
+  }
+  // царапины
+  for (let k = 0; k < 14; k++) {
+    const x = t.u(0, W), y = t.u(H * 0.3, py - 4), len = t.u(8, 40), a = t.u(-0.3, 0.3);
+    const dx = Math.cos(a) * len, dy = Math.sin(a) * len;
+    for (const ox of [-W, 0, W]) t.line(x + ox, y, x + ox + dx, y + dy, rgba('#e6e2d4', 0.25), 0.8);
+  }
+  // бордюр с тенью и отбивкой
+  t.rect(0, 0, W, bh, border);
+  t.rect(0, 0, W, 1, rgba(shade(border, 0.3), 0.7));
+  t.rect(0, bh, W, 1, rgba('#000000', 0.25));
+  t.rect(0, bh + 1, W, 1, rgba(shade(base, 0.35), 0.6));
+  // плинтус: тень на стене, доска с волокнами, скруглённая кромка
+  const gr = c.createLinearGradient(0, py - 6, 0, py);
+  gr.addColorStop(0, 'rgba(0,0,0,0)');
+  gr.addColorStop(1, 'rgba(0,0,0,0.22)');
+  c.fillStyle = gr;
+  c.fillRect(0, py - 6, W, 6);
+  t.rect(0, py, W, ph, plinth);
+  grain(t, 0, py, W, ph, plinth, 'x', 4, t.r, true);
+  t.rect(0, py, W, 2, shade(plinth, 0.3));
+  t.rect(0, py + 2, W, 1, shade(plinth, 0.12));
+  t.rect(0, H - 2, W, 2, shade(plinth, -0.35));
+  t.modulate(t.fbm(4, 4, 2), 0.025);
+}
+
+/** Белая штукатурка (палаты, вестибюль, столовая): неровная затирка, желтоватые пятна, потёки сверху, волосяные трещины. */
+function drawPlasterCracked(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#e6e3da';
+  const { W, H } = t;
+  t.fill(base);
+  t.modulate(t.fbm(3, 3, 4), 0.05);
+  t.modulate(t.fbm(8, 8, 2), 0.02); // мелкая неровность затирки
+  t.modulate(t.fbm(2, 2, 3), 0.22, '#cfc6b0'); // желтоватые пятна
+  for (let k = 0; k < 7; k++) drip(t, t.u(0, W), t.u(0, H), t.u(H * 0.15, H * 0.5), t.u(3, 14), t.r() < 0.6 ? '#b3a88f' : '#9c9a92', t.u(0.1, 0.22), true);
+  // трещины: тёмная линия, светлая кромка снизу-справа, ответвления
+  for (let k = 0; k < 3; k++) {
+    const pts = wander(t, t.u(0, W), t.u(0, H), t.u(0, Math.PI * 2), Math.round(t.u(10, 24)), W * 0.022, 0.3);
+    strokeWrapped(t, pts.map(([x, y]) => [x + 1, y + 1] as [number, number]), rgba('#ffffff', 0.35), 1);
+    strokeWrapped(t, pts, rgba('#5a5448', 0.55), t.u(0.7, 1.1));
+    for (let j = 3; j < pts.length - 2; j += 3) {
+      if (t.r() < 0.55) continue;
+      const side = wander(t, pts[j][0], pts[j][1], t.u(0, Math.PI * 2), Math.round(t.u(3, 8)), W * 0.012, 0.7);
+      strokeWrapped(t, side, rgba('#5a5448', 0.4), 0.6);
+    }
+  }
+  t.specks(120, ['#8f897c', '#c9c3b5'], 0.4, 1.2, 0.3);
+}
+
+/**
+ * Светлый шпон панелями (водолечебница, реф. 1): n вертикальных панелей на картинку, у каждой свой тон и «соборный»
+ * рисунок тангенциального распила — годовые кольца как линии уровня F = m·y/H − A·u² + шум (u — от оси панели, ось не
+ * по центру; m целое и шум периодичный — по Y повтор сходится), к концу кольца поздняя древесина accent темнее; поверх —
+ * тонкие продольные волокна, пятна потемневшего лака; швы панелей — тёмная щель и светлая фаска (у края — половина).
+ */
+function drawVeneer(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#c6a36a';
+  const late = hex(o.accent ?? shade(base, -0.32));
+  const n = o.n ?? 2;
+  const { W, H } = t;
+  const pw = W / n;
+  const warp = t.fbm(3, 4, 3), fine = t.fbm(6, 8, 2), fib = t.noise(Math.max(8, Math.round(W / 4)), 4);
+  const id = t.c.getImageData(0, 0, W, H);
+  const d = id.data;
+  for (let i = 0; i < n; i++) {
+    const tone = hex(shade(base, t.u(-0.08, 0.06)));
+    const cx = (i + 0.5 + t.u(-0.15, 0.15)) * pw;
+    const A = t.u(5, 9), m = Math.round(t.u(16, 24)), ph = t.u(0, 1), amp = t.u(1, 1.8);
+    // у каждого кольца свой контраст и ширина поздней древесины (по номеру кольца mod m — по Y сходится)
+    const ringK = Array.from({ length: m }, () => t.u(0.25, 1)), ringW = Array.from({ length: m }, () => t.u(0.2, 0.5));
+    const x0 = Math.round(i * pw), x1 = Math.round((i + 1) * pw);
+    for (let y = 0; y < H; y++) {
+      for (let x = x0; x < x1; x++) {
+        const q = y * W + x;
+        const u = (x + 0.5 - cx) / (pw * 0.5);
+        const F = (m * y) / H - A * u * u + amp * 2 * (warp[q] - 0.5) + 0.35 * (fine[q] - 0.5) + ph;
+        const fl = Math.floor(F), v = F - fl, r = ((fl % m) + m) % m;
+        const v2 = 4 * F - Math.floor(4 * F); // тонкие кольца между крупными
+        const ring = 0.55 * ringK[r] * smoothstep(1 - ringW[r], 1, v) + 0.12 * smoothstep(0.7, 1, v2);
+        const f = 1 + 0.07 * (2 * fib[q] - 1);
+        const p = q * 4;
+        for (let ch = 0; ch < 3; ch++) d[p + ch] = (tone[ch] + (late[ch] - tone[ch]) * ring) * f;
+        d[p + 3] = 255;
+      }
+    }
+  }
+  t.c.putImageData(id, 0, 0);
+  t.modulate(t.fbm(2, 3, 3), 0.22, shade(base, -0.18)); // потемневший лак пятнами
+  t.modulate(t.fbm(3, 3, 2), 0.035);
+  for (let i = 0; i <= n; i++) {
+    const x = i * pw;
+    t.rect(x - 2.5, 0, 1, H, rgba('#000000', 0.15));
+    t.rect(x - 1.5, 0, 3, H, '#3b2a18');
+    t.rect(x + 1.5, 0, 1, H, rgba(shade(base, 0.35), 0.7));
+  }
+}
+
+/**
+ * Белый кафель санатория (душ, грязелечебница; реф. 1): n × n плиток, тона партий чуть голубее и теплее, грязь в
+ * затирке, сколы углов до цементной подложки, редкие трещины через плитку, ржавые подтёки с струйками (повтор и по Y).
+ */
+function drawTileWorn(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#e9edee';
+  const grout = o.accent ?? '#a2aaaa';
+  const n = o.n ?? 8;
+  const { W, H } = t;
+  const c = t.c;
+  t.fill(grout);
+  t.modulate(t.fbm(4, 4, 3), 0.5, shade(grout, -0.4)); // грязь в швах
+  const s = W / n, sy = H / n, g = Math.max(2, s * 0.05), bev = Math.max(1, s * 0.03);
+  const tones = [base, base, base, base, mix(base, '#dde5e6', 0.5), mix(base, '#f2efe6', 0.5)];
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const x = i * s + g / 2, y = j * sy + g / 2, w = s - g, h = sy - g;
+      t.tileRect(x, y, w, h, shade(tones[Math.floor(t.r() * tones.length)], t.u(-0.025, 0.015)), bev, 0.2);
+      if (t.r() < 0.04) {
+        const right = t.r() < 0.5, bottom = t.r() < 0.5;
+        const cx = right ? x + w : x, cy = bottom ? y + h : y;
+        const dx = (right ? -1 : 1) * t.u(0.12, 0.3) * w, dy = (bottom ? -1 : 1) * t.u(0.12, 0.28) * h;
+        c.fillStyle = '#b3ab9a';
+        c.beginPath();
+        c.moveTo(cx, cy);
+        c.lineTo(cx + dx, cy);
+        c.lineTo(cx + dx * 0.4, cy + dy * 0.5);
+        c.lineTo(cx, cy + dy);
+        c.closePath();
+        c.fill();
+        c.strokeStyle = rgba('#5c564a', 0.5);
+        c.lineWidth = 0.8;
+        c.beginPath();
+        c.moveTo(cx + dx, cy);
+        c.lineTo(cx + dx * 0.4, cy + dy * 0.5);
+        c.lineTo(cx, cy + dy);
+        c.stroke();
+      }
+      if (t.r() < 0.05) {
+        const pts: [number, number][] = [0, t.u(0.25, 0.5), t.u(0.5, 0.8), 1].map((k) => [x + t.u(0.1, 0.9) * w, y + k * h]);
+        c.strokeStyle = rgba('#4d4b45', 0.55);
+        c.lineWidth = 0.9;
+        c.beginPath();
+        pts.forEach(([px, py], q) => (q ? c.lineTo(px, py) : c.moveTo(px, py)));
+        c.stroke();
+      }
+    }
+  }
+  for (let k = 0; k < 6; k++) {
+    const x = t.u(0, W), y0 = t.u(0, H), len = t.u(H * 0.15, H * 0.55), w = t.u(3, 12);
+    drip(t, x, y0, len, w, k % 3 ? '#9a6430' : '#7d4f2a', t.u(0.18, 0.35), true);
+    drip(t, x + t.u(-w * 0.3, w * 0.3), y0, len * t.u(1, 1.3), Math.max(1.2, w * 0.25), '#8a4f22', t.u(0.25, 0.4), true);
+  }
+  t.modulate(t.fbm(3, 3, 2), 0.035);
+  t.modulate(t.fbm(2, 2, 3), 0.18, '#c9c2ae'); // желтоватый налёт
+}
+
+/**
+ * Кафель «партиями» (бассейн, реф. 2): n плиток по ширине, тон каждой — из партий base (светлее, темнее, бирюзовее,
+ * почти белая), затирка accent светлая. Пол (без low/high): квадратная сетка, матовый блеск, известковые разводы.
+ * Панель (задан high или low): ряды снизу вверх, как у tile_panel, — нижний ряд low, оставшаяся полоса сверху — бордюр
+ * high, тон ровнее; картинка — на всю высоту панели.
+ */
+function drawTileMix(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#a8d0d8';
+  const grout = o.accent ?? '#e2ebe9';
+  const n = o.n ?? 6;
+  const panel = !!(o.low || o.high);
+  const { W, H } = t;
+  const s = W / n, g = Math.max(2, s * 0.06), bev = Math.max(1, s * 0.03);
+  const tones = panel
+    ? [base, base, base, shade(base, 0.07), shade(base, -0.05)]
+    : [base, base, base, shade(base, 0.12), shade(base, -0.06), mix(base, '#5fa9bd', 0.25), mix(base, '#ffffff', 0.35), mix(base, '#9fb8b0', 0.25)];
+  const pick = () => shade(tones[Math.floor(t.r() * tones.length)], t.u(-0.025, 0.025));
+  const tile = (x: number, y: number, w: number, h: number, col: string) => t.tileRect(x + g / 2, y + g / 2, w - g, h - g, col, bev, panel ? 0.24 : 0.1);
+  t.fill(grout);
+  t.modulate(t.fbm(4, 4, 2), 0.12);
+  if (!panel) {
+    const sy = H / n;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) tile(i * s, j * sy, s, sy, pick());
+    t.modulate(t.fbm(2, 2, 3), 0.3, '#eef4f2'); // известковые разводы, высохшие лужи
+    t.specks(Math.round((W * H) / 300), [shade(base, -0.3), '#ffffff'], 0.4, 1.1, 0.3);
+  } else {
+    const rows = Math.max(1, Math.floor((H - s / 2) / s + 1e-6));
+    let y = H;
+    for (let r = 0; r < rows; r++) {
+      y -= s;
+      for (let i = 0; i < n; i++) tile(i * s, y, s, s, r === 0 && o.low ? shade(o.low, t.u(-0.03, 0.03)) : pick());
+    }
+    if (y > g) for (let i = 0; i < n; i++) tile(i * s, 0, s, y, shade(o.high ?? shade(base, -0.3), t.u(-0.03, 0.03)));
+  }
+  t.modulate(t.fbm(3, 3, 2), 0.03);
+}
+
+/**
+ * Ободранная стена (комната в ремонте, реф. 4) — три слоя, открытые по зонам; картинка — на всю высоту стены (W : H =
+ * 1 : R, R целое; для 1.5 × 3.0 м — 1 : 2, низ картинки у пола). Слои: кирпич (модуль 0.25 × 0.075 м — 6 кирпичей по
+ * ширине, перевязка в полкирпича, разнотонный, выбоины, рваные мазки раствора и клочки побелки); дранка — вертикальные
+ * доски со щелями, поверх две косые решётки реек ±45° (20 шагов по ширине), в ячейках — комки штукатурки; штукатурка —
+ * в глубине под побелкой base, у скола серая high (побелка отбита дальше края), с тенью от толщи слоя (свет сверху-
+ * слева). Зоны: поверху (выше ~0.73 высоты) штукатурка держится, понизу (~0.08) — рваные остатки, посередине — дранка с
+ * пятнами кирпича (двумерный шум), между ними рваная полоса и островки штукатурки. Шум периодичный, решётки кратны
+ * картинке — края сходятся (по Y стык — внутри штукатурки). accent — кирпич, low — дерево реек.
+ */
+function drawLathBrick(t: T, o: FinishTexOpts): void {
+  const white = o.base ?? '#e8e5dc';
+  const brickCol = o.accent ?? '#a65a42';
+  const wood = o.low ?? '#c48b55';
+  const plaster = o.high ?? '#b9b2a4';
+  const { W, H } = t;
+  const R = Math.max(1, Math.round(H / W));
+  const c = t.c;
+  // ── слой 1: кирпич
+  t.fill('#9f988a');
+  t.modulate(t.noise(8, 8 * R), 0.12);
+  const per = 6, rows = Math.round(per * R * (10 / 3)), bw = W / per, bh = H / rows, j = Math.max(2, bh * (10 / 75));
+  const pal = [brickCol, shade(brickCol, 0.12), shade(brickCol, -0.14), mix(brickCol, '#c8825f', 0.5), mix(brickCol, '#6e3b2c', 0.55), mix(brickCol, '#4a302a', 0.6), mix(brickCol, '#b9a08a', 0.35)];
+  for (let r = 0; r < rows; r++) {
+    for (let i = 0; i < per; i++) {
+      const x = i * bw + (r % 2) * (bw / 2) + j / 2, y = r * bh + j / 2;
+      const col = shade(pal[Math.floor(t.r() * pal.length)], t.u(-0.05, 0.05));
+      const pits = Array.from({ length: 14 }, () => [t.u(0.03, 0.97), t.u(0.08, 0.92), t.u(0.5, 2)] as const);
+      const chip = t.r() < 0.35 ? { cx: t.u(0, 1), r: t.u(0.15, 0.4) } : null;
+      t.wrap((ox, oy) => {
+        if (x + ox > W || x + ox + bw < 0 || y + oy > H || y + oy + bh < 0) return;
+        t.tileRect(x + ox, y + oy, bw - j, bh - j, col, 1.5, 0);
+        c.fillStyle = rgba(shade(col, -0.4), 0.5);
+        for (const [dx, dy, rr] of pits) {
+          c.beginPath();
+          c.arc(x + ox + dx * (bw - j), y + oy + dy * (bh - j), rr, 0, Math.PI * 2);
+          c.fill();
+        }
+        if (chip) {
+          // отбитый край — выемка от верхней грани
+          c.fillStyle = rgba(shade(col, -0.3), 0.8);
+          c.beginPath();
+          c.ellipse(x + ox + chip.cx * (bw - j), y + oy, chip.r * bh * 1.6, chip.r * bh, 0, 0, Math.PI);
+          c.fill();
+        }
+      });
+    }
+  }
+  // остатки раствора и побелки — рваные: крупный шум с мелким «зерном», края зернистые, не облака
+  const gritty = (a: Float32Array, cells: number, k: number) => {
+    const g = t.noise(cells, cells * R);
+    for (let i = 0; i < a.length; i++) a[i] = a[i] * (1 - k) + g[i] * k;
+    return a;
+  };
+  blotch(t, gritty(t.fbm(6, 6 * R, 3), 48, 0.35), 0.59, 0.62, '#b4ad9f', 0.6); // серые мазки раствора
+  blotch(t, gritty(t.fbm(8, 8 * R, 3), 64, 0.3), 0.675, 0.69, white, 0.85); // клочки побелки
+  const brick = c.getImageData(0, 0, W, H);
+  // ── слой 2: дранка
+  t.fill('#21180f');
+  const nb = 10, sb = W / nb, board = mix(wood, '#8a6a4c', 0.3);
+  for (let i = 0; i < nb; i++) {
+    const col = shade(board, t.u(-0.1, 0.06));
+    const x = i * sb + sb * 0.05, w = sb * 0.9;
+    t.rect(x, 0, w, H, col);
+    grain(t, x, 0, w, H, col, 'y', 6 * R, t.r, true);
+  }
+  const N = 20, d = W / N;
+  // комки штукатурки в ячейках решётки (рейки ложатся поверх): период решётки ячеек — сдвиги (N, N) и (−RN, RN), его
+  // основная область — k ∈ [0, N), l ∈ [0, 2RN); центр — по модулю картинки
+  for (let k = 0; k < N; k++) {
+    for (let l = 0; l < 2 * R * N; l++) {
+      if (t.r() > 0.6) continue;
+      const cx = ((((k + l + 1) * d) / 2) % W + W) % W, cy = ((((l - k) * d) / 2) % H + H) % H;
+      const pts = chipPoly(t, (d / 2) * t.u(0.55, 1.0), 6);
+      const col = shade(mix(plaster, white, t.u(0, 0.6)), t.u(-0.12, 0.04));
+      t.wrap((ox, oy) => {
+        if (cx + ox < -d || cx + ox > W + d || cy + oy < -d || cy + oy > H + d) return;
+        fillPoly(t, cx + ox, cy + oy, pts, col);
+      });
+    }
+  }
+  // рейки: линии x − dir·y = k·d; цвет по k mod N (сдвиг на W переводит k в k ± N, на H — в k ± RN)
+  const sw = d * 0.34;
+  const strips = (dir: 1 | -1) => {
+    const cols = Array.from({ length: N }, () => shade(wood, t.u(-0.06, 0.05)));
+    const hx = (dir * sw * 0.3) / Math.SQRT2, hy = (-sw * 0.3) / Math.SQRT2;
+    for (let k = -R * N; k <= (1 + R) * N; k++) {
+      const ya = -sw, yb = H + sw, xa = k * d + dir * ya, xb = k * d + dir * yb;
+      if (Math.max(xa, xb) < -sw || Math.min(xa, xb) > W + sw) continue;
+      const col = cols[((k % N) + N) % N];
+      t.line(xa + 2, ya + 2.5, xb + 2, yb + 2.5, rgba('#000000', 0.4), sw);
+      t.line(xa, ya, xb, yb, col, sw);
+      t.line(xa + hx, ya + hy, xb + hx, yb + hy, rgba(shade(col, 0.3), 0.6), sw * 0.2);
+      t.line(xa - hx, ya - hy, xb - hx, yb - hy, rgba(shade(col, -0.3), 0.5), sw * 0.15);
+    }
+  };
+  strips(1);
+  strips(-1);
+  t.modulate(t.noise(96, 96 * R), 0.05);
+  blotch(t, gritty(t.fbm(4, 4 * R, 2), 64, 0.4), 0.56, 0.62, '#cfc9bb', 0.4); // известковая пыль на дранке
+  const lath = c.getImageData(0, 0, W, H);
+  // ── слой 3: серая штукатурка (побелка поверх — по зонам ниже)
+  t.fill(plaster);
+  t.modulate(t.fbm(4, 4 * R, 3), 0.1);
+  trowel(t, 40 * R, W * 0.03, W * 0.1);
+  t.specks(Math.round((W * H) / 160), [shade(plaster, -0.3), shade(plaster, 0.2)], 0.5, 1.4, 0.45);
+  const plast = c.getImageData(0, 0, W, H);
+  // ── зоны: 0 — побелка, 3 — серая штукатурка у скола, 1 — кирпич, 2 — дранка; мелкий шум jag рвёт края
+  const zn = t.fbm(3, 3 * R, 3), zb = t.fbm(2, 2 * R, 3), jag = t.fbm(20, 20 * R, 3), isl = t.fbm(5, 5 * R, 3), yel = t.fbm(2, 2 * R, 2);
+  const zone = new Uint8Array(W * H);
+  for (let y = 0, q = 0; y < H; y++) {
+    const h = 1 - y / H; // доля высоты от пола
+    for (let x = 0; x < W; x++, q++) {
+      const j2 = jag[q] - 0.5, n2 = zn[q] - 0.5;
+      const z = zb[q] - 0.53 + 0.12 * j2; // > 0 — кирпич, < 0 — дранка
+      const depth = Math.max(
+        (h - 0.73) * 0.8 + 0.25 * n2 + 0.3 * j2, // поверху
+        (0.08 - h) * 0.8 - 0.15 * n2 + 0.3 * j2, // понизу
+        0.04 - Math.abs(z) + 0.3 * j2, // между кирпичом и дранкой
+        isl[q] - 0.7 + 0.3 * j2, // островки
+      );
+      zone[q] = depth > 0.03 ? 0 : depth > 0 ? 3 : z > 0 ? 1 : 2;
+    }
+  }
+  const P = plast.data, B = brick.data, L = lath.data, wc = hex(white), yc = hex('#d2c7ab');
+  const at = (x: number, y: number) => zone[(((y % H) + H) % H) * W + (((x % W) + W) % W)];
+  const solid = (z: number) => z === 0 || z === 3;
+  for (let y = 0, q = 0; y < H; y++) {
+    for (let x = 0; x < W; x++, q++) {
+      const zq = zone[q], i = q * 4;
+      if (solid(zq)) {
+        if (zq === 0) {
+          const yk = 0.6 * Math.max(0, 2 * yel[q] - 1); // желтизна побелки
+          for (let ch = 0; ch < 3; ch++) {
+            const v = P[i + ch] + (wc[ch] - P[i + ch]) * 0.8;
+            P[i + ch] = v + (yc[ch] - v) * yk;
+          }
+        }
+        // кромка скола: к свету светлее, снизу-справа темнее; под краем побелки — тень на серой штукатурке
+        let k = !solid(at(x - 2, y - 2)) ? 1.14 : !solid(at(x + 1, y + 1)) ? 0.8 : 1;
+        if (zq === 3 && at(x - 2, y - 2) === 0) k *= 0.86;
+        if (k !== 1) for (let ch = 0; ch < 3; ch++) P[i + ch] = Math.min(255, P[i + ch] * k);
+        continue;
+      }
+      const S = zq === 1 ? B : L;
+      let sh = 1; // тень от толщи штукатурки
+      for (let st = 1; st <= 5; st++) {
+        if (solid(at(x - st, y - st))) {
+          sh = 0.55 + 0.09 * (st - 1);
+          break;
+        }
+      }
+      for (let ch = 0; ch < 3; ch++) P[i + ch] = S[i + ch] * sh;
+    }
+  }
+  c.putImageData(plast, 0, 0);
+  t.specks(Math.round((W * H) / 400), ['#efece4', '#8a8478'], 0.5, 1.6, 0.4); // пыль, крошка
+  t.modulate(t.noise(5, 5 * R), 0.05);
+}
+
+/**
+ * Паркет «ёлочкой» санатория (реф. 3): планки 1 × 5 (решётка повтора (1,1), (5,−5)); картинка — 4n × 4n единиц, два
+ * периода узора: случайность планки — по её положению по модулю 4n (разнообразнее, чем у herringbone); тона медового
+ * дуба от base, лак вытерт пятнами до серо-бежевого accent, царапины, грязь в стыках.
+ */
+function drawParquetWorn(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#b08b5a';
+  const worn = o.accent ?? '#c4b496';
+  const pal = [base, base, shade(base, 0.05), shade(base, -0.06), mix(base, '#c49a62', 0.3), mix(base, '#9a7548', 0.25), mix(base, worn, 0.25)];
+  const { W, H } = t;
+  const c = t.c;
+  const n = 5, P = 4 * n, u = W / P, v = H / P;
+  const mod = (a: number) => ((a % P) + P) % P;
+  const plank = (x: number, y: number, w: number, h: number, key: string, along: 'x' | 'y') => {
+    if (x * u > W || (x + w) * u < 0 || y * v > H || (y + h) * v < 0) return;
+    const r = makeRng(hashStr('san' + key));
+    const col = shade(pal[Math.floor(r() * pal.length)], (r() - 0.5) * 0.08);
+    const X = x * u, Y = y * v, Wp = w * u, Hp = h * v;
+    t.rect(X, Y, Wp, Hp, col);
+    grain(t, X, Y, Wp, Hp, col, along, 6, r);
+    c.strokeStyle = rgba('#3a2412', 0.5);
+    c.lineWidth = 1.3;
+    c.strokeRect(X + 0.65, Y + 0.65, Wp - 1.3, Hp - 1.3);
+    t.rect(X + 1.3, Y + 1.3, Wp - 2.6, 1, rgba(shade(col, 0.28), 0.5));
+  };
+  for (let m = -4; m <= 4; m++) {
+    for (let k = -2 * P; k <= 2 * P; k++) {
+      const bx = k + n * m, by = k - n * m;
+      plank(bx, by, n, 1, `h${mod(bx)},${mod(by)}`, 'x');
+      plank(bx + n, by - (n - 1), 1, n, `v${mod(bx)},${mod(by)}`, 'y');
+    }
+  }
+  blotch(t, t.fbm(2, 2, 3), 0.5, 0.68, worn, 0.4); // вытертый лак
+  t.modulate(t.fbm(5, 5, 2), 0.05);
+  for (let k = 0; k < 90; k++) {
+    const x = t.u(0, W), y = t.u(0, H), a = t.u(0, Math.PI), len = t.u(6, 26), al = t.u(0.12, 0.28);
+    const dx = Math.cos(a) * len, dy = Math.sin(a) * len;
+    t.wrap((ox, oy) => {
+      if (x + ox < -len || x + ox > W + len || y + oy < -len || y + oy > H + len) return;
+      t.line(x + ox, y + oy, x + ox + dx, y + oy + dy, rgba('#efe4cc', al), 0.7);
+    });
+  }
+  t.specks(Math.round((W * H) / 900), ['#3b2a1a'], 0.5, 1.4, 0.35);
+}
+
+/**
+ * Терраццо (вестибюль): бежево-серая цементная основа base, мраморная крошка — неровные многоугольники (белые, серые,
+ * чёрные, рыжие, охристые, розоватые; ~15% крупных), мелкий песок, полировка пятнами; латунные жилы accent по квадратам
+ * n × n на картинку (у края — половина жилы, при повторе целая).
+ */
+function drawTerrazzo(t: T, o: FinishTexOpts): void {
+  const base = o.base ?? '#c8beac';
+  const brass = o.accent ?? '#b48d3e';
+  const n = o.n ?? 1;
+  const { W, H } = t;
+  t.fill(base);
+  t.modulate(t.fbm(4, 4, 3), 0.06);
+  const chips = ['#f1eee8', '#f1eee8', '#e3ded3', '#d6cfc2', '#b7b1a7', '#8f8a82', '#66615b', '#34312d', '#9c6044', '#c49a64', '#caa69b', '#a9a39a'];
+  const count = Math.round((W * H) / 95);
+  for (let i = 0; i < count; i++) {
+    const x = t.u(0, W), y = t.u(0, H);
+    const r = t.r() < 0.15 ? t.u(4, 9) : t.u(1.2, 3.8);
+    const pts = chipPoly(t, r, 4 + Math.floor(t.r() * 4), t.u(0.6, 1));
+    const col = shade(chips[Math.floor(t.r() * chips.length)], t.u(-0.06, 0.05));
+    t.wrap((ox, oy) => {
+      if (x + ox < -2 * r || x + ox > W + 2 * r || y + oy < -2 * r || y + oy > H + 2 * r) return;
+      fillPoly(t, x + ox, y + oy, pts, col);
+    });
+  }
+  t.specks(Math.round((W * H) / 70), ['#7d776e', '#e9e4da', '#a29a8c'], 0.3, 0.9, 0.45);
+  t.modulate(t.fbm(2, 2, 3), 0.2, shade(base, 0.18)); // полировка пятнами
+  t.modulate(t.fbm(3, 3, 3), 0.04);
+  const s = W / n, sy = H / n, bw = Math.max(2.5, W * 0.006);
+  for (let k = 0; k <= n; k++) {
+    t.rect(k * s - bw / 2, 0, bw, H, brass);
+    t.rect(0, k * sy - bw / 2, W, bw, brass);
+  }
+  for (let k = 0; k <= n; k++) {
+    t.rect(k * s - bw / 2, 0, 1, H, rgba('#f6dc9a', 0.6));
+    t.rect(0, k * sy - bw / 2, W, 1, rgba('#f6dc9a', 0.6));
+    t.rect(k * s + bw / 2, 0, 1, H, rgba('#3d2e14', 0.35));
+    t.rect(0, k * sy + bw / 2, W, 1, rgba('#3d2e14', 0.35));
+  }
+}
+
+/**
+ * Жёлтые крашеные доски (комната в ремонте, реф. 4): n досок вдоль X на картинку, по одному торцевому стыку в ряду;
+ * охра base поверх дерева accent — краска вытерта до дерева полосами вдоль досок и у щелей (у каждой доски своя
+ * степень), белые кляксы шпаклёвки и побелки high, известковая пыль.
+ */
+function drawBoardsPainted(t: T, o: FinishTexOpts): void {
+  const paint = o.base ?? '#c99a2e';
+  const wood = o.accent ?? '#c99b6b';
+  const putty = o.high ?? '#e7e2d5';
+  const n = o.n ?? 5;
+  const { W, H } = t;
+  const c = t.c;
+  const bh = H / n;
+  for (let r = 0; r < n; r++) {
+    const col = shade(wood, t.u(-0.07, 0.05));
+    t.rect(0, r * bh, W, bh, col);
+    grain(t, 0, r * bh, W, bh, col, 'x', 7, t.r, true);
+  }
+  t.modulate(t.fbm(4, 4, 2), 0.06);
+  const woodImg = c.getImageData(0, 0, W, H);
+  for (let r = 0; r < n; r++) t.rect(0, r * bh, W, bh, shade(paint, t.u(-0.05, 0.04)));
+  t.modulate(t.noise(4, n * 14), 0.035); // мазки кисти вдоль досок
+  t.modulate(t.fbm(3, 3, 3), 0.06);
+  const pd = c.getImageData(0, 0, W, H);
+  // вытертость: шум, вытянутый вдоль досок, + у щелей сильнее + своя степень у доски
+  const wn = t.fbm(3, 3 * n, 3), br = t.fbm(8, 4, 3);
+  const rowOff = Array.from({ length: n }, () => t.u(-0.05, 0.05));
+  const Pd = pd.data, Wd = woodImg.data;
+  for (let y = 0, q = 0; y < H; y++) {
+    const r = Math.min(n - 1, Math.floor(y / bh)), fy = (y - r * bh) / bh;
+    const edge = Math.max(0, 1 - Math.min(fy, 1 - fy) / 0.18);
+    for (let x = 0; x < W; x++, q++) {
+      const k = 0.92 * smoothstep(0.53, 0.59, 0.8 * wn[q] + 0.2 * br[q] + 0.12 * edge + rowOff[r]);
+      if (k <= 0) continue;
+      const i = q * 4;
+      for (let ch = 0; ch < 3; ch++) Pd[i + ch] += (Wd[i + ch] - Pd[i + ch]) * k;
+    }
+  }
+  c.putImageData(pd, 0, 0);
+  // щели (у края картинки — половина) и торцевые стыки
+  for (let r = 0; r < n; r++) {
+    t.rect(0, r * bh, W, 1.2, '#2a1a0c');
+    t.rect(0, (r + 1) * bh - 1.2, W, 1.2, '#3a2412');
+    t.rect(0, r * bh + 1.2, W, 1, rgba('#fff3d0', 0.25));
+    const jx = ((r * 0.41 + 0.17) % 1) * W;
+    for (const ox of [-W, 0, W]) if (jx + ox > -3 && jx + ox < W + 3) t.rect(jx + ox - 1, r * bh, 2, bh, '#2a1a0c');
+  }
+  // шпаклёвка и побелка кляксами
+  for (let k = 0; k < 70; k++) {
+    const x = t.u(0, W), y = t.u(0, H);
+    const big = t.r() < 0.2;
+    const r = big ? t.u(6, 16) : t.u(1.5, 5);
+    const pts = chipPoly(t, r, 7 + Math.floor(t.r() * 4), t.u(0.5, 1));
+    const a = big ? t.u(0.35, 0.6) : t.u(0.6, 0.9);
+    t.wrap((ox, oy) => {
+      if (x + ox < -2 * r || x + ox > W + 2 * r || y + oy < -2 * r || y + oy > H + 2 * r) return;
+      fillPoly(t, x + ox, y + oy, pts, rgba(putty, a));
+    });
+  }
+  blotch(t, t.fbm(3, 2, 3), 0.56, 0.7, '#dcd6c8', 0.35); // известковая пыль
+  t.specks(Math.round((W * H) / 250), [putty, '#b8ad98'], 0.4, 1.3, 0.45);
+  t.modulate(t.fbm(3, 3, 3), 0.04);
+}
+
 // ---------------------------------------------------------------- публичный API
 
 const DRAW: Record<FinishTexKind, (t: T, o: FinishTexOpts) => void> = {
@@ -983,6 +1654,18 @@ const DRAW: Record<FinishTexKind, (t: T, o: FinishTexOpts) => void> = {
   tile_plinth: drawTilePlinth,
   soot: drawSoot,
   soot_floor: drawSootFloor,
+  // cellar
+  soil: drawSoil,
+  // sanatorium
+  paint_panel: drawPaintPanel,
+  plaster_cracked: drawPlasterCracked,
+  veneer: drawVeneer,
+  tile_worn: drawTileWorn,
+  tile_mix: drawTileMix,
+  lath_brick: drawLathBrick,
+  parquet_worn: drawParquetWorn,
+  terrazzo: drawTerrazzo,
+  boards_painted: drawBoardsPainted,
 };
 
 const cache = new Map<string, string>();

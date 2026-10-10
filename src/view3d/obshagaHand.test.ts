@@ -5,10 +5,10 @@ import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
 import { Scene } from '@babylonjs/core/scene';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
-import { createHand, handView, POKE_STAND, rectGap, stepHand, type HandInput, type HandState, type Pt, type Rect } from '../locations/obshaga';
+import { createHand, handView, POKE_STAND, rectGap, stepHand, type HandInput, type HandState, type HandView, type Pt, type Rect } from '../locations/obshaga';
 import {
-  HAND, HandMesh, armLook, armSection, crawlGait, fingerDefs, floorAngle, planAt, pokeBend, projectArc, rayRect, roomRuns, skinTexels, solveFinger,
-  spineSamples, trailArcs, type ArmSection, type RoomRun, type SpinePt,
+  BED_LIFT, HAND, HandMesh, armLook, armSection, bedLift, crawlGait, fingerDefs, floorAngle, liftY, planAt, pokeBend, projectArc, rayRect, roomRuns,
+  skinTexels, solveFinger, spineSamples, trailArcs, type ArmSection, type RoomRun, type SpinePt,
 } from './obshagaHand';
 import { PORTAL_LAYER } from './portal';
 
@@ -202,6 +202,54 @@ describe('пальцы', () => {
     }
     expect(left).toBeGreaterThan(0);
     expect(right).toBeGreaterThan(0);
+  });
+});
+
+describe('кровати под рукой', () => {
+  it('поле высот: в рамке — выше матраса, у торцов — выше спинок, снаружи — гладкий спуск к полу (без ступеней)', () => {
+    expect(BED_LIFT.top).toBeGreaterThan(0.5);
+    expect(BED_LIFT.board).toBeGreaterThan(0.95);
+    for (const b of [{ x0: 3, y0: 0.85, x1: 4.9, y1: 1.65 }, { x0: -0.4, y0: 2, x1: 0.4, y1: 3.9 }]) {
+      const h = (x: number, y: number) => bedLift(b.x0, b.y0, b.x1, b.y1, x, y);
+      const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+      const alongX = b.x1 - b.x0 > b.y1 - b.y0;
+      expect(h(cx, cy)).toBe(BED_LIFT.top);
+      // спинки — полосы у коротких сторон, во всю ширину кровати
+      for (const s of [-1, 1]) for (const w of [-0.38, 0, 0.38]) {
+        const x = alongX ? cx + s * ((b.x1 - b.x0) / 2 - 0.03) : cx + w;
+        const y = alongX ? cy + w : cy + s * ((b.y1 - b.y0) / 2 - 0.03);
+        expect(h(x, y)).toBe(BED_LIFT.board);
+      }
+      // от середины наружу по 1 см: в рамке не ниже матраса, дальше ramp — пол, перепад на сантиметр — не больше 5.5 см
+      for (let a = 0; a < Math.PI * 2; a += 0.3) {
+        const dx = Math.cos(a), dy = Math.sin(a);
+        let prev = h(cx, cy);
+        for (let s = 0.01; s < 2; s += 0.01) {
+          const x = cx + dx * s, y = cy + dy * s;
+          const v = h(x, y);
+          expect(Math.abs(v - prev)).toBeLessThan(0.055);
+          prev = v;
+          const g = rectGap({ x, y }, b);
+          if (g === 0) expect(v).toBeGreaterThanOrEqual(BED_LIFT.top);
+          if (g >= BED_LIFT.ramp) expect(v).toBe(0);
+        }
+      }
+    }
+  });
+
+  it('подъём по высоте: низ — целиком, к потолку — на нет; монотонно, не ниже поля', () => {
+    const top = 2.42;
+    for (const g of [0, 0.2, BED_LIFT.top, BED_LIFT.board]) {
+      let prev = -Infinity;
+      for (let y = 0; y <= 2.6; y += 0.005) {
+        const v = liftY(y, g, top);
+        expect(v).toBeGreaterThan(prev);
+        prev = v;
+        if (y <= BED_LIFT.lift) expect(v).toBeCloseTo(y + g, 9);
+        if (y >= top) expect(v).toBe(y);
+        else expect(v).toBeGreaterThanOrEqual(g);
+      }
+    }
   });
 });
 
@@ -548,6 +596,169 @@ describe('HandMesh', () => {
     mesh.update(handView(h), toWorld, t + 1, DOORWAY);
     expect(mesh.pokeTip()).toBeNull();
     mesh.dispose();
+    scene.dispose();
+    engine.dispose();
+  });
+});
+
+// ── кровати под рукой и вытянутый палец: вид руки без механики (кончик стоит, где поставила бы механика) ──
+
+/** Вид тычущей руки: след по ломаной (комната 'r', кончик — конец следа), игрок at под кроватью bed, фаза тычка u. */
+function standView(pts: [number, number][], at: Pt, bed: Rect, u: number, variant: number): HandView {
+  const trail = trailAlong(pts, () => 'r');
+  const tip = trail[trail.length - 1], a = trail[trail.length - 2];
+  const base = handView(createHand('v', trail[0], trail[1]));
+  return {
+    ...base,
+    phase: 'stalking', visible: true, tip: { ...tip }, heading: Math.atan2(tip.y - a.y, tip.x - a.x), trail, length: trailArcs(trail, []),
+    emerge01: 1, frozen: false, blocked: false, variant, poke: 'p', pokeAt: at, poke01: u, bed,
+  };
+}
+
+/** Вершины меша в плане: (x, y = −z, высота). */
+function eachVertex(m: { getVerticesData(k: string): ArrayLike<number> | null }, from: number, to: number, fn: (x: number, y: number, h: number) => void) {
+  const pos = m.getVerticesData(VertexBuffer.PositionKind)!;
+  for (let v = from; v < to; v++) fn(pos[v * 3], -pos[v * 3 + 2], pos[v * 3 + 1]);
+}
+
+const inRect = (r: Rect, x: number, y: number) => x > r.x0 && x < r.x1 && y > r.y0 && y < r.y1;
+/** у торца кровати (спинка; длинная сторона — по x или по y), м */
+const atEnd = (r: Rect, x: number, y: number, w: number) =>
+  r.x1 - r.x0 > r.y1 - r.y0 ? x < r.x0 + w || x > r.x1 - w : y < r.y0 + w || y > r.y1 - w;
+
+/** Правая и левая рука (варианты пальцев). */
+const VARIANTS = (() => {
+  const out: number[] = [];
+  for (const want of [true, false]) for (let v = 0.05; v < 1; v += 0.05) if (fingerDefs(v, 2).right === want) {
+    out.push(v);
+    break;
+  }
+  return out;
+})();
+
+describe('HandMesh: кровати под рукой, вытянутый палец', () => {
+  it('проход 1.7 м между кроватями: кисть и предплечье на соседней кровати — поверх матраса и спинок; под целью — только указательный, под сеткой', { timeout: 60000 }, () => {
+    // кровати длинными боками к проходу (y −0.85 … 0.85); кончик — в POKE_STAND от цели, в 0.4 м от соседней
+    const cases: { name: string; pts: [number, number][]; at: Pt; target: Rect; other: Rect }[] = [
+      // пришла вдоль прохода, кисть доворачивает к цели: ладонь и бок предплечья — над соседней
+      { name: 'вдоль', pts: [[-3, -0.46], [4.5, -0.46]], at: { x: 5.6, y: 1.25, room: 'r' }, target: { x0: 4.4, y0: 0.85, x1: 6.3, y1: 1.65 }, other: { x0: 2.6, y0: -1.65, x1: 4.5, y1: -0.85 } },
+      // переползла через соседнюю (не цель — не преграда): рука лежит на ней поперёк
+      { name: 'поперёк', pts: [[-2, -4.96], [3.5, -4.96], [3.5, -0.46]], at: { x: 3.7, y: 1.25, room: 'r' }, target: { x0: 2.6, y0: 0.85, x1: 4.5, y1: 1.65 }, other: { x0: 2.6, y0: -1.65, x1: 4.5, y1: -0.85 } },
+    ];
+    for (const c of cases) for (const variant of VARIANTS) {
+      const engine = new NullEngine();
+      const scene = new Scene(engine);
+      const mesh = new HandMesh(scene);
+      const m = mesh as unknown as { grids: { base: number; rows: number; cols: number }[] };
+      const beds = [c.other, c.target];
+      const what = `${c.name}, вариант ${variant.toFixed(2)}`;
+      let handOver = 0, armOver = 0, minY = Infinity, under = 0;
+      for (let k = 0; k < 50; k++) {
+        const v = standView(c.pts, c.at, c.target, ((k / 30) / 1.4) % 1, variant);
+        expect(rectGap(v.tip, c.target), what).toBeGreaterThanOrEqual(POKE_STAND - 1e-6);
+        mesh.update(v, toWorld, k / 30, null, beds);
+        if (k % 3) continue;
+        const list = [...mesh.byRoom().get('r')!];
+        const hand = list.find((x) => x.name === 'obshaga:hand')!;
+        m.grids.forEach((G, gi) => {
+          const index = gi === 1 || gi === 6;
+          eachVertex(hand, G.base, G.base + G.rows * (G.cols + 1), (x, y, h) => {
+            minY = Math.min(minY, h);
+            if (inRect(c.other, x, y)) {
+              handOver++;
+              expect(h, `${what}: сетка ${gi} в соседней кровати`).toBeGreaterThanOrEqual(0.5);
+              if (atEnd(c.other, x, y, 0.05)) expect(h, `${what}: сетка ${gi} в спинке`).toBeGreaterThanOrEqual(0.95);
+            }
+            if (inRect(c.target, x, y)) {
+              expect(index, `${what}: сетка ${gi} над целью, высота ${h.toFixed(2)}`).toBe(true);
+              expect(h, `${what}: указательный в матрасе цели`).toBeLessThanOrEqual(0.29);
+              under++;
+            }
+          });
+        });
+        for (const arm of list) {
+          if (arm === hand) continue;
+          eachVertex(arm, 0, arm.getTotalVertices(), (x, y, h) => {
+            minY = Math.min(minY, h);
+            for (const b of beds) if (inRect(b, x, y)) {
+              if (b === c.other) armOver++;
+              expect(h, `${what}: рука в кровати`).toBeGreaterThanOrEqual(0.5);
+              if (atEnd(b, x, y, 0.05)) expect(h, `${what}: рука в спинке`).toBeGreaterThanOrEqual(0.95);
+            }
+          });
+        }
+      }
+      expect(minY, what).toBeGreaterThan(-0.01);
+      // сцена та, что нужна: кисть и рука лежат на соседней, палец — под целью
+      expect(handOver, what).toBeGreaterThan(100);
+      expect(armOver, what).toBeGreaterThan(100);
+      expect(under, what).toBeGreaterThan(20);
+      mesh.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it('кровать в нише (оба длинных бока у стен), игрок глубоко от торца: палец вытягивается до него — под сеткой, под спинкой, ничего в матрасе', { timeout: 60000 }, () => {
+    const bed: Rect = { x0: 5, y0: -0.4, x1: 6.9, y1: 0.4 };
+    // кончик — в POKE_STAND от торца (и как ставит навигация, + 0.08); игрок — 1.6 и 1.65 м от торца
+    for (const [stand, deep] of [[1.3, 1.6], [1.38, 1.65], [1.3, 1.85]]) for (const variant of VARIANTS) {
+      const engine = new NullEngine();
+      const scene = new Scene(engine);
+      const mesh = new HandMesh(scene);
+      const m = mesh as unknown as { grids: { base: number; rows: number; cols: number }[] };
+      const tipX = bed.x0 - stand;
+      const at: Pt = { x: bed.x0 + deep, y: 0, room: 'r' };
+      const what = `кончик в ${stand} м, игрок в ${deep} м, вариант ${variant.toFixed(2)}`;
+      let minD = Infinity, maxIn = 0, minY = Infinity;
+      for (let k = 0; k < 75; k++) {
+        mesh.update(standView([[tipX - 6.75, 0], [tipX, 0]], at, bed, ((k / 30) / 1.4) % 1, variant), toWorld, k / 30, null, [bed]);
+        const tip = mesh.pokeTip()!;
+        expect(tip, what).not.toBeNull();
+        if (inRect(bed, tip.x, -tip.z)) expect(tip.y, `${what}: кончик в кровати`).toBeLessThanOrEqual(0.2);
+        minD = Math.min(minD, Math.hypot(tip.x - at.x, -tip.z - at.y));
+        maxIn = Math.max(maxIn, tip.x - bed.x0);
+        const hand = [...mesh.byRoom().get('r')!].find((x) => x.name === 'obshaga:hand')!;
+        m.grids.forEach((G, gi) => {
+          const index = gi === 1 || gi === 6;
+          eachVertex(hand, G.base, G.base + G.rows * (G.cols + 1), (x, y, h) => {
+            minY = Math.min(minY, h);
+            if (!inRect(bed, x, y)) return;
+            expect(index, `${what}: сетка ${gi} над кроватью`).toBe(true);
+            expect(h, `${what}: указательный в матрасе`).toBeLessThanOrEqual(0.29);
+            // поперечина спинки — на 0.4 м: палец проходит под ней
+            if (atEnd(bed, x, y, 0.08)) expect(h, `${what}: указательный в спинке`).toBeLessThan(0.38);
+          });
+        });
+      }
+      expect(minY, what).toBeGreaterThan(-0.01);
+      // удар — у игрока (на POKE.short 0.3 не доходя), отведён — ближе
+      expect(minD, what).toBeLessThan(0.35);
+      expect(maxIn, what).toBeGreaterThan(deep - 0.4);
+      mesh.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it('кровати не под рукой — рука та же до вершины (и без списка, и с пустым)', { timeout: 30000 }, () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const mk = () => new HandMesh(scene);
+    const meshes = [mk(), mk(), mk()];
+    const lists: (Rect[] | undefined)[] = [undefined, [], [{ x0: 40, y0: 5, x1: 41.9, y1: 5.8 }]];
+    const h = createHand('t4', { x: 2, y: 2.2, room: 'room' }, { x: 2, y: 0, room: 'c' });
+    const input: HandInput = { lightsOn: false, seen: false, goal: { x: 9, y: 0, room: 'c' }, players: [], lanterns: [], playerSpeed: 3 };
+    for (let k = 0; k < 200; k++) {
+      stepHand(h, 1 / 30, input);
+      if (k === 150) input.players = [{ id: 'p', p: { x: h.tip.x + 1.7, y: 0, room: 'c' }, protected: false, sees: false, sheltered: true }];
+      meshes.forEach((mesh, i) => mesh.update(handView(h), toWorld, k / 30, DOORWAY, lists[i]));
+      if (k % 20) continue;
+      const bufs = meshes.map((mesh) => [...mesh.byRoom().values()].flat().map((x) => Float32Array.from(x.getVerticesData(VertexBuffer.PositionKind)!)));
+      expect(bufs[1]).toEqual(bufs[0]);
+      expect(bufs[2]).toEqual(bufs[0]);
+    }
+    for (const mesh of meshes) mesh.dispose();
     scene.dispose();
     engine.dispose();
   });

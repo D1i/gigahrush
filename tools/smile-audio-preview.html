@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Улыбка — звук (превью)</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root { color-scheme: dark; --bg: #0b0a0a; --panel: #151313; --line: #2a2524; --ink: #e6dfdc; --dim: #8f8481; --red: #b3282d; --ok: #6fa86b; --warn: #d6a443; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 'IBM Plex Sans', system-ui, sans-serif; }
+      main { max-width: 1080px; margin: 0 auto; padding: 22px 20px 60px; }
+      h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: 0.02em; }
+      h1 span { color: var(--red); }
+      .sub { color: var(--dim); margin: 0 0 18px; }
+      section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; }
+      section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      button { background: #1f1b1a; color: var(--ink); border: 1px solid #3a3230; border-radius: 4px; padding: 7px 12px; font: inherit; cursor: pointer; }
+      button:hover { border-color: var(--red); }
+      button.main { background: #3a1416; border-color: var(--red); }
+      label.sl { display: grid; grid-template-columns: 150px 1fr 130px; gap: 10px; align-items: center; margin: 6px 0; }
+      label.sl output { font-family: 'IBM Plex Mono', ui-monospace, monospace; color: var(--dim); }
+      input[type=range] { width: 100%; accent-color: var(--red); }
+      #meter { height: 8px; background: #221d1c; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+      #meter i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #6b1b1e, var(--red)); }
+      #log { font-family: 'IBM Plex Mono', ui-monospace, monospace; color: var(--dim); font-size: 12px; min-height: 18px; margin-top: 8px; }
+      table { width: 100%; border-collapse: collapse; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; margin-top: 10px; }
+      th, td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+      th:first-child, td:first-child { text-align: left; }
+      td.bad { color: var(--red); } td.ok { color: var(--ok); } td.warn { color: var(--warn); }
+      td audio { height: 26px; width: 220px; vertical-align: middle; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Улыбка <span>·</span> звук</h1>
+      <p class="sub">src/view3d/smileAudio.ts — всё синтезировано. Первый клик включает звук. Лучше в наушниках (HRTF).</p>
+      <section>
+        <h2>Непрерывное</h2>
+        <label class="sl">Сердце <input id="heart" type="range" min="0" max="1" step="0.01" value="0" /><output id="heartV">0</output></label>
+        <label class="sl">Писк в ушах <input id="ring" type="range" min="0" max="1" step="0.01" value="0" /><output id="ringV">0</output></label>
+        <label class="sl">Поворот головы <input id="yaw" type="range" min="-180" max="180" step="1" value="0" /><output id="yawV">0°</output></label>
+        <div id="meter"><i></i></div>
+      </section>
+      <section>
+        <h2>События</h2>
+        <div class="row" id="events"></div>
+      </section>
+      <section>
+        <h2>Сценарии</h2>
+        <div class="row" id="scenes"></div>
+        <div id="log"></div>
+      </section>
+      <section>
+        <h2>Проверка (OfflineAudioContext)</h2>
+        <div class="row"><button class="main" id="renderAll">Записать всё</button><span class="sub" style="margin:0">пик / RMS — после лимитера; «сырой» — без компрессора и клиппера; хвост — пик последних 20 мс</span></div>
+        <table id="tbl"></table>
+      </section>
+    </main>
+    <script type="module" src="./smile-audio-preview.ts"></script>
+  </body>
+</html>

@@ -21,6 +21,12 @@ export const GROUPS = [
   'кладовка',
   // metro
   'метро',
+  // cellar
+  'погреб',
+  // catacombs
+  'катакомбы',
+  // sanatorium
+  'санаторий',
 ] as const;
 export const OTHER = 'другое';
 
@@ -44,6 +50,12 @@ export const GROUP_COLORS: Record<string, string> = {
   [OTHER]: '#5a5e66',
   // metro
   метро: '#b8423a',
+  // cellar
+  погреб: '#6e5640',
+  // catacombs
+  катакомбы: '#5e6b58',
+  // sanatorium
+  санаторий: '#7fb3a6',
 };
 
 /** Группа комнаты: первый её тег из списка групп, иначе «другое». */

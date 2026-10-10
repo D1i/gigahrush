@@ -334,34 +334,57 @@ function makeGreen(seed) {
   };
 }
 
-/** f_cat_peel, повтор 1.2 × 1.2 м (кладка та же, что у кирпича): советская штукатурка поверх старого кирпича
- *  отвалилась пятнами — края с задиром и тенью под кромкой. */
+/** f_cat_peel, повтор 1.2 × 1.2 м (кладка та же, что у кирпича): советская штукатурка (серо-бежевая, грязная, в
+ *  трещинках и потёках) закрывает ~2/3 стены; в рваных пятнах разного размера отвалилась — там старая кладка: по краю
+ *  пятна — светлый излом (толщина слоя), под верхней кромкой — тень, у края на кирпиче — крошка и остатки раствора. */
 function makePeel(seed) {
   const br = makeBrickSampler(seed);
-  const nM = new Noise(seed + 11), nPl = new Noise(seed + 12), nR = new Noise(seed + 13), nD = new Noise(seed + 14);
-  const mask = (u, v) => nM.fbm(u + 0.05 * (nM.val(u, v, 8) - 0.5), v, 3, 5);
-  const eps = 3 / N;
+  const nA = new Noise(seed + 11), nB = new Noise(seed + 12), nPl = new Noise(seed + 13), nR = new Noise(seed + 14);
+  const nD = new Noise(seed + 15), nE = new Noise(seed + 16), nC = new Noise(seed + 17);
+  const warp = (u, v) => [u + 0.05 * (nE.fbm(u, v, 6, 3) - 0.5), v + 0.05 * (nE.fbm(u + 0.31, v + 0.57, 6, 3) - 0.5)];
+  // пороги — по квантилям: крупные пятна ~24% стены, мелкие выбоины ~8% (вместе ~30%: штукатурки — ~2/3)
+  const q = (f, share) => {
+    const a = [];
+    for (let j = 0; j < 96; j++) for (let i = 0; i < 96; i++) a.push(f(...warp(i / 96, j / 96)));
+    a.sort((x, y) => x - y);
+    return a[Math.floor(a.length * (1 - share))];
+  };
+  const tBig = q((u, v) => nA.fbm(u, v, 3, 4), 0.24), tSmall = q((u, v) => nB.fbm(u, v, 8, 3), 0.08);
+  /** > 0 — штукатурка отвалилась: крупные пятна и мелкие выбоины, края рваные. */
+  const hole = (u, v) => {
+    const [wu, wv] = warp(u, v);
+    const big = nA.fbm(wu, wv, 3, 4) - tBig;
+    const small = nB.fbm(wu, wv, 8, 3) - tSmall;
+    return Math.max(big, small) + 0.035 * (nE.val(u, v, 96) - 0.5);
+  };
+  const eps = 1 / N;
+  const streaks = [0.13, 0.41, 0.66, 0.88];
   return (u, v) => {
-    const m = mask(u, v);
-    const thr = 0.5;
-    if (m > thr) {
-      // штукатурка: серо-бежевая, грязная, затёртая; трещинки
-      let c = mix3([168, 162, 146], [146, 142, 130], nPl.fbm(u, v, 8, 4));
-      c = mul3(c, 0.88 + 0.14 * nPl.val(u, v, 128));
-      const cr = Math.abs(nR.fbm(u, v, 8, 4) - 0.5);
-      if (cr < 0.006) c = mul3(c, 0.7);
-      // кромка отвала: светлый излом (толщина слоя)
-      if (m - thr < 0.025) c = mix3(c, [196, 190, 176], 0.6);
-      c = mul3(c, 0.86 + 0.18 * nD.fbm(u, v, 2, 4));
+    const h = hole(u, v);
+    if (h <= 0) {
+      // штукатурка: серо-бежевая, затёртая, пятна сырости, волосяные трещины, потёки
+      let c = mix3([170, 164, 148], [146, 141, 128], nPl.fbm(u, v, 6, 4));
+      c = mul3(c, 0.9 + 0.12 * nPl.val(u, v, 160));
+      const cr = Math.abs(nC.fbm(u, v, 6, 4) - 0.5);
+      if (cr < 0.004) c = mul3(c, 0.72);
+      for (const sx of streaks) {
+        const dx = wrapD(u, sx);
+        if (dx < 0.03) c = mul3(c, 1 - 0.14 * Math.exp(-((dx / 0.012) ** 2)) * smooth(0.35, 0.7, nD.fbm(sx * 3, v, 4, 3)));
+      }
+      c = mix3(c, mul3(c, 0.8), smooth(0.55, 0.72, nD.fbm(u, v, 2, 4)));
+      // кромка отвала: светлый излом слоя, чуть дальше — трещинка вдоль края
+      if (h > -0.014) c = mix3(c, [206, 200, 186], 0.65);
+      else if (h > -0.022) c = mul3(c, 0.86);
       return c;
     }
     let c = br(u, v);
-    // остатки раствора на кирпиче
-    if (nR.val(u, v, 64) > 0.78) c = mix3(c, [170, 164, 148], 0.5);
-    // тень под кромкой штукатурки (свет сверху условный): штукатурка выше точки — тень
-    const up = mask(u, v - eps * 2);
-    if (up > thr) c = mul3(c, 0.62);
-    else if (mask(u, v - eps * 4) > thr) c = mul3(c, 0.8);
+    // остатки раствора и крошка штукатурки у края пятна
+    if (nR.val(u, v, 64) > 0.8) c = mix3(c, [172, 166, 150], 0.45);
+    if (h < 0.035 && nR.val(u + 0.5, v, 200) > 0.72) c = mix3(c, [188, 182, 166], 0.8);
+    // тень под верхней кромкой (штукатурка выше — v меньше) и полутень по бокам
+    if (hole(u, v - eps * 3) <= 0) c = mul3(c, 0.58);
+    else if (hole(u, v - eps * 7) <= 0) c = mul3(c, 0.78);
+    else if (hole(u - eps * 3, v) <= 0 || hole(u + eps * 3, v) <= 0) c = mul3(c, 0.88);
     return c;
   };
 }
@@ -436,7 +459,7 @@ const LIST = [
   ['stone', makeStone(23), 'f_cat_stone: путиловская плита (пол), 1.5 × 1.5 м'],
   ['concrete', makeConcrete(37), 'f_cat_concrete: советский бетон, 1.5 × 1.5 м'],
   ['green', makeGreen(41), 'f_cat_green_panel: зелёная масляная панель (dado 1.3 м), 1.3 × 1.3 м', { vSeam: false }],
-  ['peel', makePeel(53), 'f_cat_peel: штукатурка отвалилась, под ней кирпич, 1.2 × 1.2 м'],
+  ['peel', makePeel(53), 'f_cat_peel: штукатурка, местами отвалилась до кирпича, 1.2 × 1.2 м'],
   ['floor', makeFloor(61), 'f_cat_floor: советский бетонный пол, 1.5 × 1.5 м'],
   ['silt', makeSilt(71), 'f_cat_silt: ил после наводнения (пол), 1.5 × 1.5 м'],
 ];

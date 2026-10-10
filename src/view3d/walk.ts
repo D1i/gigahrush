@@ -63,6 +63,12 @@ export type WorldOp =
   | { k: 'drop'; d: WorldDrop }
   /** игрок подобрал предмет id с пола → id, если подобрал этот запрос (уже подобран другим раньше — null) */
   | { k: 'pick'; id: string }
+  /** игрок подобрал точку лута комнаты id («<inst>:L<k>», src/gen4d/streamLoot.ts lootOf) → id, если подобрал этот
+   *  запрос (уже подобрана / негодный id — null); флаг мира «loot:<id>» */
+  | { k: 'loot'; id: string }
+  /** флаг мира id (StreamWorld.setFlag: «unlock:<inst>/<conn>» — отпертая дверь общаги…) → id, если поставил этот
+   *  запрос (уже стоит / негодный — null) */
+  | { k: 'flag'; id: string }
   /** метро: дорожка lane эскалатора inst сорвалась (src/locations/metroEscalator.ts) → inst, если сорвал этот запрос
    *  (уже сорвалась — null); кусок пересобирается без её марша */
   | { k: 'esc'; inst: string; lane: number };
@@ -373,6 +379,12 @@ export class WalkSession {
           if (!this.world.pickItem(op.id)) return null;
           this.scheduleSave();
           return op.id;
+        // флаги мира (подобранный лут, отпертые двери) — тоже мимо onChange
+        case 'loot':
+        case 'flag':
+          if (!(op.k === 'loot' ? this.world.takeLoot(op.id) : this.world.setFlag(op.id))) return null;
+          this.scheduleSave();
+          return op.id;
         // метро: сорвавшаяся дорожка эскалатора (мир сообщит onChange — кусок без её марша)
         case 'esc':
           return this.world.breakEscalator(op.inst, op.lane) ? op.inst : null;
@@ -416,19 +428,22 @@ export class WalkSession {
 
   /** Отпечаток мира — сверка копий у игроков кооп-лобби. Только то, что однозначно задано состоянием мира (и так же
    *  восстанавливается из сохранения): счётчики экземпляров, связей, раскрытых, тупиков, квартир, переходов и место
-   *  последней комнаты — у разошедшихся копий почти наверняка разные; предметы на полу (сколько и последний) — только
-   *  если есть (отпечаток мира без них прежний). */
+   *  последней комнаты — у разошедшихся копий почти наверняка разные; предметы на полу и флаги мира (сколько и последний)
+   *  — только если есть (отпечаток мира без них прежний). */
   fingerprint(): string {
     const run = this.world.run();
     const s = this.world.stats();
     const tr = s.transition;
     const last = run.instances[run.instances.length - 1];
     const drops = this.world.drops();
+    // флаги мира (подобранный лут, отпертые двери): сколько и последний — только если есть
+    const flags = this.world.flags();
     return [
       run.instances.length, run.links.length, s.expanded, s.pending, s.deadChance + s.deadFail, s.clusters, s.exitsOpen,
       tr ? `${tr.count}.${tr.pending ? 1 : 0}` : '-', this.opened.size,
       last ? `${last.id}:${last.roomId}:${last.rot}:${last.dx},${last.dy},${last.w ?? 0},${last.floor ?? 0}` : '-',
       ...(drops.length ? [`d${drops.length}:${drops[drops.length - 1].id}`] : []),
+      ...(flags.length ? [`f${flags.length}:${flags[flags.length - 1]}`] : []),
     ].join('/');
   }
 

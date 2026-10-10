@@ -10,11 +10,11 @@ import { exportRunJSON } from '../gen/world';
 import { newWorldSettings } from '../gen4d/biomes';
 import { createStreamWorld, streamSettings } from '../gen4d/stream';
 import {
-  createHand, createObshagaDirector, forceObshagaBlackout, handView, openDoorById, POKE_R, POKE_STAND, rectGap, stepDirector, stepHand,
-  type HandEvent, type ObshagaInput, type Pt, type Rect,
+  aimHand, createHand, createObshagaDirector, forceObshagaBlackout, handView, openDoorById, POKE_MAX, POKE_R, POKE_STAND, rectGap, stepDirector, stepHand,
+  type HandEvent, type HandInput, type HandPlayer, type ObshagaInput, type Pt, type Rect,
 } from '../locations/obshaga';
 import {
-  BED_GOAL_PAD, CHART_HOPS, MOUTH_M, bedAt, bedGoal, bedRoute, buildNav, chartOf, doorPoints, handGoal, nearestHub, nextGoal, polyLength, remoteCover,
+  BED_GOAL_PAD, CHART_HOPS, MOUTH_M, bedAt, bedGoal, bedRoute, buildNav, chartOf, doorPoints, handGoal, nearestHub, nextGoal, pathLen, polyLength, remoteCover,
   roomAt, roomPath, spawnCandidates, waypoints,
 } from './obshagaNav';
 import { FX_MAX, advanceRemote, fromWire, simplifyTrail, toWire } from './obshagaSync';
@@ -182,7 +182,7 @@ describe('«Общага»: навигация', () => {
     expect(g.goal).toMatchObject({ room: 'c1' });
     expect(g.goal!.x).toBeCloseTo(9.05);
     // поле лампы накрывает a — незащищённых нет: ближайший защищённый (рука ползёт к краю поля — видна в свете лампы)
-    g = handGoal(nav, tip, players, [P(15, 1)], chart);
+    g = handGoal(nav, tip, players, [P(15.5, 1)], chart);
     expect(g).toMatchObject({ target: 'b', open: false });
     expect(g.goal).not.toBeNull();
     expect(handGoal(nav, tip, players.slice(0, 1), [], chart)).toMatchObject({ target: 'a', open: true });
@@ -190,6 +190,25 @@ describe('«Общага»: навигация', () => {
     expect(handGoal(nav, tip, [{ id: 'c', p: P(52, 1, 'c3'), protected: false }], [], chart).goal).toBeNull();
     // та же комната — прямо к игроку
     expect(handGoal(nav, tip, [{ id: 'd', p: P(7, 1, 'c1'), protected: false }], [], chart).goal).toMatchObject({ x: 7, y: 1, room: 'c1' });
+  });
+
+  it('цель механики (target): путь только к ней, хоть другой и ближе; нет такой — по-старому; длина пути — pathLen', () => {
+    const chart = chartOf(nav, 'c1');
+    const tip = P(2.45, 1, 'c1');
+    const players = [
+      { id: 'a', p: P(16, 1, 'c2'), protected: false },
+      { id: 'b', p: P(2.4, -3, 'r1'), protected: false },
+    ];
+    expect(handGoal(nav, tip, players, [], chart).target).toBe('b');
+    const g = handGoal(nav, tip, players, [], chart, undefined, 'a');
+    expect(g).toMatchObject({ target: 'a', open: true });
+    expect(g.goal!.x).toBeCloseTo(9.05);
+    expect(g.dist).toBeCloseTo(pathLen(nav, tip, players[0].p, chart)!, 9);
+    expect(handGoal(nav, tip, players, [], chart, undefined, 'нет-такого').target).toBe('b');
+    expect(handGoal(nav, tip, players, [], chart, undefined, null).target).toBe('b');
+    // путь по проёмам: до a — через проём c1|c2; за швом — не дойти
+    expect(pathLen(nav, tip, players[0].p, chart)).toBeCloseTo(Math.hypot(6.6, 0) + 6.95, 1);
+    expect(pathLen(nav, tip, P(52, 1, 'c3'), chart)).toBeNull();
   });
 
   it('двери появления: в карте игрока, путь от проёма, видимые и в поле — флагами', () => {
@@ -390,6 +409,105 @@ describe('«Общага»: рука и кровать', () => {
     expect(Math.hypot(h.tip.x - me.p.x, h.tip.y - me.p.y)).toBeLessThanOrEqual(POKE_R);
     expect(handView(h).bed).toEqual(E);
   });
+
+  it('двое под соседними кроватями (проход 1.7 м): цель одна (aimHand до goal, как у режиссёра), кровать соседа — пол; рука доходит и тычет только цель', () => {
+    const chart = chartOf(nav, 'bc');
+    const a = P(2.9, 2.65, 'bd'), b = P(0.4, 2.65, 'bd');
+    for (const [want, light] of [['a', false], ['b', true]] as const) {
+      const own = want === 'a' ? E : W, other = want === 'a' ? W : E;
+      const navPl = [{ id: 'a', p: a, protected: false, cover: E }, { id: 'b', p: b, protected: false, cover: W }];
+      const h = createHand(`двое-${want}`, P(6, -1.9, 'bc'), P(6, -1.1, 'bc'));
+      h.phase = 'stalking';
+      h.emerge = 1;
+      h.tip = P(6, -1.1, 'bc');
+      const ev: HandEvent[] = [];
+      let minOwn = Infinity;
+      for (let i = 0; i < 64 * 30 && ev.filter((e) => e.type === 'poke').length < 3; i++) {
+        // как интеграция: путь до каждого по навигации, цель — до goal, goal — только к цели
+        const players: HandPlayer[] = navPl.map((p) => ({
+          id: p.id, p: p.p, protected: false, sees: false, sheltered: true, cover: p.cover, light: p.id === 'b' && light, dist: pathLen(nav, h.tip, p.p, chart),
+        }));
+        const hin: HandInput = { lightsOn: false, seen: false, goal: null, players, lanterns: [], playerSpeed: 4, aimed: true };
+        aimHand(h, 1 / 64, hin);
+        hin.goal = handGoal(nav, h.tip, navPl, [], chart, undefined, handView(h).target).goal;
+        ev.push(...stepHand(h, 1 / 64, hin));
+        if (h.tip.room === 'bd') minOwn = Math.min(minOwn, rectGap(h.tip, own));
+      }
+      expect(h.target).toBe(want);
+      const pokes = ev.filter((e): e is Extract<HandEvent, { type: 'poke' }> => e.type === 'poke');
+      expect(pokes.length).toBe(3);
+      expect(pokes.every((e) => e.victim === want)).toBe(true);
+      expect(ev.some((e) => e.type === 'grab')).toBe(false);
+      // у своей кровати — снаружи зоны кончика, у соседней — в её зоне (переползла поверху)
+      expect(minOwn).toBeGreaterThanOrEqual(POKE_STAND - 1e-6);
+      expect(rectGap(h.tip, other)).toBeLessThan(POKE_STAND);
+      expect(Math.hypot(h.tip.x - (want === 'a' ? a : b).x, h.tip.y - (want === 'a' ? a : b).y)).toBeLessThanOrEqual(POKE_R);
+      expect(handView(h).bed).toEqual(own);
+    }
+  });
+
+  it('узкий проход (1 м): бок над соседней кроватью — годен и лучше торца, с которого палец достаёт только вытянутым', () => {
+    // комната 3 × 4.5: W x 0…0.8, E x 1.8…2.6 (y 1.7…3.6), проход 1 м; у E с востока 0.4 м до стены
+    const rx = bedFixture();
+    rx.instances.push(inst('nr', ['общага', 'комната', 'только-биом'], [200, 0, 230, 45], [], { decor: [decor('W2', 'p_obsh_bed', 204, 26.5, 270), decor('E2', 'p_obsh_bed', 222, 26.5, 90)] }));
+    const n2 = buildNav(rx);
+    const [W2, E2] = n2.rooms.get('nr')!.beds;
+    expect(R4(E2)).toEqual([21.8, 1.7, 22.6, 3.6]);
+    const pl = P(22.2, 2.65, 'nr');
+    const g = bedGoal(n2, 'nr', E2, pl)!;
+    expect([g.nx, g.ny]).toEqual([-1, 0]);
+    expect(g.goal.x).toBeCloseTo(E2.x0 - POKE_STAND - BED_GOAL_PAD, 6);
+    // цель — над соседней кроватью, палец достаёт без вытягивания
+    expect(g.goal.x > W2.x0 && g.goal.x < W2.x1).toBe(true);
+    expect(Math.hypot(g.goal.x - pl.x, g.goal.y - pl.y)).toBeLessThanOrEqual(POKE_R);
+  });
+
+  it('кровать в нише (оба длинных бока у стен): цель — изножье, рука встаёт там и тычет вытянутым пальцем лежащего в 1.65 м от торца', () => {
+    // комната nk 3.3 × 4.5 (пол — буквой «Т»: x 0…3.3 до y 2.6, ниша x 1…1.9 до y 4.5), кровать в нише x 1.05…1.85,
+    // y 2.55…4.45 изножьем к двери; коридор nc сверху
+    const G = ['общага', 'коридор', 'только-биом'];
+    const rx: RunExport = {
+      format: 'room-forge-run', version: 1, seed: 't', cellM: 0.1, settings: { gap: 1 }, props: [BED_PROP], items: [], openConnectors: [],
+      instances: [
+        inst('nc', G, [0, -21, 90, -1], [k('s', 'obshaga>room', 'S', [20, -1, 29, -1], { inst: 'nk', connector: 'n' })]),
+        inst('nk', ['общага', 'комната', 'только-биом'], [0, 0, 33, 45], [k('n', 'room>obshaga', 'N', [20, 0, 29, 0], { inst: 'nc', connector: 's' })], {
+          decor: [decor('B', 'p_obsh_bed', 14.5, 35, 90)],
+        }),
+      ],
+      links: [{ a: { inst: 'nc', connector: 's' }, b: { inst: 'nk', connector: 'n' } }],
+    };
+    const n3 = buildNav(rx);
+    const floor = (id: string) => (id === 'nk' ? [{ x0: 0, y0: 0, x1: 3.3, y1: 2.6 }, { x0: 1.0, y0: 2.6, x1: 1.9, y1: 4.5 }] : null);
+    const bed = n3.rooms.get('nk')!.beds[0];
+    expect(R4(bed)).toEqual([1.05, 2.55, 1.85, 4.45]);
+    const me = { id: 'me', p: P(1.45, bed.y0 + 1.65, 'nk'), protected: false, cover: bed };
+    const ba = bedGoal(n3, 'nk', bed, me.p, floor)!;
+    expect([ba.nx, ba.ny]).toEqual([0, -1]);
+    expect(ba.goal.y).toBeCloseTo(bed.y0 - POKE_STAND - BED_GOAL_PAD, 6);
+    expect(Math.hypot(ba.goal.x - me.p.x, ba.goal.y - me.p.y)).toBeGreaterThan(POKE_R);
+    expect(Math.hypot(ba.goal.x - me.p.x, ba.goal.y - me.p.y)).toBeLessThanOrEqual(POKE_MAX);
+    const chart = chartOf(n3, 'nc');
+    const h = createHand('ниша', P(6, -1.9, 'nc'), P(6, -1.1, 'nc'));
+    h.phase = 'stalking';
+    h.emerge = 1;
+    h.tip = P(6, -1.1, 'nc');
+    const players = [{ id: 'me', p: me.p, protected: false, sees: false, sheltered: true, cover: bed }];
+    const ev: HandEvent[] = [];
+    let minGap = Infinity;
+    for (let i = 0; i < 64 * 40 && ev.filter((e) => e.type === 'poke').length < 3; i++) {
+      const goal = handGoal(n3, h.tip, [me], [], chart, floor, h.target ?? null).goal;
+      ev.push(...stepHand(h, 1 / 64, { lightsOn: false, seen: false, goal, players, lanterns: [], playerSpeed: 4 }));
+      if (h.tip.room === 'nk') minGap = Math.min(minGap, rectGap(h.tip, bed));
+    }
+    expect(ev.filter((e) => e.type === 'poke').length).toBe(3);
+    expect(ev.every((e) => e.type === 'poke')).toBe(true);
+    expect(minGap).toBeGreaterThanOrEqual(POKE_STAND - 1e-6);
+    expect(Math.hypot(h.tip.x - ba.goal.x, h.tip.y - ba.goal.y)).toBeLessThan(1e-3);
+    const reach = Math.hypot(h.tip.x - me.p.x, h.tip.y - me.p.y);
+    expect(reach).toBeGreaterThan(POKE_R);
+    expect(reach).toBeLessThanOrEqual(POKE_MAX);
+    expect(handView(h).poke).toBe('me');
+  });
 });
 
 describe('«Общага»: навигация в настоящем мире', () => {
@@ -526,10 +644,14 @@ describe('«Общага»: срез режиссёра для коопа', () =
     h.pokeT = 0.77;
     h.pokeAt = { x: 46.234, y: 3.5, room: 'спальня-7' };
     h.bed = { x0: 45.904, y0: 3.1, x1: 46.704, y1: 5.0 };
+    // цель — id игрока длиной с UUID
+    h.target = 'f3a1c2d4-5b6e-4f70-8a9b-0c1d2e3f4a5b';
     dir.hand = h;
     const w = toWire(dir, 3, [['poke', 'игрок-2']]);
     expect(JSON.stringify(w).length).toBeLessThan(FX_MAX);
+    expect(w.h!.tg).toBe(h.target);
     const r = fromWire(JSON.parse(JSON.stringify(w)))!;
+    expect(r.hand!.target).toBe(h.target);
     expect(r.hand!.poke).toBe('игрок-2');
     expect(r.hand!.pokeAt).toEqual({ x: 46.23, y: 3.5, room: 'спальня-7' });
     expect(r.hand!.poke01).toBeCloseTo(0.77 / 1.4, 2);
@@ -539,9 +661,12 @@ describe('«Общага»: срез режиссёра для коопа', () =
     h.poke = null;
     h.pokeAt = null;
     h.bed = null;
+    h.target = null;
     const w2 = toWire(dir, 4);
     expect(w2.h!.pk).toBeUndefined();
     expect(w2.h!.bd).toBeUndefined();
+    expect(w2.h!.tg).toBeUndefined();
+    expect(fromWire(w2)!.hand!.target).toBeNull();
     const r2 = fromWire(w2)!;
     expect(r2.hand!.poke).toBeNull();
     expect(r2.hand!.pokeAt).toBeNull();

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RunConnector, RunExport, RunInstance, Side } from '../blockout/types';
 import {
-  buildCellarMesh, cellarField, cellarSpecFor, cellarSpecOf, cellRects, isCellarRoom, CEL_DOOR_H, CEL_IN, CEL_STEP, type CellarPieceSpec,
+  buildCellarMesh, cellarField, cellarRay, cellarSpecFor, cellarSpecOf, cellRects, isCellarRoom, CEL_DOOR_H, CEL_IN, CEL_OUT, CEL_STEP, type CellarPieceSpec,
 } from './cellarMesh';
 
 // Синтетические куски погреба по замыслу биома (клетка 0.1 м, зазор 1 клетка): ход 0.6 м, щель-«песочные часы»
@@ -61,9 +61,12 @@ const W = run([A, B, Q, Hb, R]);
 const spec = (id: string): CellarPieceSpec => cellarSpecFor(W, id, { deadEnds: 'wall', openCut: true })!.spec;
 
 /** вершины сетки на плоскости y = Y (Babylon Z = −Y), отсортированные */
+/** нормаль и цвет вершины (на шве у соседей должны совпадать — иначе в свете фонаря видна линия) */
+const attrs = (m: ReturnType<typeof buildCellarMesh>, i: number) =>
+  ` n${[0, 1, 2].map((k) => m.normals[i * 3 + k].toFixed(2)).join(',')} c${[0, 1, 2].map((k) => m.colors[i * 4 + k].toFixed(3)).join(',')}`;
 const ring = (m: ReturnType<typeof buildCellarMesh>, Y: number) => {
   const out: string[] = [];
-  for (let i = 0; i < m.positions.length / 3; i++) if (Math.abs(m.positions[i * 3 + 2] + Y) < 1e-6) out.push(`${m.positions[i * 3].toFixed(4)},${m.positions[i * 3 + 1].toFixed(4)}`);
+  for (let i = 0; i < m.positions.length / 3; i++) if (Math.abs(m.positions[i * 3 + 2] + Y) < 1e-6) out.push(`${m.positions[i * 3].toFixed(4)},${m.positions[i * 3 + 1].toFixed(4)}${attrs(m, i)}`);
   return out.sort();
 };
 
@@ -93,7 +96,23 @@ describe('оболочка погреба', () => {
     expect(G.f(0.6, 1.5, 1.0)).toBeGreaterThan(0);
   });
 
-  it('у соседей по проёму кольцо вершин на плоскости проёма совпадает (шов не виден)', () => {
+  it('луч в землю (руки на стене): от середины хода до стены 0.3 м ± рельеф; из земли и мимо — null', () => {
+    const F = cellarField(spec('A'));
+    for (const y of [0.5, 1.2, 2.4]) {
+      for (const z of [0.9, 1.3]) {
+        const t = cellarRay(F, 0.3, y, z, -1, 0, 0, 0.6)!;
+        expect(t).toBeGreaterThan(0.3 - CEL_IN - 0.005);
+        expect(t).toBeLessThan(0.3 + CEL_OUT + 0.005);
+        // на попадании — земля, чуть раньше — воздух
+        expect(F.f(0.3 - t - 0.004, y, z)).toBeGreaterThan(-0.002);
+        expect(F.f(0.3 - t + 0.01, y, z)).toBeLessThan(0);
+      }
+    }
+    expect(cellarRay(F, -0.2, 1.2, 1.0, 1, 0, 0, 0.5)).toBeNull();
+    expect(cellarRay(F, 0.3, 1.2, 1.0, -1, 0, 0, 0.1)).toBeNull();
+  });
+
+  it('у соседей по проёму кольцо вершин на плоскости проёма совпадает — места, нормали, цвета (шов не виден)', () => {
     const a = buildCellarMesh(spec('A'));
     const b = buildCellarMesh(spec('B'));
     const ra = ring(a, 3.05), rb = ring(b, 3.05);
@@ -101,7 +120,7 @@ describe('оболочка погреба', () => {
     expect(ra).toEqual(rb);
     // устье на плоскости — внутри проёма (маски портала): по ширине ±(0.3 − 4 мм), по высоте 0…CEL_DOOR_H
     for (const v of ra) {
-      const [x, z] = v.split(',').map(Number);
+      const [x, z] = v.split(' ')[0].split(',').map(Number);
       expect(x).toBeGreaterThanOrEqual(0.0035);
       expect(x).toBeLessThanOrEqual(0.5965);
       expect(z).toBeGreaterThanOrEqual(-1e-6);
@@ -112,7 +131,7 @@ describe('оболочка погреба', () => {
     const r = buildCellarMesh(spec('R'));
     const ringX = (m: ReturnType<typeof buildCellarMesh>, X: number) => {
       const out: string[] = [];
-      for (let i = 0; i < m.positions.length / 3; i++) if (Math.abs(m.positions[i * 3] - X) < 1e-6) out.push(`${(-m.positions[i * 3 + 2]).toFixed(4)},${m.positions[i * 3 + 1].toFixed(4)}`);
+      for (let i = 0; i < m.positions.length / 3; i++) if (Math.abs(m.positions[i * 3] - X) < 1e-6) out.push(`${(-m.positions[i * 3 + 2]).toFixed(4)},${m.positions[i * 3 + 1].toFixed(4)}${attrs(m, i)}`);
       return out.sort();
     };
     const rh = ringX(h, 1.55), rr = ringX(r, 1.55);
@@ -120,21 +139,32 @@ describe('оболочка погреба', () => {
     expect(rh).toEqual(rr);
   });
 
-  it('оболочка не заходит в проходимое глубже 2 см и не выходит за плоскости проёмов вне устья', () => {
+  it('оболочка не заходит в проходимое глубже 2 см и не выходит за плоскости проёмов вне устья', { timeout: 30000 }, () => {
     for (const id of ['A', 'B', 'Q', 'H', 'R']) {
       const s = spec(id);
       const F = cellarField(s);
+      // поле: в клетках комнаты глубже 2 см от стены (выше осыпи у пола, ниже угла свода) — везде воздух
+      for (const r of s.rects) {
+        let earth = 0;
+        for (let x = r.x0 + 0.005; x < r.x1; x += 0.0123) for (let y = r.y0 + 0.005; y < r.y1; y += 0.0471) {
+          if (F.plan(x, y) > -(CEL_IN + 0.002)) continue;
+          for (let z = 0.25; z < 1.6; z += 0.05) if (F.f(x, y, z) >= 0) earth++;
+        }
+        expect(earth).toBe(0);
+      }
       const m = buildCellarMesh(s);
       let worst = 0;
       for (let i = 0; i < m.positions.length / 3; i++) {
         const x = m.positions[i * 3], z = m.positions[i * 3 + 1], y = -m.positions[i * 3 + 2];
-        if (z > 0.25 && z < 1.6) worst = Math.min(worst, F.plan(x, y));
+        // вершины — кроме вогнутых углов плана (там surface nets срезает угол на полшага решётки)
+        const corner = (F.plan(x + 0.08, y) > 0 || F.plan(x - 0.08, y) > 0) && (F.plan(x, y + 0.08) > 0 || F.plan(x, y - 0.08) > 0);
+        if (z > 0.25 && z < 1.6 && !corner) worst = Math.min(worst, F.plan(x, y));
         for (const d of s.doors) {
           if (d.state !== 'open') continue;
           const al = (x - d.x) * d.nx + (y - d.y) * d.ny;
           const la = Math.abs(-(x - d.x) * d.ny + (y - d.y) * d.nx);
-          expect(al).toBeGreaterThanOrEqual(-1e-9);
-          if (al < 0.005) expect(la).toBeLessThanOrEqual(d.half);
+          expect(al).toBeGreaterThanOrEqual(-1e-6); // Float32
+          if (al < 0.005) expect(la).toBeLessThanOrEqual(d.half + 1e-6);
         }
       }
       expect(worst).toBeGreaterThanOrEqual(-CEL_IN - 0.002);

@@ -11,9 +11,14 @@
 // (NavPlayer.cover — её рамка, bedAt) — цель руки не он, а свободный бок кровати (bedGoal: снаружи на pokeStandM, не
 // за стеной и не в мебели, ближе к игроку), путь в комнате огибает запретную зону кончика (рамку, расширенную на
 // pokeStandM) по её углам и подходит к боку по нормали — кисть смотрит на кровать.
+//
+// Цель руки одна (HandView.target, aimHand механики): handGoal ведёт только к ней (нет — по-старому: к ближайшему
+// незащищённому, иначе к защищённому). Кровати не-целей — не преграда: зона кончика — только у кровати цели, а у
+// bedGoal соседняя кровать в полосе подхода (узкий проход) — лёгкий штраф, не запрет (бок отсекают только стены и рамка
+// комнаты). Бок, с которого палец не достаёт без вытягивания (дальше POKE_R), — дороже любой мебели.
 import { propCover, propHeightM } from '../blockout/core';
 import type { RunExport, RunInstance, Side } from '../blockout/types';
-import { expandRect, isProtected, POKE_STAND, type Pt, type Rect, type SpawnCandidate } from '../locations/obshaga';
+import { expandRect, isProtected, POKE_MAX, POKE_R, POKE_STAND, type Pt, type Rect, type SpawnCandidate } from '../locations/obshaga';
 
 /** Метки дверей комнат общаги со стороны коридора (полотна здесь нет) и со стороны комнаты (полотно здесь). */
 export const OBSH_SIDE_TAGS: ReadonlySet<string> = new Set(['obshaga>room', 'obshaga>common', 'hall>vahter']);
@@ -433,6 +438,10 @@ const CORNER_PAD = REACH_M + 0.06;
 /** Подход к боку кровати по нормали — с такого расстояния, м (рендер поворачивает кисть по последним 1.2 м следа:
  *  пришла по нормали — смотрит на кровать); не влезает — короче (шаг 5 см, не короче 0.3). */
 export const BED_APPROACH_M = 1.2;
+/** Штраф бока за чужую кровать в полосе подхода — доля штрафа прочей мебели (кровать — пол для руки, но пол лучше). */
+export const BED_TERRAIN_K = 0.25;
+/** Штраф бока, с которого палец достаёт игрока только вытянутым (дальше POKE_R); дальше POKE_MAX — ещё столько же. */
+export const STRETCH_PEN = 4;
 
 /**
  * Кровать (рамка), под которой точка p: в комнате p.room или у соседей по проёмам, точка в рамке с запасом pad, м;
@@ -487,9 +496,11 @@ export interface BedApproach {
 /**
  * Свободный бок кровати bed (комната room) для тычка игрока player: у каждого бока цель — проекция игрока на бок (не
  * ближе 0.25 м к углам) снаружи на pokeStandM + BED_GOAL_PAD. Бок годится, если цель и полоса до неё (± 0.3 м) — на полу
- * комнаты (не за стеной); мебель в полосе (кроме самой кровати, настенного и подвесного) и цель в мебели — штраф.
- * Лучший — ближе к игроку с учётом штрафа. Точка подхода — ещё на BED_APPROACH_M дальше по нормали (короче, если не
- * на полу; мебель её не держит — кисть всё равно шире прохода; совсем нет места — null). Ни один бок не годится — null.
+ * комнаты (не за стеной); мебель в полосе (кроме самой кровати, настенного и подвесного) и цель в мебели — штраф; другие
+ * кровати — штраф × BED_TERRAIN_K (рука ползёт по ним: узкий проход годится). Палец с цели не достаёт без вытягивания
+ * (дальше POKE_R) — + STRETCH_PEN (дальше POKE_MAX — вдвое). Лучший — ближе к игроку с учётом штрафа. Точка подхода —
+ * ещё на BED_APPROACH_M дальше по нормали (короче, если не на полу; мебель её не держит — кисть всё равно шире прохода;
+ * совсем нет места — null). Ни один бок не годится — null.
  */
 export function bedGoal(nav: ObshNav, room: string, bed: Rect, player: Pt, floor?: FloorFn): BedApproach | null {
   const r = nav.rooms.get(room);
@@ -525,11 +536,14 @@ export function bedGoal(nav: ObshNav, room: string, bed: Rect, player: Pt, floor
     for (const p of r.props) {
       if (p.rect === bed || p.h < 0.1) continue;
       const q = p.rect;
+      const w = p.cover === 'bed' ? BED_TERRAIN_K : 1;
       const ox = Math.min(q.x1, strip.x1) - Math.max(q.x0, strip.x0), oy = Math.min(q.y1, strip.y1) - Math.max(q.y0, strip.y0);
-      if (ox > 0 && oy > 0) pen += (2 * ox * oy) / area;
-      if (goal.x > q.x0 && goal.x < q.x1 && goal.y > q.y0 && goal.y < q.y1) pen += 1;
+      if (ox > 0 && oy > 0) pen += (w * 2 * ox * oy) / area;
+      if (goal.x > q.x0 && goal.x < q.x1 && goal.y > q.y0 && goal.y < q.y1) pen += w;
     }
-    const cost = Math.hypot(goal.x - player.x, goal.y - player.y) + pen;
+    const reach = Math.hypot(goal.x - player.x, goal.y - player.y);
+    if (reach > POKE_R) pen += reach > POKE_MAX ? 2 * STRETCH_PEN : STRETCH_PEN;
+    const cost = reach + pen;
     if (cost < bestCost - 1e-9) {
       bestCost = cost;
       let approach: Pt | null = null;
@@ -657,21 +671,37 @@ export function bedWaypoints(nav: ObshNav, path: readonly string[], tip: Pt, pl:
   return [...wps, ...bedRoute(nav, room, wps.length ? wps[wps.length - 1] : tip, pl.cover, ba, floor)];
 }
 
+/** Путь кончика tip → точка to по проёмам (комнаты внутри allowed), м — для счёта цели (HandPlayer.dist); null — не дойти. */
+export function pathLen(nav: ObshNav, tip: Pt, to: Pt, allowed: { has(id: string): boolean }, floor?: FloorFn): number | null {
+  const from = roomAt(nav, tip, floor);
+  if (!from || !to.room) return null;
+  const path = roomPath(nav, from, to.room, allowed);
+  return path ? polyLength(tip, waypoints(nav, path, to)) : null;
+}
+
 /**
- * Цель кончика руки: ближайший по пути незащищённый игрок (не с лампой и не в поле ламп) в карте allowed; таких нет —
- * ближайший защищённый (рука ползёт к нему до края поля: видна в свете лампы, замирает, от лампы уползает). goal —
- * следующая точка пути (видна из кончика по прямой: комнаты выпуклые), null — стоять (никого нет в карте); dist — путь
- * до цели, м; open — цель не защищена. Игрок под кроватью (cover) — путь к свободному боку кровати (bedWaypoints).
+ * Цель кончика руки. target (HandView.target — цель механики, aimHand) есть среди players и достижима — путь только к
+ * ней. Иначе (цели нет) — ближайший по пути незащищённый игрок (не с лампой и не в поле ламп) в карте allowed; таких
+ * нет — ближайший защищённый (рука ползёт к нему до края поля: видна в свете лампы, замирает, от лампы уползает). goal
+ * — следующая точка пути (видна из кончика по прямой: комнаты выпуклые), null — стоять (никого нет в карте); dist —
+ * путь до цели, м; open — цель не защищена. Игрок под кроватью (cover) — путь к свободному боку кровати (bedWaypoints).
  */
 export function handGoal(
   nav: ObshNav, tip: Pt, players: readonly NavPlayer[], lanterns: readonly Pt[], allowed: { has(id: string): boolean },
   floor?: (id: string) => readonly { x0: number; y0: number; x1: number; y1: number }[] | null,
+  target?: string | null,
 ): { goal: Pt | null; target: string | null; dist: number; open: boolean } {
   const from = roomAt(nav, tip, floor);
   type Best = { goal: Pt | null; target: string | null; dist: number; open: boolean };
   let open: Best = { goal: null, target: null, dist: Infinity, open: true };
   let prot: Best = { goal: null, target: null, dist: Infinity, open: false };
   if (!from) return open;
+  const t = target != null ? players.find((pl) => pl.id === target) : undefined;
+  const tp = t?.p.room ? roomPath(nav, from, t.p.room, allowed) : null;
+  if (t && tp) {
+    const wps = t.cover ? bedWaypoints(nav, tp, tip, t, floor) : waypoints(nav, tp, t.p);
+    return { goal: nextGoal(tip, wps), target: t.id, dist: polyLength(tip, wps), open: !t.protected && !isProtected(t.p, lanterns) };
+  }
   for (const pl of players) {
     if (!pl.p.room) continue;
     const path = roomPath(nav, from, pl.p.room, allowed);

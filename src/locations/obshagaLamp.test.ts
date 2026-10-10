@@ -39,9 +39,9 @@ describe('лампа на полу', () => {
   });
 
   it('рука не хватает стоящего у лампы на полу (упирается в край поля); лампа далеко — хватает', () => {
-    // лампа на полу в 2.5 м за игроком: кисть упирается в поле в 0.5 м от него
+    // лампа на полу в 0.8 м за игроком: кисть упирается в поле в 0.25 м от него
     const at = { x: 8.5, y: 0 };
-    const near = floorLanterns([drop('l', KEROLAMP_ITEM, 'c', 11, -0.5)]);
+    const near = floorLanterns([drop('l', KEROLAMP_ITEM, 'c', 9.2, -0.3)]);
     const h = emerged('пол');
     for (let k = 0; k < 64 * 10; k++) expect(stepHand(h, DT, inp({ goal: at, players: [player(at.x)], lanterns: near }))).toEqual([]);
     expect(Math.hypot(h.tip.x - at.x, h.tip.y - at.y)).toBeLessThan(GRAB_R);

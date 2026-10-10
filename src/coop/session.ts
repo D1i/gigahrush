@@ -12,6 +12,8 @@ import { parseProject, serializeProject } from '../model/serialize';
 import type { Project } from '../model/types';
 import { WalkSession, type WalkOptions, type WorldOp } from '../view3d/walk';
 import { COOP_PROTO, hashText, type ClientMsg, type LobbyMeta, type PlayerAct, type PlayerInfo, type PlayerState, type SeqOp, type ServerMsg, type Welcome } from './protocol';
+// бестиарий: ручки существ — из проекта лобби у всех игроков (копии мира и часы биомов одинаковы)
+import { setLobbyBestiary } from '../game/bestiary';
 
 export type CoopStatus = 'connecting' | 'syncing' | 'online' | 'reconnecting' | 'closed' | 'error';
 
@@ -291,6 +293,7 @@ export class CoopSession {
         this.project = parseProject(JSON.parse(json));
         this.projectHash = w.projectHash;
       }
+      setLobbyBestiary(this, this.project.bestiary); // бестиарий
       const cp = w.checkpoint;
       const { seed, ...rest } = w.meta.walk as WalkOptions;
       void seed;
@@ -410,6 +413,7 @@ export class CoopSession {
 
   private stop() {
     this.closed = true;
+    setLobbyBestiary(this, null); // бестиарий: снова числа своего проекта
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.cpTimer) clearInterval(this.cpTimer);
     this.retryTimer = this.cpTimer = null;

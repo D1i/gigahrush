@@ -11,7 +11,7 @@
 //    радиусы эллипсоида каждый кадр (src/view3d/posture.ts, body).
 //  • Ход 0.6 м: 2a = 0.46 — проходит в любом повороте. Щель 0.4 м: лицом вдоль щели плечи (0.46) не влезают — коллизии
 //    не пускают; лицом к стене — грудь (0.26) влезает, и A/D ведут вдоль щели. Повернуться в щели можно лишь на
-//    ~±53° от «лицом к стене» (clampYaw: поворот не дальше, чем тело ещё влезает).
+//    ~±50° от «лицом к стене» (clampYaw: поворот не дальше, чем тело ещё влезает).
 //  • Свободно вокруг — лучи от середины тела вдоль ±X и ±Z на нескольких смещениях поперёк (Free; src/view3d/
 //    cellarWalk.ts кидает их в коллайдеры): для поворота ψ тело влезает, если на каждом смещении эллипс там уже, чем
 //    ход (с зазором FIT_GAP), — середину можно сдвинуть к середине хода (fitAt: сдвиг dx, dz), но не дальше стен.
@@ -25,13 +25,15 @@ import { DEFAULT_COLLAPSE, type CollapseSpec } from './snowCollapse';
 /** Первая метка комнат погреба; щель (сужение 0.4 м) — доп. метка куска. */
 export const CELLAR_TAG = 'погреб';
 export const SLIT_TAG = 'щель';
+/** Кусок хода погреба (src/data/roomsCellar.ts: 'ход' — прямые, щели, повороты, развилки; не 'хаб' и не 'клетушка'). */
+export const PASS_TAG = 'ход';
 
 /** Тело в погребе: полуширина плеч a, полутолщина груди b, м. */
 export const BODY = { a: 0.23, b: 0.13 } as const;
 export type Body = { a: number; b: number };
 
 /** Зазор до стены при проверке поворота, м. */
-export const FIT_GAP = 0.012;
+export const FIT_GAP = 0.005;
 /** Сдвиг середины тела при повороте за кадр — не больше, м (больше — поворот не даётся). */
 export const MAX_SHIFT = 0.08;
 /** Боком: ширина поперёк хода меньше 2a + SQUEEZE_IN; снова прямо — шире 2a + SQUEEZE_OUT, м. */
@@ -70,8 +72,9 @@ export function wrapAngle(a: number): number {
 export const isCellarTags = (tags: readonly string[]): boolean => tags[0] === CELLAR_TAG;
 /** Кусок-щель погреба. */
 export const isSlitTags = (tags: readonly string[]): boolean => isCellarTags(tags) && tags.includes(SLIT_TAG);
-/** Фильтр комнат обвала (collapseSite): комнаты погреба; метры копятся только в узких ходах (cellarWalk). */
-export const cellarCollapseRoom = (tags: readonly string[]): boolean => isCellarTags(tags);
+/** Фильтр комнат обвала (collapseSite): ходы погреба (камеры и клетушки не обваливаются); метры копятся только в узком
+ *  (cellarWalk: ширина у середины тела меньше NARROW_M). */
+export const cellarCollapseRoom = (tags: readonly string[]): boolean => isCellarTags(tags) && tags.includes(PASS_TAG);
 
 /** Полуразмеры тела-эллипса по осям мира (x, z) при повороте взгляда yaw. */
 export function bodyExtents(a: number, b: number, yaw: number): { x: number; z: number } {
@@ -126,23 +129,52 @@ export function fitAt(body: Body, yaw: number, free: Free, gap = FIT_GAP): { ok:
 }
 
 /**
- * Поворот взгляда from → to в тесноте: влезает — to; хуже не становится (тело и так не влезало) — to; иначе — до
- * последнего влезающего поворота между from и to (делением пополам), а не влезал и from — остаётся from.
+ * Запас тела на месте (без сдвига), м: ≥ 0 — не задевает стен, < 0 — на столько «в» стене. Ход в погребе проверяется
+ * им (cellarWalk: коллизии Babylon пропускают эллипсоид углом в проём, если он шире проёма на несколько см).
+ */
+export function clearance(body: Body, yaw: number, free: Free, gap = 0): number {
+  const e = bodyExtents(body.a, body.b, yaw);
+  const wx = shiftWindow(free.x, e.x, e.z, gap);
+  const wz = shiftWindow(free.z, e.z, e.x, gap);
+  return Math.min(wx.hi, -wx.lo, wz.hi, -wz.lo);
+}
+
+/** Ход боком / вперёд: на новом месте тело влезает (с допуском STEP_TOL) или хотя бы не хуже, чем было. */
+export const STEP_TOL = 0.004;
+export function stepOk(now: number, before: number): boolean {
+  return now >= -STEP_TOL || now >= before - 1e-4;
+}
+
+/** Поворот проверяется по дуге шагами не больше стольких рад (рывок мышью не «проскочит» запретное «лицом вдоль»). */
+const ARC_STEP = 0.05;
+
+/**
+ * Поворот взгляда from → to в тесноте: по всей дуге тело влезает — to; упирается — до последнего влезающего поворота
+ * (по дуге шагами ARC_STEP, у границы — делением пополам). Не влезал и from (тело и так в тесноте) — to, если не хуже,
+ * иначе остаётся from.
  */
 export function clampYaw(body: Body, from: number, to: number, free: Free, gap = FIT_GAP): number {
-  const sTo = fitAt(body, to, free, gap).slack;
-  if (sTo >= 0) return to;
-  const sFrom = fitAt(body, from, free, gap).slack;
-  if (sTo >= sFrom - 1e-9) return to;
-  if (sFrom < 0) return from;
+  const fit = (y: number) => fitAt(body, y, free, gap).slack;
+  const sFrom = fit(from);
+  if (sFrom < 0) return fit(to) >= sFrom - 1e-9 ? to : from;
   const d = wrapAngle(to - from);
-  let lo = 0, hi = 1;
-  for (let i = 0; i < 14; i++) {
-    const m = (lo + hi) / 2;
-    if (fitAt(body, from + d * m, free, gap).slack >= 0) lo = m;
-    else hi = m;
+  const n = Math.max(1, Math.ceil(Math.abs(d) / ARC_STEP));
+  let lo = 0;
+  for (let i = 1; i <= n; i++) {
+    const t = i / n;
+    if (fit(from + d * t) >= 0) {
+      lo = t;
+      continue;
+    }
+    let hi = t;
+    for (let k = 0; k < 14; k++) {
+      const m = (lo + hi) / 2;
+      if (fit(from + d * m) >= 0) lo = m;
+      else hi = m;
+    }
+    return from + d * lo;
   }
-  return from + d * lo;
+  return to;
 }
 
 /** Ширина хода у середины тела вдоль оси (лучи без смещения; нет таких — Infinity). */

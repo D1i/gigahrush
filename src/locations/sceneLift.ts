@@ -352,6 +352,8 @@ export class LiftScene {
   async begin() {
     if (this.disposed) return;
     if (!this.dead && !this.engine.isPointerLock) this.engine.enterPointerlock();
+    // вошли с уже захваченной мышью (шагнули из «Прогулки») — смены захвата (onLock) не будет, а подсказки поста — по locked
+    this.locked = document.pointerLockElement === this.canvas;
     this.started = true;
     await this.audio.start();
     if (this.roll.lair) this.audio.setLair(this.lairWorld());

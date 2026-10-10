@@ -60,6 +60,9 @@ function unwrapAround(sub: RunExport, id: string): RunExport {
   return { ...sub, instances, links };
 }
 
+/** Отрезок ряда клеток «x» или «x0-x1»; координаты бывают отрицательными («-317--273») — делить по «-» нельзя. */
+const SEG_RE = /^(-?\d+)(?:-(-?\d+))?$/;
+
 /** Экземпляр прогона, сдвинутый на (tx, ty) клеток плана. */
 export function translateInstance(i: RunInstance, tx: number, ty: number): RunInstance {
   const rows = (i.cells ?? []).map((r) => {
@@ -68,7 +71,15 @@ export function translateInstance(i: RunInstance, tx: number, ty: number): RunIn
     const xs = r
       .slice(cut + 1)
       .split(',')
-      .map((part) => part.split('-').map((v) => String(Number(v) + tx)).join('-'));
+      .map((raw) => {
+        // раньше отрезок резался по «-»: у отрицательных x пол соседа за швом пропадал (ядро не разбирало строку) —
+        // на его месте вставала стена, а проём шва рисовался открытым: невидимая стена бесконечного хода
+        const part = raw.trim();
+        const m = SEG_RE.exec(part);
+        if (!m) return part;
+        const a = Number(m[1]) + tx;
+        return m[2] !== undefined ? `${a}-${Number(m[2]) + tx}` : String(a);
+      });
     return `${y}:${xs.join(',')}`;
   });
   const seg = <T extends { cx: number; cy: number }>(s: T): T => ({ ...s, cx: s.cx + tx, cy: s.cy + ty });

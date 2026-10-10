@@ -1,7 +1,17 @@
-// HUD рук «Прогулки» (src/view3d/inventory.ts): хотбар — HOTBAR_SIZE квадратных ячеек внизу по центру, номер ячейки
-// в углу, значок предмета (фонарик и керосиновая лампа — рисунки; горит — янтарная точка и луч), выбранная — янтарная рамка; над хотбаром —
-// имя предмета в руке (гаснет). Стили — view3d.css (.v3-hotbar, .v3-held).
+// HUD рук «Прогулки» (src/view3d/inventory.ts): хотбар — HOTBAR_SIZE квадратных ячеек внизу по центру: номер ячейки,
+// значок предмета (лут — картинка src/view3d/lootAssets.ts; нет — рисунок фонарика / лампы или «посылка» цвета предмета),
+// уголок цвета редкости, бейдж ×N стека, полоска заряда / керосина, износ лампочки / фитиля, перегорел — крест, горит —
+// янтарная точка; выбранная — янтарная рамка; справа — надетая сумка (заполнено / ячеек, Tab). Над хотбаром — предмет в
+// руке: имя цветом редкости, редкость, клавиши, сколько света осталось (гаснет). Сверху — таймеры эффектов; пелена
+// (лежит), реплика-субтитр. Стили — inventory.css (.inv-*) и view3d.css (.v3-hotbar, .v3-slot, .v3-held).
 import type { InvSlotHud, InventoryHud } from './inventory';
+import { lootIconUrl } from './lootAssets';
+import './inventory.css';
+
+/** Значок предмета: картинка лута или null (рисунок). */
+export function iconOf(item: string): string | null {
+  return lootIconUrl(item);
+}
 
 /** Фонарик сбоку, линзой вверх-вправо: корпус, полоса наклейки, ползунок, раструб, ободок; горит — луч из линзы. */
 function FlashGlyph({ on }: { on: boolean }) {
@@ -47,23 +57,82 @@ function BoxGlyph({ s }: { s: InvSlotHud }) {
   );
 }
 
-export function HotbarHud({ hud }: { hud: InventoryHud }) {
+/** Цвет полоски заряда: полно — зелёная, середина — янтарь, на исходе — красная. */
+const barColor = (v: number): string => (v > 0.5 ? '#7fc06a' : v > 0.15 ? '#e8b04b' : '#e0563f');
+
+/** Содержимое ячейки (хотбар и панель сумки): значок, редкость, стек, заряд, износ, «горит», «перегорел». */
+export function SlotView({ s }: { s: InvSlotHud }) {
+  const icon = iconOf(s.item);
   return (
     <>
-      {hud.held && (
-        <div key={hud.seq} className="v3-held">
-          {hud.held}
+      {icon ? (
+        <img className="inv-icon" src={icon} alt="" draggable={false} />
+      ) : s.glyph === 'flash' ? (
+        <FlashGlyph on={s.on} />
+      ) : s.glyph === 'lamp' ? (
+        <LampGlyph />
+      ) : (
+        <BoxGlyph s={s} />
+      )}
+      {s.rarity && <span className="inv-rar" style={{ borderTopColor: s.rarity }} />}
+      {s.n > 1 && <span className="inv-n">×{s.n}</span>}
+      {s.bar !== null && (
+        <span className="inv-bar">
+          <i style={{ width: `${Math.round(s.bar * 100)}%`, background: barColor(s.bar) }} />
+        </span>
+      )}
+      {s.wear !== null && s.wear > 0 && !s.dead && (
+        <span className="inv-wear" title="износ">
+          <i style={{ height: `${Math.round(s.wear * 100)}%` }} />
+        </span>
+      )}
+      {s.dead && <span className="inv-dead" title="перегорела" />}
+      {s.on && <span className="v3-slot-on" />}
+    </>
+  );
+}
+
+export function HotbarHud({ hud }: { hud: InventoryHud }) {
+  const t = hud.tip;
+  const back = hud.back;
+  return (
+    <>
+      {t && !hud.bagOpen && (
+        <div key={hud.seq} className="v3-held inv-held">
+          <b style={t.color ? { color: t.color } : undefined}>{t.name}</b>
+          {t.rarity && <span className="inv-held-r">{t.rarity.toLowerCase()}</span>}
+          <span className="inv-held-k">{t.keys}</span>
+          {t.left && <span className="inv-held-l">{t.left}</span>}
         </div>
       )}
       <div className="float v3-hotbar">
         {hud.slots.map((s, i) => (
-          <div key={i} className={'v3-slot' + (i === hud.sel ? ' sel' : '') + (s?.on ? ' lit' : '')} title={s ? s.name : 'пусто'}>
+          <div key={i} className={'v3-slot' + (i === hud.sel ? ' sel' : '') + (s?.on ? ' lit' : '') + (s?.dead ? ' dead' : '')} title={s ? s.name : 'пусто'}>
             <span className="v3-slot-n">{i + 1}</span>
-            {s && (s.glyph === 'flash' ? <FlashGlyph on={s.on} /> : s.glyph === 'lamp' ? <LampGlyph /> : <BoxGlyph s={s} />)}
-            {s?.on && <span className="v3-slot-on" />}
+            {s && <SlotView s={s} />}
           </div>
         ))}
+        {back && (
+          <div className="inv-back" title={`${back.name}: Tab — открыть`}>
+            {iconOf(back.item) ? <img className="inv-icon sm" src={iconOf(back.item)!} alt="" /> : <span className="inv-back-g">⛁</span>}
+            <span className="inv-back-n">
+              {back.slots.filter((x) => x).length}/{back.slots.length}
+            </span>
+            <span className="inv-back-k">Tab</span>
+          </div>
+        )}
       </div>
+      {hud.fx.length > 0 && (
+        <div className="inv-fx">
+          {hud.fx.map((c) => (
+            <span key={c.k} className={'inv-chip ' + c.tone}>
+              {c.label} <b>{c.s >= 60 ? `${Math.floor(c.s / 60)}:${String(c.s % 60).padStart(2, '0')}` : c.s}</b>
+            </span>
+          ))}
+        </div>
+      )}
+      {hud.veil && <div className="inv-veil" style={{ background: `rgba(0,0,0,${hud.veil.black})`, backdropFilter: hud.veil.blur > 0 ? `blur(${hud.veil.blur}px)` : undefined }} />}
+      {hud.sub && <div className="inv-sub">{hud.sub}</div>}
     </>
   );
 }

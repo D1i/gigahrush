@@ -338,6 +338,8 @@ export class StairwellScene {
   async begin() {
     if (this.disposed) return;
     if (!this.dead && !this.engine.isPointerLock) this.engine.enterPointerlock();
+    // вошли с уже захваченной мышью (шагнули из «Прогулки») — смены захвата (onLock) не будет
+    this.locked = document.pointerLockElement === this.canvas;
     this.started = true;
     await this.audio.start();
     this.emitHud(true);

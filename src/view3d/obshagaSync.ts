@@ -1,7 +1,7 @@
 // «Общага» в коопе (docs/COOP.md §2.5): хост ведёт режиссёра (src/locations/obshaga.ts) и ~10 раз в секунду рассылает
 // его срез событием fx 'obsh' (≤ 2 КБ JSON, иначе сервер отбросит): свет, двери в ходу, рука (след упрощён до ≤ 40
-// точек, сантиметры; тычок под кровать — кого, куда, фаза цикла; кровать рядом — рамка), события для жертвы (grab /
-// released / killed / poke). Клиенты рисуют по срезу; свет и фазу тычка между рассылками досчитывают сами.
+// точек, сантиметры; тычок под кровать — кого, куда, фаза цикла; кровать рядом — рамка; цель руки — id), события для
+// жертвы (grab / released / killed / poke). Клиенты рисуют по срезу; свет и фазу тычка между рассылками досчитывают сами.
 // Без движка — для тестов.
 import { handView, lightLevel, type BlackoutPhase, type BlackoutState, type HandPhase, type HandView, type ObshagaState, type Pt } from '../locations/obshaga';
 
@@ -45,6 +45,8 @@ export interface WireHand {
   pk?: [string, number, number, number, number];
   /** кровать рядом (HandView.bed): рамка x0, y0, x1, y1, см; нет — нет */
   bd?: [number, number, number, number];
+  /** цель руки (HandView.target): id игрока; нет — нет цели */
+  tg?: string;
 }
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -121,6 +123,7 @@ function wireHand(v: HandView, maxPts: number): WireHand {
     w.pk = [v.poke, Math.round(v.pokeAt.x * 100), Math.round(v.pokeAt.y * 100), ri, r2(v.poke01)];
   }
   if (v.bed) w.bd = [Math.round(v.bed.x0 * 100), Math.round(v.bed.y0 * 100), Math.round(v.bed.x1 * 100), Math.round(v.bed.y1 * 100)];
+  if (v.target) w.tg = v.target;
   return w;
 }
 
@@ -191,6 +194,7 @@ export function fromWire(w: ObshWire): ObshRemote | null {
       poke: pk ? pk[0] : null, pokeAt, poke01: pk ? Math.min(1, Math.max(0, Number(pk[4]) || 0)) : 0,
       bed: Array.isArray(h.bd) && h.bd.length === 4 && h.bd.every((v) => Number.isFinite(v))
         ? { x0: h.bd[0] / 100, y0: h.bd[1] / 100, x1: h.bd[2] / 100, y1: h.bd[3] / 100 } : null,
+      target: typeof h.tg === 'string' ? h.tg : null,
     };
   }
   const doors: Record<string, number> = {};

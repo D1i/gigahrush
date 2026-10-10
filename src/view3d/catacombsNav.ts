@@ -26,6 +26,8 @@ export const CLIMB_FACING = 0.5;
 export const CLIMB_BEYOND = 0.55;
 /** Радиус игрока (эллипсоид стоя), м. */
 export const PLAYER_R = 0.3;
+/** Ниже такой высоты предмет — мелочь под ногами (не помеха), м. */
+export const FLAT_H = 0.12;
 /** Высота тела стоя над ногами для проверки места за трубой, м. */
 export const BODY_H = 1.75;
 /** «Под водой»: нырнул — глаз ниже уровня на столько; вынырнул — выше на столько, м. */
@@ -273,9 +275,10 @@ export interface Obstacle {
   z1: number;
 }
 
-/** Предмет → помеха (низ — над просветом укрытия) или null: мусор (не мешает ходить) и подвесные под потолком. */
+/** Предмет → помеха (низ — над просветом укрытия) или null: плоская мелочь под ногами (бутылки, газеты — «россыпь»,
+ *  коллайдер ~1 см) и подвесные под потолком. Завал (тоже «мусор») — помеха. */
 export function obstacleOf(p: PlanProp, floorZ: number): Obstacle | null {
-  if (p.tags?.includes(TAG_TRASH) || p.tags?.includes('потолок')) return null;
+  if (p.h <= FLAT_H || p.tags?.includes('потолок')) return null;
   const { ux, uy, vx, vy } = axesOf(p.rot);
   const base = p.z ?? floorZ;
   return { cx: p.x, cy: p.y, ux, uy, vx, vy, hw: p.w / 2, hd: p.d / 2, z0: base + (p.clear ?? 0), z1: base + p.h };
@@ -301,6 +304,37 @@ export function climbTarget(g: PipeGeo, a: PipeApproach, rects: readonly Rect[],
     if (onFloor(rects, l.x, l.y) && !blocked(obs, l.x, l.y, g.base)) return l;
   }
   return null;
+}
+
+/**
+ * Свободное место на площадке (колонны зала станции и стойки стоят на ней): узлы сетки с шагом step внутри площадки
+ * с запасом радиуса от края (перила), ближе к середине — первыми; первый не в предмете на высоте тела. Мелкая
+ * площадка — середина; всё занято — null.
+ */
+export function freeSpot(pad: DryPad, obs: readonly Obstacle[], r = PLAYER_R + 0.05, step = 0.3): { x: number; y: number } | null {
+  const hx = Math.max(0, pad.w / 2 - r), hy = Math.max(0, pad.d / 2 - r);
+  const pts: { x: number; y: number; d: number }[] = [];
+  const nx = Math.floor(hx / step), ny = Math.floor(hy / step);
+  for (let i = -nx; i <= nx; i++) for (let j = -ny; j <= ny; j++) pts.push({ x: pad.x + i * step, y: pad.y + j * step, d: Math.hypot(i, j) });
+  pts.sort((a, b) => a.d - b.d);
+  for (const p of pts) if (!blocked(obs, p.x, p.y, pad.z)) return { x: p.x, y: p.y };
+  return null;
+}
+
+/** Свободное место на полу комнаты (прямоугольники пола, пол на высоте z): узлы сетки step, круг радиуса r — на полу и
+ *  не в предмете на высоте тела; ближайшее к from. null — нет. */
+export function freeFloor(rects: readonly Rect[], obs: readonly Obstacle[], z: number, from: { x: number; y: number }, r = PLAYER_R + 0.05, step = 0.4): { x: number; y: number } | null {
+  let best: { x: number; y: number; d: number } | null = null;
+  for (const q of rects) {
+    for (let x = q.x0 + r; x <= q.x1 - r + 1e-9; x += step) {
+      for (let y = q.y0 + r; y <= q.y1 - r + 1e-9; y += step) {
+        if (!onFloor(rects, x, y, r) || blocked(obs, x, y, z, r)) continue;
+        const d = Math.hypot(x - from.x, y - from.y);
+        if (!best || d < best.d) best = { x, y, d };
+      }
+    }
+  }
+  return best && { x: best.x, y: best.y };
 }
 
 /** Длительность перелаза, с: от 0.8 (низкая труба) до 1.3 (по грудь и выше). */

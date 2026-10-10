@@ -1,0 +1,80 @@
+/* руки «Прогулки»: значки лута в ячейках, редкость, стек, заряд, износ; надетая сумка у хотбара; предмет в руке;
+   таймеры эффектов сверху; пелена «лежит»; реплика-субтитр; панель сумки (Tab). Разметка — HotbarHud.tsx, BagHud.tsx;
+   ячейка и хотбар — view3d.css (.v3-slot, .v3-hotbar) */
+.inv-icon { display: block; width: 40px; height: 40px; object-fit: contain; filter: drop-shadow(0 1px 1px #000c); pointer-events: none; user-select: none; }
+.inv-icon.sm { width: 26px; height: 26px; }
+.v3-slot.lit .inv-icon { filter: drop-shadow(0 0 4px #ffb84a90) drop-shadow(0 1px 1px #000c); }
+/* уголок редкости — справа сверху */
+.inv-rar { position: absolute; right: 0; top: 0; width: 0; height: 0; border-top: 9px solid transparent; border-left: 9px solid transparent; border-top-right-radius: 3px; opacity: 0.95; }
+.v3-slot .v3-slot-on { right: 11px; }
+/* стек, заряд, износ, перегорел */
+.inv-n { position: absolute; right: 3px; bottom: 5px; font-family: var(--mono); font-size: 9px; line-height: 1; color: #f1ead6; text-shadow: 0 0 2px #000, 0 1px 2px #000; }
+.inv-bar { position: absolute; left: 3px; right: 3px; bottom: 2px; height: 2px; background: #0009; border-radius: 1px; overflow: hidden; }
+.inv-bar > i { display: block; height: 100%; }
+.inv-wear { position: absolute; left: 3px; top: 13px; bottom: 7px; width: 2px; background: #0007; border-radius: 1px; overflow: hidden; display: flex; flex-direction: column-reverse; }
+.inv-wear > i { display: block; width: 100%; background: #b86a3a; }
+.inv-dead { position: absolute; inset: 6px; pointer-events: none; background:
+  linear-gradient(45deg, transparent 46%, #e0563fcc 46%, #e0563fcc 54%, transparent 54%),
+  linear-gradient(-45deg, transparent 46%, #e0563fcc 46%, #e0563fcc 54%, transparent 54%); }
+.v3-slot.dead .inv-icon, .v3-slot.dead .v3-glyph { opacity: 0.55; }
+
+/* надетая сумка — справа в хотбаре */
+.inv-back {
+  position: relative; width: 38px; height: 46px; border: 1px dashed var(--line); border-radius: 4px; background: #0b0c0e9c;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+}
+/* хотбар с сумкой шире — подсказки управления и счётчик кадров (отладка) уже */
+.v3-stage.v3-stage:has(> .v3-hotbar .inv-back) > .v3-hud, .v3-stage.v3-stage:has(> .v3-hotbar .inv-back) > .v3-perf { max-width: calc(50% - 172px); }
+.inv-back-g { font-size: 16px; color: #b8b2a2; line-height: 1; }
+.inv-back-n { font-family: var(--mono); font-size: 9px; color: var(--text-2); line-height: 1; }
+.inv-back-k { position: absolute; left: 3px; top: 2px; font-family: var(--mono); font-size: 8px; color: var(--muted); line-height: 1; }
+
+/* предмет в руке: имя цветом редкости, редкость, клавиши, остаток света */
+.v3-held.inv-held { display: flex; gap: 8px; align-items: baseline; font-size: 13px; animation-duration: 4.2s; }
+.inv-held b { font-weight: 600; }
+.inv-held-r { font-size: 11px; color: var(--text-2); }
+.inv-held-k { font-family: var(--mono); font-size: 11px; color: #e8dcb8; }
+.inv-held-l { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+/* таймеры эффектов — сверху по центру */
+.inv-fx { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 4; display: flex; gap: 6px; pointer-events: none; }
+/* отладка (панель инструментов сверху) — под прицелом */
+.v3-stage:has(> .v3-tools) > .inv-fx { top: calc(50% + 70px); }
+.inv-chip {
+  font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 10px; white-space: nowrap;
+  background: #0d0e10c8; border: 1px solid currentColor; text-shadow: 0 1px 2px #000;
+}
+.inv-chip b { font-weight: 600; margin-left: 2px; }
+.inv-chip.good { color: #9fe0a0; }
+.inv-chip.warn { color: #f0b44b; }
+.inv-chip.bad { color: #ef7a62; }
+
+/* пелена: лежит (обморок — почти чёрная, пьяный — мутная); над холстом, под HUD */
+.inv-veil { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+/* реплика игрока / партия в дурака — как субтитр */
+.inv-sub {
+  position: absolute; left: 50%; bottom: 26%; transform: translateX(-50%); z-index: 5; pointer-events: none; white-space: nowrap;
+  font-family: var(--font-c); font-size: 20px; letter-spacing: 0.03em; color: #f6e7b0; text-shadow: 0 0 6px #000, 0 2px 3px #000;
+  animation: inv-sub 0.25s ease-out;
+}
+@keyframes inv-sub { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* панель сумки (Tab): по центру, мышь отпущена */
+.inv-bag-wrap { position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; background: #0006; pointer-events: auto; }
+.inv-bag { position: relative; padding: 10px 12px 12px; width: min(340px, calc(100% - 40px)); display: flex; flex-direction: column; gap: 8px; }
+.inv-bag-head { display: flex; align-items: center; gap: 8px; }
+.inv-bag-t { flex: 1; font-family: var(--font-c); font-size: 14px; letter-spacing: 0.04em; color: var(--text); }
+.inv-bag-off, .inv-bag-x { height: 24px; padding: 0 8px; font-size: 12px; }
+.inv-bag-none { font-size: 12px; color: var(--text-2); padding: 6px 2px; }
+.inv-bag-sep { font-family: var(--mono); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; border-top: 1px solid var(--line); padding-top: 6px; }
+.inv-grid { display: grid; grid-template-columns: repeat(5, 46px); gap: 6px; justify-content: center; }
+.inv-cell { cursor: pointer; user-select: none; }
+.inv-cell.empty { cursor: default; }
+.inv-cell:hover { border-color: #e8b04b88; }
+.inv-cell.over { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.inv-tip { min-height: 46px; border-top: 1px solid var(--line); padding-top: 6px; }
+.inv-tip-h { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 13px; }
+.inv-tip-r { font-size: 11px; }
+.inv-tip-p { margin-left: auto; font-family: var(--mono); font-size: 11px; color: #d4a017; }
+.inv-tip-p.no { color: var(--danger, #e0563f); }
+.inv-tip-n { font-size: 12px; line-height: 1.35; color: var(--text-2); margin-top: 3px; }

@@ -32,15 +32,18 @@ describe('веса позы', () => {
     expect(postureWeights(1.6, 1.4).w.Walk).toBeCloseTo(1);
     expect(postureWeights(1.6, 1.4).squash).toBe(1);
   });
-  it('на четвереньках — Crawl, лёжа — сплюснут, скрючившись — между', () => {
+  it('на четвереньках — Crawl, лёжа — сплюснут, скрючившись — клипы стоя и сгиб', () => {
     const c = postureWeights(0.5, 0.5);
     expect(c.w.Crawl).toBeCloseTo(1);
+    expect(c.crouch).toBe(0);
     expect(c.squash).toBeCloseTo(0.5 / HEAD_CRAWL);
     expect(postureWeights(0.22, 0).squash).toBeLessThan(0.4);
     const h = postureWeights(1.1, 0);
-    expect(h.crawl).toBeGreaterThan(0.4);
-    expect(h.crawl).toBeLessThan(0.7);
+    expect(h.crouch).toBe(1);
+    expect(h.crawl).toBe(0);
+    expect(h.w.Idle_Standing).toBe(1);
     expect(h.squash).toBe(1);
+    expect(postureWeights(1.6, 0).crouch).toBe(0);
   });
   it('веса в сумме 1', () => {
     for (const eye of [0.22, 0.5, 0.9, 1.1, 1.6])
@@ -56,6 +59,10 @@ describe('веса позы', () => {
     expect(coatTint(COAT_TINTS.length + 1)).toBe(coatTint(1));
   });
 });
+
+/** Низ модели со скелетом (мир), м. */
+const bottom = (a: { meshes: { refreshBoundingInfo(o: { applySkeleton: boolean }): unknown; getBoundingInfo(): { boundingBox: { minimumWorld: Vector3 } } }[] }) =>
+  Math.min(...a.meshes.map((m) => (m.refreshBoundingInfo({ applySkeleton: true }), m.getBoundingInfo().boundingBox.minimumWorld.y)));
 
 describe('модель игрока', () => {
   it('грузится, копии со своим скелетом и клипами; шинель второго — другого цвета', T, async () => {
@@ -106,14 +113,22 @@ describe('модель игрока', () => {
     const r = a.handPos('R'), l = a.handPos('L');
     expect(r.z).toBeLessThan(l.z);
     expect(r.y).toBeLessThan(1.2);
+    // скрючившись: голова у глаз (1.1), подошвы на полу, ничего не под полом
+    const crouch: BodyPose = { ...stand, eye: 1.1, y: 1.1 };
+    for (let i = 0; i < 5; i++) frame(sc, () => a.update(crouch));
+    const k = a.head.getAbsolutePosition();
+    expect(Math.abs(k.y - 1.1)).toBeLessThan(0.06);
+    expect(Math.hypot(k.x - 2, k.z - 3)).toBeLessThan(0.1);
+    expect(Math.abs(bottom(a))).toBeLessThan(0.03);
+    // ползком: голова у глаз, впереди; кисти на полу впереди ног; под полом — не глубже 3 см (носки — назад)
     const crawl: BodyPose = { ...stand, eye: 0.5, y: 0.5 };
     for (let i = 0; i < 5; i++) frame(sc, () => a.update(crawl));
     const c = a.head.getAbsolutePosition();
-    expect(c.y).toBeLessThan(0.75);
-    expect(Math.hypot(c.x - 2, c.z - 3)).toBeLessThan(0.2);
-    // ползком руки — на полу, впереди ног
-    expect(a.handPos('R').y).toBeLessThan(0.25);
+    expect(Math.abs(c.y - 0.5)).toBeLessThan(0.06);
+    expect(Math.hypot(c.x - 2, c.z - 3)).toBeLessThan(0.1);
+    expect(a.handPos('R').y).toBeLessThan(0.1);
     expect(a.handPos('R').x).toBeGreaterThan(a.root.position.x);
+    expect(bottom(a)).toBeGreaterThan(-0.03);
     a.dispose();
     models.dispose();
     engine.dispose();

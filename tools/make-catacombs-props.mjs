@@ -101,7 +101,7 @@ const C = {
   concrete: mat('cat_concrete', '#8f948f'),
   concreteDk: mat('cat_concrete_dk', '#73776f'),
   plaster: mat('cat_plaster', '#b4ad94'),
-  dust: mat('cat_rubble_dust', '#86776a'),
+  dust: mat('cat_rubble_dust', '#6f6359'),
   // металл
   rust: mat('cat_rust', '#80502f'),
   rustDk: mat('cat_rust_dk', '#5e3c28'),
@@ -488,7 +488,7 @@ async function kit(M, name, o = {}) {
 // ───────── пиксельный шрифт 3 × 5 (трафарет): цифры и буквы надписей ─────────
 const FONT = {
   0: ['111', '101', '101', '101', '111'], 1: ['010', '110', '010', '010', '111'], 2: ['111', '001', '111', '100', '111'],
-  3: ['111', '001', '111', '001', '111'], 4: ['101', '101', '111', '001', '001'], 5: ['111', '100', '111', '001', '111'],
+  3: ['111', '001', '111', '001', '111'], 4: ['001', '011', '101', '111', '001'], 5: ['111', '100', '111', '001', '111'],
   6: ['111', '100', '111', '101', '111'], 7: ['111', '001', '010', '010', '010'], 8: ['111', '101', '111', '101', '111'],
   9: ['111', '101', '111', '001', '111'], О: ['111', '101', '101', '101', '111'], Т: ['111', '010', '010', '010', '010'],
   С: ['111', '100', '100', '100', '111'], Е: ['111', '100', '110', '100', '111'], К: ['101', '101', '110', '101', '101'],
@@ -540,9 +540,10 @@ const textW = (s, px) => s.length * 4 * px - px;
   const M = new Model('p_cat_column_damaged');
   await kit(M, 'column_damaged', { map: (km, c) => (km === 'Concrete' && c[1] < 3.0 ? C.concreteDk : KIT_MAT[km]) });
   seed = 5;
-  for (let k = 0; k < 7; k++) {
-    const a = rr(0, 2 * PI), r = rr(0.42, 0.62), s = rr(0.06, 0.16);
-    M.at(T([r * Math.cos(a), s * 0.3, r * Math.sin(a)], ['y', rr(0, PI)], ['x', rr(-0.4, 0.4)], ['z', rr(-0.4, 0.4)]), () => M.cbox(C.concreteDk, [0, 0, 0], [s, s * 0.6, s * 0.8]));
+  // куски бетона на базе и у неё — в пределах плана 0.8 × 0.8
+  for (let k = 0; k < 8; k++) {
+    const a = rr(0, 2 * PI), r = rr(0.27, 0.33), s = rr(0.05, 0.1), y = r < 0.37 ? 0.16 : 0;
+    M.at(T([r * Math.cos(a), y + s * 0.3, r * Math.sin(a)], ['y', rr(0, PI)], ['x', rr(-0.3, 0.3)], ['z', rr(-0.3, 0.3)]), () => M.cbox(C.concreteDk, [0, 0, 0], [s, s * 0.5, s * 0.7]));
   }
 }
 
@@ -640,8 +641,9 @@ pipeAcross('p_cat_pipe_high', 1.65);
     if (q >= 1) return 0;
     return 0.26 * (1 - q) ** 0.8 * (1 + 0.18 * Math.sin(x * 9.1 + z * 4.3) * Math.sin(z * 7.7 - x * 2.1));
   };
-  M.surface(C.dust, 20, 14, (u, v) => {
-    const x = cx + lerp(-1.02, 1.02, u), z = cz + lerp(-0.72, 0.72, v);
+  // осыпь — эллипс в полярной сетке (край — у пола)
+  M.surface(C.dust, 10, 28, (u, v) => {
+    const f = v * 2 * PI, x = cx + 0.999 * u * Math.cos(f), z = cz + 0.699 * u * Math.sin(f);
     return [x, Math.max(0.002, mound(x, z)), z];
   }, [0, 1, 0]);
   seed = 25;
@@ -656,12 +658,14 @@ pipeAcross('p_cat_pipe_high', 1.65);
       const chunk = list.slice(b, b + 12);
       const ps = chunk.flatMap((t) => t.p);
       const lo = [0, 1, 2].map((a) => Math.min(...ps.map((p) => p[a]))), hi = [0, 1, 2].map((a) => Math.max(...ps.map((p) => p[a])));
-      const c = mul(add(lo, hi), 0.5), h = hi[1] - lo[1];
+      const c0 = mul(add(lo, hi), 0.5), h = hi[1] - lo[1];
+      // бруски — ближе к середине осыпи (план завала 2.2 × 1.5)
+      const c = [cx + (c0[0] - cx) * 0.94, c0[1], cz + (c0[2] - cz) * 0.8];
       // лечь на осыпь: низ — на поверхности, утоплен на треть высоты; наклон и поворот вразнобой
       const y = mound(c[0], c[2]) + h * 0.2;
       const R = mm(mm(rot('y', rr(0, PI)), rot('x', rr(-0.45, 0.45))), rot('z', rr(-0.45, 0.45)));
-      const m = KIT_MAT[km];
-      M.addTris(chunk.map((t) => ({ m, p: t.p.map((p) => add(mv(R, sub(p, c)), [c[0], y, c[2]])), n: t.n.map((n) => mv(R, n)) })));
+      const m = km === 'Concrete' ? C.concreteDk : KIT_MAT[km];
+      M.addTris(chunk.map((t) => ({ m, p: t.p.map((p) => add(mv(R, sub(p, c0)), [c[0], y, c[2]])), n: t.n.map((n) => mv(R, n)) })));
     }
   }
 }
@@ -735,7 +739,8 @@ pipeAcross('p_cat_pipe_high', 1.65);
 function vault(id, S, L, f, o = {}) {
   const M = new Model(id, { ceil: true });
   const half = S / 2;
-  const R = (half * half + f * f) / (2 * f), yc = -R;
+  // замок — на 6 мм ниже потолка: в одной плоскости с потолком комнаты по замку мерцала бы полоса
+  const R = (half * half + f * f) / (2 * f), yc = -R - 0.006;
   const t0 = Math.acos(half / R);
   const nA = o.seg ?? 24;
   const arc = (k, r = R) => {
@@ -1224,7 +1229,7 @@ function bag(M, m, c, rx, ry, rz) {
   // витки — поясками
   for (let k = 0; k < 7; k++) M.lathe(C.cable, [[0.33, -xs + 0.035 + k * 0.07 - 0.03], [0.338, -xs + 0.035 + k * 0.07], [0.33, -xs + 0.035 + k * 0.07 + 0.03]], { axis: 'x', c: [0, yc, 0], seg: 24, smooth: true });
   // конец кабеля — свисает и уходит по полу вперёд
-  const pts = [[0.15, yc - 0.15, -0.33], [0.16, yc - 0.32, -0.38], [0.18, 0.1, -0.44], [0.2, 0.02, -0.5], [0.15, 0.015, -0.62], [0.05, 0.015, -0.7]];
+  const pts = [[0.15, yc - 0.15, -0.33], [0.16, yc - 0.3, -0.37], [0.18, 0.12, -0.42], [0.19, 0.03, -0.46], [0.12, 0.018, -0.5], [0.0, 0.018, -0.5]];
   M.tube(C.cable, pts, 0.018, { seg: 6, caps: 'end' });
   // клинья под барабаном
   for (const s of [-1, 1]) M.prism(C.woodDk, 'x', [[s * 0.2, 0], [s * 0.42, 0], [s * 0.2, 0.08]].map(([z, yy]) => [z, yy]), -0.1, 0.1);
@@ -1252,34 +1257,34 @@ const EXPECT = {
   p_cat_pipe_low: [2.0, 0.52, 0.81],
   p_cat_pipe_mid: [2.0, 0.52, 1.31],
   p_cat_pipe_high: [2.0, 0.52, 1.91],
-  p_cat_pipe_wall: [2.0, 0.34, 0.61],
-  p_cat_valve: [2.0, 0.65, 1.13],
+  p_cat_pipe_wall: [2.0, 0.34, 0.62],
+  p_cat_valve: [2.0, 0.65, 1.12],
   p_cat_pump: [2.0, 1.6, 1.7],
-  p_cat_rubble: [2.2, 1.5, 0.45],
-  p_cat_gate: [1.61, 0.29, 2.0],
-  p_cat_mark: [0.48, 0.05, 2.0],
-  p_cat_ladder: [0.67, 0.19, 2.4],
+  p_cat_rubble: [2.08, 1.44, 0.52],
+  p_cat_gate: [1.67, 0.31, 2.0],
+  p_cat_mark: [0.48, 0.03, 2.0],
+  p_cat_ladder: [0.68, 0.18, 2.4],
   p_cat_vault_1: [2.0, 1.0, 1.07],
   p_cat_vault_2: [2.0, 2.0, 1.18],
   p_cat_vault_4x: [4.0, 2.0, 1.18],
   p_cat_bottle: [0.26, 0.07, 0.07],
-  p_cat_bottles: [0.6, 0.45, 0.26],
-  p_cat_can: [0.3, 0.2, 0.13],
-  p_cat_trash: [1.0, 0.7, 0.25],
-  p_cat_rag: [0.5, 0.35, 0.07],
-  p_cat_paper: [0.6, 0.45, 0.03],
-  p_cat_boot: [0.32, 0.38, 0.12],
+  p_cat_bottles: [0.49, 0.42, 0.27],
+  p_cat_can: [0.28, 0.14, 0.1],
+  p_cat_trash: [1.0, 0.73, 0.25],
+  p_cat_rag: [0.46, 0.33, 0.06],
+  p_cat_paper: [0.67, 0.5, 0.03],
+  p_cat_boot: [0.31, 0.37, 0.14],
   p_cat_mattress: [1.9, 0.8, 0.12],
-  p_cat_bench: [1.4, 0.32, 0.45],
-  p_cat_crate: [0.6, 0.4, 0.38],
-  p_cat_candles: [0.35, 0.2, 0.14],
-  p_cat_cables: [2.0, 0.3, 1.98],
-  p_cat_lamp_dead: [0.34, 0.34, 2.04],
-  p_cat_sign: [0.5, 0.02, 1.75],
-  p_cat_box: [0.5, 0.24, 2.0],
-  p_cat_hermo: [1.1, 0.2, 2.0],
+  p_cat_bench: [1.4, 0.36, 0.45],
+  p_cat_crate: [0.65, 0.43, 0.38],
+  p_cat_candles: [0.33, 0.19, 0.14],
+  p_cat_cables: [2.0, 0.31, 1.98],
+  p_cat_lamp_dead: [0.34, 0.37, 2.04],
+  p_cat_sign: [0.5, 0.01, 1.75],
+  p_cat_box: [0.5, 0.26, 2.0],
+  p_cat_hermo: [1.1, 0.21, 2.0],
   p_cat_panel: [1.2, 0.5, 1.35],
-  p_cat_drum: [0.58, 0.9, 0.9],
+  p_cat_drum: [0.6, 0.97, 0.9],
   p_cat_post: [0.2, 0.2, 2.1],
 };
 
@@ -1297,8 +1302,8 @@ for (const M of MODELS) {
     for (const g of M.parts.values()) for (let k = 0; k < g.p.length; k += 3) (g.p[k] += dx), (g.p[k + 2] += dz);
     M.shifted = [dx, dz];
   }
-  // низ — на пол (у подвесных — верх в 0)
-  const dy = M.ceil ? -hi[1] : lo[1] < -0.002 || lo[1] > 0.002 ? -lo[1] : 0;
+  // у подвесных — верх в 0; ушедшее под пол — поднять (настенное и висящее над полом — на своей высоте)
+  const dy = M.ceil ? -hi[1] : lo[1] < -0.002 ? -lo[1] : 0;
   if (dy) for (const g of M.parts.values()) for (let k = 1; k < g.p.length; k += 3) g.p[k] += dy;
 }
 
@@ -1382,7 +1387,7 @@ for (const n of nodes) {
     if (Math.abs(w - e[0]) > 0.06 || Math.abs(d - e[1]) > 0.06) warn += ' ! план';
     if (Math.abs(h - e[2]) > 0.03) warn += ` ! верх ${h.toFixed(2)} ≠ ${e[2]}`;
     if (M.ceil && Math.abs(b.max[1]) > 0.002) warn += ' ! подвесной: верх не в 0';
-    if (!M.ceil && Math.abs(b.min[1]) > 0.002) warn += ' ! низ не на полу';
+    if (!M.ceil && b.min[1] < -0.002) warn += ' ! ниже пола';
   }
   if (warn) problems++;
   console.log(

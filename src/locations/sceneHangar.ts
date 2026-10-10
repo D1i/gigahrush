@@ -257,6 +257,8 @@ export class HangarScene {
   async begin() {
     if (this.disposed) return;
     if (!this.engine.isPointerLock) this.engine.enterPointerlock();
+    // провалились с уже захваченной мышью (снег «Прогулки») — смены захвата (onLock) не будет, а подсказка — по locked
+    this.locked = document.pointerLockElement === this.canvas;
     this.started = true;
     void this.audio.start();
     this.emitHud(true);

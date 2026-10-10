@@ -319,6 +319,71 @@ export class FlashlightModel {
   }
 }
 
+// ───────────────────────── щелчок ─────────────────────────
+
+let clickCtx: AudioContext | null = null;
+let clickNoise: AudioBuffer | null = null;
+
+/** Звук щелчка включён (localStorage FLASHLIGHT_SOUND_KEY не '0'). */
+export function switchSoundOn(): boolean {
+  try {
+    return typeof localStorage === 'undefined' || localStorage.getItem(FLASHLIGHT_SOUND_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+/** Щелчок выключателя фонаря (WebAudio, без файлов; один контекст на страницу): шум через полосовой фильтр + глухой
+ *  «тук» корпуса, через 35 мс — защёлка, тише. Без окна / WebAudio — тихо. */
+export function switchClick(on: boolean) {
+  if (typeof window === 'undefined') return;
+  try {
+    const w = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
+    const AC = w.AudioContext ?? w.webkitAudioContext;
+    if (!AC) return;
+    const ctx = (clickCtx ??= new AC());
+    if (ctx.state === 'suspended') void ctx.resume();
+    if (!clickNoise) {
+      const n = Math.ceil(ctx.sampleRate * 0.03);
+      const b = (clickNoise = ctx.createBuffer(1, n, ctx.sampleRate));
+      const ch = b.getChannelData(0);
+      for (let i = 0; i < n; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    }
+    const noise = clickNoise;
+    const t0 = ctx.currentTime + 0.005;
+    const tick = (at: number, vol: number, f: number) => {
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = f;
+      bp.Q.value = 1.4;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(vol, at + 0.0015);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.022);
+      src.connect(bp).connect(g).connect(ctx.destination);
+      src.start(at);
+      src.stop(at + 0.03);
+    };
+    tick(t0, 0.5, on ? 3400 : 2700);
+    tick(t0 + 0.035, 0.18, on ? 4200 : 3600);
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(on ? 210 : 170, t0);
+    o.frequency.exponentialRampToValueAtTime(90, t0 + 0.04);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.22, t0 + 0.002);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.045);
+    o.connect(g).connect(ctx.destination);
+    o.start(t0);
+    o.stop(t0 + 0.05);
+  } catch {
+    // звук — необязателен
+  }
+}
+
 // ───────────────────────── в руке ─────────────────────────
 
 /** Где держат (середина корпуса) в осях камеры: x вправо, y вверх, z вперёд. */
@@ -389,8 +454,6 @@ export class Flashlight {
   private side: 1 | -1 = 1;
   private readonly q = new Quaternion();
   private readonly tmp = new Vector3();
-  private ctx: AudioContext | null = null;
-  private noise: AudioBuffer | null = null;
   private readonly sound: () => boolean;
   private disposed = false;
 
@@ -400,15 +463,7 @@ export class Flashlight {
     opts: FlashlightOptions = {},
   ) {
     ensureLightSlots(scene);
-    this.sound =
-      opts.sound ??
-      (() => {
-        try {
-          return typeof localStorage === 'undefined' || localStorage.getItem(FLASHLIGHT_SOUND_KEY) !== '0';
-        } catch {
-          return true;
-        }
-      });
+    this.sound = opts.sound ?? switchSoundOn;
     const l = (this.light = new SpotLight('flash:light', LIGHT_AT.clone(), new Vector3(0, 0, 1), FLASH_ANGLE, FLASH_EXP, scene));
     this.aim();
     l.parent = cam;
@@ -606,53 +661,9 @@ export class Flashlight {
     for (const m of this.skinMats) m.emissiveColor.set(bounce, bounce * 0.95, bounce * 0.85);
   }
 
-  /** Щелчок выключателя: шум через полосовой фильтр + глухой «тук» корпуса, через 35 мс — защёлка, тише. */
+  /** Щелчок выключателя (общий звук фонарей — switchClick). */
   private click(on: boolean) {
-    if (!this.sound() || typeof window === 'undefined') return;
-    try {
-      const w = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
-      const AC = w.AudioContext ?? w.webkitAudioContext;
-      if (!AC) return;
-      const ctx = (this.ctx ??= new AC());
-      if (ctx.state === 'suspended') void ctx.resume();
-      if (!this.noise) {
-        const n = Math.ceil(ctx.sampleRate * 0.03);
-        const b = (this.noise = ctx.createBuffer(1, n, ctx.sampleRate));
-        const ch = b.getChannelData(0);
-        for (let i = 0; i < n; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / n);
-      }
-      const t0 = ctx.currentTime + 0.005;
-      const tick = (at: number, vol: number, f: number) => {
-        const src = ctx.createBufferSource();
-        src.buffer = this.noise;
-        const bp = ctx.createBiquadFilter();
-        bp.type = 'bandpass';
-        bp.frequency.value = f;
-        bp.Q.value = 1.4;
-        const g = ctx.createGain();
-        g.gain.setValueAtTime(0.0001, at);
-        g.gain.exponentialRampToValueAtTime(vol, at + 0.0015);
-        g.gain.exponentialRampToValueAtTime(0.0001, at + 0.022);
-        src.connect(bp).connect(g).connect(ctx.destination);
-        src.start(at);
-        src.stop(at + 0.03);
-      };
-      tick(t0, 0.5, on ? 3400 : 2700);
-      tick(t0 + 0.035, 0.18, on ? 4200 : 3600);
-      const o = ctx.createOscillator();
-      o.type = 'sine';
-      o.frequency.setValueAtTime(on ? 210 : 170, t0);
-      o.frequency.exponentialRampToValueAtTime(90, t0 + 0.04);
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(0.22, t0 + 0.002);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.045);
-      o.connect(g).connect(ctx.destination);
-      o.start(t0);
-      o.stop(t0 + 0.05);
-    } catch {
-      // звук — необязателен
-    }
+    if (this.sound()) switchClick(on);
   }
 
   /** Модель в руке, кулак и рукав — убрать (свет остаётся). */
@@ -674,7 +685,5 @@ export class Flashlight {
     this.disposed = true;
     this.light.dispose();
     this.teardown();
-    void this.ctx?.close().catch(() => undefined);
-    this.ctx = null;
   }
 }

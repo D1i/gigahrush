@@ -9,6 +9,9 @@ import { EconomyPage } from './pages/EconomyPage';
 import { GeneratorPage } from './pages/GeneratorPage';
 import { SpawnPage } from './pages/SpawnPage';
 import { DataPage } from './pages/DataPage';
+// бестиарий: вкладка и применение правок ручек из проекта (на загрузке и при каждом изменении)
+import { BestiaryPage } from './bestiary/BestiaryPage';
+import './bestiary/sync';
 
 // Babylon тяжёлый — грузится только при открытии вкладки «3D»
 const View3DPage = lazy(() => import('./view3d/View3DPage'));
@@ -42,6 +45,7 @@ const TABS: { id: Page; label: string }[] = [
   { id: 'spawn', label: 'Спавн' },
   { id: 'generator', label: 'Генератор' },
   { id: 'view3d', label: '3D' },
+  { id: 'bestiary', label: 'Бестиарий' }, // бестиарий
   { id: 'data', label: 'Данные / JSON' },
 ];
 
@@ -122,6 +126,7 @@ export function App() {
           </Suspense>
         )}
         {ui.page === 'data' && <DataPage />}
+        {ui.page === 'bestiary' && <BestiaryPage /> /* бестиарий */}
       </main>
       <Toasts />
     </div>

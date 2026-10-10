@@ -1,4 +1,4 @@
-// «Прогулка» в метро (биом «Метро», docs/LOCATIONS.md §16 «Метро: эскалаторы»): то, чего нет у обычных комнат.
+// «Прогулка» в метро (биом «Метро», docs/LOCATIONS.md §18 «Метро: эскалаторы»): то, чего нет у обычных комнат.
 // Механика — src/locations/metroEscalator.ts, картинка — ./metroScene.ts, звук — ./metroAudio.ts.
 //
 //  • Метро — комнаты с первым тегом «метро» (RunInstance.roomTags[0]). Пока игрок в метро: свет сцены холодный белый
@@ -34,6 +34,7 @@ import type { Posture } from './posture';
 import type { CoopSession } from '../coop/session';
 import { COLD_TINT, METRO_FOG, METRO_LIGHT, MetroEscScene, type LaneView } from './metroScene';
 import { MetroAudio } from './metroAudio';
+import { isAbyss } from '../locations/fractalEntry'; // fractal
 
 /** Ноги над линией носков (опора марша, src/view3d/stairWalk.ts), м; на ленте — ноги ближе к ней, м. */
 const GAP = 0.06;
@@ -126,7 +127,7 @@ export class MetroWalk {
   private speed = 0;
   private onKey = (e: KeyboardEvent) => this.key(e);
   private onGesture = () => {
-    if (this.on) this.audio.start();
+    if (this.on && !this.frMuted) this.audio.start(); // fractal: на станции звук метро жестом не будить
   };
   private onFx = (from: string, k: string, d: unknown) => this.fx(from, k, d);
 
@@ -319,9 +320,11 @@ export class MetroWalk {
       this.rideKey = key;
       this.armed = null;
       if (key && !this.runs.has(key)) {
-        const roll = rideRoll(this.dice);
+        // fractal: бездонный эскалатор не срывается и молчит — тьма говорит сама (src/locations/fractalEntry.ts)
+        const abyss = isAbyss(inst.roomTags);
+        const roll = abyss ? null : rideRoll(this.dice);
         if (roll) this.armed = { key, inst: inst.id, lane: hit!.lane.lane, at: roll.at, s0: hit!.s, t: 0 };
-        if (!this.hinted.ride && hit!.lane.dir !== 0) {
+        if (!this.hinted.ride && hit!.lane.dir !== 0 && !abyss) {
           this.hinted.ride = true;
           this.hint = { text: 'Эскалатор везёт сам. Срывается редко — но срывается: дёрнулся — будь готов перелезть (E).', until: performance.now() + 6000 };
         }
@@ -454,6 +457,7 @@ export class MetroWalk {
     const rooms = new Set(portal.lastRooms);
     if (this.cur) rooms.add(this.cur);
     for (const id of rooms) {
+      if (isAbyss(this.instOf(rx, id)?.roomTags)) continue; // fractal: бездна не срывается
       for (const l of this.lanesOf(rx, this.instOf(rx, id))) {
         if (l.broken || l.dir === 0 || this.runs.has(`${id}/${l.lane}`) || this.rideKey === `${id}/${l.lane}`) continue;
         const [mx, my] = lanePoint(l, l.len / 2, l.width / 2);
@@ -634,7 +638,7 @@ export class MetroWalk {
       }
     }
     this.audio.update(dt, {
-      inBiome: this.on,
+      inBiome: this.on && !this.frMuted, // fractal: на станции метро молчит
       moving: this.speed > 0.3,
       speed: this.speed,
       esc,
@@ -676,8 +680,36 @@ export class MetroWalk {
   /** Звук метро вкл/выкл (кнопка HUD). */
   setSound(on: boolean) {
     this.audio.setEnabled(on);
-    if (on) this.audio.start();
+    if (on && !this.frMuted) this.audio.start(); // fractal: на станции — не будить
     this.hudKey = '';
+  }
+
+  // ── fractal: «Фрактальная станция» (src/view3d/FractalLayer.tsx) — своя сцена поверх прогулки, кадр прогулки стоит, и
+  // MetroAudio застывал на последнем кадре (гул ламп, «поршень», гул ленты бездны). На время станции звук метро гаснет
+  // (fade 0.5 с) и его контекст засыпает; по выходу — просыпается, фон возвращает ближайший кадр прогулки (update
+  // inBiome). Настройку «звук метро» (localStorage) не трогает.
+  private frMuted = false;
+  private frMuteT: ReturnType<typeof setTimeout> | null = null;
+  /** fractal: заглушить звук метро (true) / вернуть (false). */
+  muteSound(on: boolean) {
+    if (on === this.frMuted) return;
+    this.frMuted = on;
+    if (this.frMuteT) clearTimeout(this.frMuteT);
+    this.frMuteT = null;
+    const a = this.audio;
+    if (on) {
+      const c = this.cam.position;
+      const listener = { x: c.x, y: c.y, z: c.z, yaw: this.cam.rotation.y };
+      a.update(0, { inBiome: false, moving: false, speed: 0, esc: null, onBelt: false, runaway: null, listener, dead: false });
+      this.frMuteT = setTimeout(() => {
+        this.frMuteT = null;
+        if (this.frMuted && a.ctx?.state === 'running') void a.ctx.suspend().catch(() => {});
+      }, 1500);
+    } else if (a.ctx && a.enabled) a.start();
+  }
+  /** fractal: звук метро заглушён на время станции (QA) */
+  get soundMuted(): boolean {
+    return this.frMuted;
   }
 
   // ───────────────────────── QA ─────────────────────────
@@ -715,6 +747,7 @@ export class MetroWalk {
           lane: hit ? { lane: hit.lane.lane, s: hit.s, a: hit.a, nose: noseZ(hit.lane, hit.s), feet: c.y - self.posture.eye } : null,
           runs: [...self.runs.entries()].map(([k, r]) => ({ key: k, stage: r.c.stage, t: r.c.t, v: r.c.v, belt: r.c.belt, mine: r.mine })),
           dice: { ...self.dice }, climb: self.nearClimb ? self.nearClimb.lane.lane : null, alarm: self.alarm(self.cur), sound: self.audio.counters,
+          muted: self.frMuted, audio: self.audio.ctx?.state ?? null, // fractal: звук на время станции
         };
       },
       /** QA: снять первые 60 с и паузу (бросок — как обычно) */
@@ -730,6 +763,7 @@ export class MetroWalk {
   }
 
   dispose() {
+    if (this.frMuteT) clearTimeout(this.frMuteT); // fractal
     if (this.on) this.leave();
     if (this.obs) this.scene.onBeforeRenderObservable.remove(this.obs);
     if (this.camObs) this.cam.onAfterCheckInputsObservable.remove(this.camObs);

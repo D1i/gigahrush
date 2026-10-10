@@ -231,12 +231,18 @@ export function snowSpecFor(run: RunExport, id: string): { spec: SnowPieceSpec; 
 
 interface Built {
   shell: SnowMeshData;
-  col: SnowMeshData;
+  /** гладкий коллайдер (снег); у погреба нет — коллайдеры у него коробки болванки */
+  col?: SnowMeshData;
 }
 
+/** Чья оболочка: снежные ходы (оболочка и коллайдер) или земляной погреб (./cellarMesh.ts, только оболочка). */
+export type ShellKind = 'snow' | 'cellar';
+
+const snowBuild = (spec: SnowPieceSpec): Built => ({ shell: buildSnowMesh(spec), col: buildSnowMesh(spec, 0.1, false) });
+
 /** Кэш сеток кусков (по экземпляру и состояниям проёмов) и воркер: prefetch — заранее, take — сейчас (готово —
- *  из кэша, иначе строится на месте). */
-export class SnowMeshCache {
+ *  из кэша, иначе строится на месте). Общий у снега и погреба (kind — что строит воркер, build — что на месте). */
+export class SnowMeshCache<S = SnowPieceSpec> {
   private done = new Map<string, Built>();
   private queued = new Set<string>();
   private worker: Worker | null = null;
@@ -245,7 +251,11 @@ export class SnowMeshCache {
   syncBuilt = 0;
   workerBuilt = 0;
 
-  constructor(private readonly limit = 160) {}
+  constructor(
+    private readonly limit = 160,
+    private readonly kind: ShellKind = 'snow',
+    private readonly build: (spec: S) => Built = snowBuild as unknown as (spec: S) => Built,
+  ) {}
 
   private ensureWorker(): Worker | null {
     if (this.worker || this.failed || typeof Worker === 'undefined') return this.worker;
@@ -254,9 +264,9 @@ export class SnowMeshCache {
       this.worker.onmessage = (e: MessageEvent<{ key: string; shell?: SnowMeshData; col?: SnowMeshData; error?: string }>) => {
         const { key, shell, col, error } = e.data;
         this.queued.delete(key);
-        if (error || !shell || !col) return;
+        if (error || !shell || (this.kind === 'snow' && !col)) return;
         this.workerBuilt++;
-        this.put(key, { shell, col });
+        this.put(key, col ? { shell, col } : { shell });
       };
       this.worker.onerror = () => {
         this.failed = true;
@@ -274,19 +284,24 @@ export class SnowMeshCache {
     if (this.done.size > this.limit) this.done.delete(this.done.keys().next().value as string);
   }
 
-  prefetch(spec: SnowPieceSpec, key: string) {
+  prefetch(spec: S, key: string) {
     if (this.done.has(key) || this.queued.has(key)) return;
     const w = this.ensureWorker();
     if (!w) return;
     this.queued.add(key);
-    w.postMessage({ key, spec });
+    w.postMessage({ key, spec, kind: this.kind });
   }
 
-  take(spec: SnowPieceSpec, key: string): Built {
+  /** готова ли сетка (из воркера) — без постройки */
+  has(key: string): boolean {
+    return this.done.has(key);
+  }
+
+  take(spec: S, key: string): Built {
     const hit = this.done.get(key);
     if (hit) return hit;
     this.syncBuilt++;
-    const b = { shell: buildSnowMesh(spec), col: buildSnowMesh(spec, 0.1, false) };
+    const b = this.build(spec);
     this.put(key, b);
     return b;
   }

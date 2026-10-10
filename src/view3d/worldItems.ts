@@ -1,5 +1,6 @@
-// Предметы на полу мира «Прогулки» (WorldDrop, src/gen4d/stream.ts): модели, свет горящих фонарей и ламп, подсветка
-// «E — подобрать», выбор предмета под взглядом и место, куда ляжет выброшенный.
+// Предметы на полу мира «Прогулки» (WorldDrop, src/gen4d/stream.ts, и точки лута комнат «<inst>:L<k>» — в той же
+// форме): модели, свет горящих фонарей и ламп, подсветка «E — подобрать», выбор предмета под взглядом и место, куда
+// ляжет выброшенный.
 //
 // СИСТЕМА КООРДИНАТ WorldDrop (x, y, z, yaw) — мировая Babylon прогона: X = план x, Y — высота, Z = −план y; та же, в
 // которой построены куски комнат (PieceCache: комната стоит на своём месте прогона, корень куска — в начале координат) и
@@ -12,11 +13,12 @@
 // (PortalRenderer.extraProviders), не обходя иерархию. Положения комнат в прогоне неизменны (dx, dy, z экземпляра), так
 // что мировые числа так же устойчивы, совпадают у копий мира в кооп-лобби и не требуют пересчёта.
 //
-// КАК ЛЕЖИТ И СВЕТИТ — таблица ITEM_LOOKS (по id предмета; нет в ней — стоит как модель, без света): поза 'lie' (на
-// боку: фонарь — своя модель на колпачке и ободке, модель предмета — повёрнута на бок) или 'stand' (как стоит модель —
-// керосиновая лампа), радиус следа (отступ от стены, dropPose) и свет: 'spot' — луч по yaw (фонарь, горит при on),
-// 'point' — во все стороны с дрожью пламени (лампа, горит, пока on не false). Источников у горящих — не больше LIT_MAX
-// ближайших к камере, общий пул на все виды.
+// КАК ЛЕЖИТ И СВЕТИТ — реестр видов ./itemLooks.ts (itemLookOf): модель (лут — клон шаблона loot_props.glb; нет модели
+// или не загрузилась — коробка-посылка, догрузилась — пересборка), поза ('stand' / 'lie' на боку / 'flat' лицом вверх),
+// перед — к бросившему (надпись видна) или по yaw (П-2: линза), стопка n — горкой (копейки россыпью, батарейки рядком),
+// мелочь — чуть крупнее и с бликом под светом. Свет — горящие по itemUse.lightOnFloor (П-2 — луч по yaw и полоса на полу,
+// стекло светится; керосинка — тёплый точечный с дрожью и язычок пламени в колбе). Источников у горящих — не больше
+// LIT_MAX ближайших к камере, общий пул на все виды. Реестр поменялся (lookRev) — всё пересобирается.
 //
 // ВИДИМОСТЬ по экземплярам (комнаты разных слоёв W стоят в одном месте 3D):
 //  • портальный рендер активен — меши на слое PORTAL_LAYER (камера их не рисует) отдаются поставщиком extraProviders по
@@ -30,12 +32,12 @@
 // текущей (сосед другого слоя W может стоять в 3D на месте текущей: его часть по эту сторону проёма отсечена и не видна).
 //
 // ИНТЕГРАЦИЯ:
-//   const items = new WorldItems(viewer.scene, { portal: () => driver?.portal ?? null, roomShown, shown, itemModel });
-//   items.sync(walk.drops(), walk.dropsRev());    // каждый кадр или по смене dropsRev — без изменений ничего не делает
+//   const items = new WorldItems(viewer.scene, { portal: () => driver?.portal ?? null, roomShown, shown });
+//   items.sync([...walk.drops(), ...точкиЛута]);  // каждый кадр — тот же массив (или та же версия) ничего не делает
 //   const d = items.nearest(cam.position, cam.getDirection(Vector3.Forward())); items.highlight(d?.id ?? null);
 //   const p = dropPose(viewer.scene, viewer.fps, { inst: portal.current, portal, eye: viewer.posture.eye, item });
 //   items.dispose();
-// Покадровое (видимость, свет, пульс подсветки, модели, догрузившиеся после постройки) — сам, в
+// Покадровое (видимость, свет, пульс подсветки, блики, модели, догрузившиеся после постройки) — сам, в
 // scene.onBeforeRenderObservable.
 import type { Scene } from '@babylonjs/core/scene';
 import type { Camera } from '@babylonjs/core/Cameras/camera';
@@ -49,7 +51,6 @@ import { CreateDisc } from '@babylonjs/core/Meshes/Builders/discBuilder';
 import { CreateGround } from '@babylonjs/core/Meshes/Builders/groundBuilder';
 import { Constants } from '@babylonjs/core/Engines/constants';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
-import { MultiMaterial } from '@babylonjs/core/Materials/multiMaterial';
 import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { SpotLight } from '@babylonjs/core/Lights/spotLight';
@@ -59,14 +60,19 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Ray } from '@babylonjs/core/Culling/ray';
 import type { WorldDrop } from '../gen4d/stream';
 import type { BlockoutMeta } from '../blockout/babylon';
+import type { Slot } from '../game/hotbar';
+import { lightOnFloor, type Light } from '../game/itemUse';
 import { buildItems } from '../data/items';
-import { KEROLAMP_ITEM, LANTERN_LIGHT_R } from '../locations/obshaga';
 import { PORTAL_LAYER, type PortalDef, type PortalPiece, type PortalRenderer } from './portal';
-import { FLASH, FLASH_ANGLE, FLASH_COLOR, FLASH_EXP, FLASH_LIE, FlashlightModel, ensureLightSlots, flashIntensity, sceneLitness } from './flashlight';
-import { LANTERN_COLOR } from './obshagaScene';
+import { FLASH_ANGLE, FLASH_COLOR, FLASH_EXP, ensureLightSlots, sceneLitness } from './flashlight';
+import {
+  BOX_SIZE, copyMaterial, flameFlicker, flameMeshes, floorScale, glintMesh, itemLookOf, lensDisc, lookRev, lootFx, posedSize,
+  type DropLight, type ItemLook, type V3,
+} from './itemLooks';
 
-/** Предмет «фонарик» (src/data/items.ts). Керосиновая лампа — KEROLAMP_ITEM (../locations/obshaga; модель — prop
- *  p_obsh_lantern, её даёт itemModel). */
+export type { DropLight, ItemLook } from './itemLooks';
+
+/** Предмет «фонарик П-2» (src/data/items.ts). */
 export const FLASHLIGHT_ITEM = 'it_flashlight';
 /** обычный слой камер (всё, кроме PORTAL_LAYER) */
 const SCENE_LAYER = 0x0fffffff;
@@ -77,10 +83,7 @@ const BEYOND_TOL = 0.03;
 /** Горящих лежащих предметов со светом — не больше (ближайшие к камере), и не дальше, м. */
 const LIT_MAX = 2;
 const LIT_R = 20;
-/** Свет лежащего фонаря: дальность, м, и доля яркости фонаря в руке. */
-const DROP_RANGE = 12;
-const DROP_I = 0.85;
-/** Свет лежащего фонаря — не от самой линзы: она в 3 см над полом, и луч шёл бы по полу вскользь (N·L ≈ 0.03 — пятна на
+/** Свет лежащего фонаря — не от самой линзы: она в 5 см над полом, и луч шёл бы по полу вскользь (N·L ≈ 0.03 — пятна на
  *  полу почти не видно, светится только стена впереди). Источник — над линзой на DROP_UP и позади на DROP_BACK, м, луч —
  *  по yaw и вниз (~14°), к полу в FLOOR_AIM м перед линзой: на полу — вытянутое пятно от линзы метра на два-три, на
  *  стене впереди — полоса у пола (как от настоящего фонаря на полу), дальше — светит вперёд. Сам фонарь — вне конуса. */
@@ -90,8 +93,6 @@ const FLOOR_AIM = 1.3;
 /** И светлая полоса на полу от линзы (без источника: аддитивная, по свету сцены — в темноте ярче): длина, ширина у
  *  дальнего края, м, яркость; стена ближе — короче (не торчит сквозь неё). Видно горящий фонарь издалека. */
 const POOL = { len: 0.55, w: 0.34, em: 0.28 };
-/** Коробка-посылка для предметов без модели: ширина, высота, глубина, м. */
-const BOX = { w: 0.17, h: 0.075, d: 0.12 };
 const KRAFT = '#b08d57';
 /** Модели предметов, не догруженные при постройке (PropModels грузит наборы асинхронно): коробка проверяется раз в, мс. */
 const MODEL_RETRY_MS = 1000;
@@ -105,62 +106,45 @@ const PICK_BELOW = 2.4;
 const PICK_ABOVE = 0.6;
 /** Подсветка: цвет и пульс. */
 const HL_COLOR = new Color3(1, 0.78, 0.4);
+/** Блик мелочи: размер, м; виден ближе GLINT_R м; порог освещённости. */
+const GLINT_S = 0.05;
+const GLINT_R = 9;
+const GLINT_MIN = 0.12;
 
 // ───────────────────────── как лежит и светит ─────────────────────────
 
-/** Свет лежащего предмета. */
-export interface DropLight {
-  /** 'spot' — луч вперёд по yaw (конус фонаря FLASH_ANGLE), 'point' — во все стороны */
-  kind: 'spot' | 'point';
-  color: Color3;
-  /** дальность, м */
-  range: number;
-  /** яркость: число или по сцене (фонарь — как в руке, по свету сцены) */
-  intensity: number | ((scene: Scene) => number);
-  /** дрожь пламени: доля размаха (0 / нет — ровный свет) */
-  flicker?: number;
-  /** горит, когда WorldDrop.on не задан (лампа); иначе — только при on: true (фонарь) */
-  litByDefault?: boolean;
-  /** где источник в осях модели (пивот — центр низа, z — вперёд), м; у фонаря — сам, от линзы (DROP_UP, DROP_BACK) */
-  at?: readonly [number, number, number];
-}
-
-/** Как предмет лежит в мире и светит ли. */
-export interface ItemLook {
-  /** 'lie' — на боку (фонарь — своя модель; модель предмета — повёрнута на бок), 'stand' — как стоит модель */
-  pose: 'lie' | 'stand';
-  /** радиус следа на полу, м: отступ от стены (dropPose) */
-  foot: number;
-  /** свет горящего; null — не светит */
-  light: DropLight | null;
-}
-
-/** Предметы с особой позой или светом (остальные — DEFAULT_LOOK). */
-export const ITEM_LOOKS: Readonly<Record<string, ItemLook>> = {
-  [FLASHLIGHT_ITEM]: {
-    pose: 'lie',
-    foot: 0.12,
-    light: { kind: 'spot', color: FLASH_COLOR, range: DROP_RANGE, intensity: (sc) => flashIntensity(sceneLitness(sc)) * DROP_I },
-  },
-  // «летучая мышь» стоит на бачке; огонь — в колбе (модель p_obsh_lantern: extras.light = [0, 0.15, 0]), как у лампы в
-  // руке (HeldLantern, ./obshagaScene.ts): тёплый точечный свет, радиус LANTERN_LIGHT_R, дрожь пламени
-  [KEROLAMP_ITEM]: {
-    pose: 'stand',
-    foot: 0.14,
-    light: { kind: 'point', color: LANTERN_COLOR, range: LANTERN_LIGHT_R + 0.5, intensity: 0.9, flicker: 1, litByDefault: true, at: [0, 0.15, 0] },
-  },
-};
-const DEFAULT_LOOK: ItemLook = { pose: 'stand', foot: 0.13, light: null };
-
-/** Как лежит и светит предмет item. */
+/** Как лежит и светит предмет item (реестр ./itemLooks.ts). */
 export function itemLook(item: string): ItemLook {
-  return ITEM_LOOKS[item] ?? DEFAULT_LOOK;
+  return itemLookOf(item);
 }
 
-/** Горит ли лежащий предмет (есть свет и on — или on не задан, а свет «горит по умолчанию»). */
+/** Ячейка хотбара, которую изображает лежащий предмет (состояние — то же: on/n/q/w/u). */
+export function slotOf(d: WorldDrop): Slot {
+  const s: Slot = { item: d.item };
+  if (d.on !== undefined) s.on = d.on;
+  if (d.n !== undefined) s.n = d.n;
+  if (d.q !== undefined) s.q = d.q;
+  if (d.w !== undefined) s.w = d.w;
+  if (d.u !== undefined) s.u = d.u;
+  return s;
+}
+
+/** Свет лежащего (itemUse.lightOnFloor; у вида нет света — null). */
+export function dropLight(d: WorldDrop, look: ItemLook = itemLookOf(d.item)): Light | null {
+  return look.light ? lightOnFloor(slotOf(d)) : null;
+}
+
+/** Горит ли лежащий предмет. */
 export function dropLit(d: WorldDrop): boolean {
-  const l = itemLook(d.item).light;
-  return !!l && (d.on ?? !!l.litByDefault);
+  return !!dropLight(d);
+}
+
+/** Сколько штук стопки n показать горкой (не больше pile.max): 1, 2, 3, 4 (до 9), 5 (до 29), 6. */
+export function pileCount(n: number | undefined, pile: ItemLook['pile']): number {
+  const k = Math.max(1, Math.floor(n ?? 1));
+  if (!pile || pile.max <= 1 || k <= 1) return 1;
+  const c = k <= 3 ? k : k < 10 ? 4 : k < 30 ? 5 : 6;
+  return Math.min(pile.max, c);
 }
 
 const hash01 = (s: string, salt = 0): number => {
@@ -168,17 +152,6 @@ const hash01 = (s: string, salt = 0): number => {
   for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
   return ((h >>> 0) % 100000) / 100000;
 };
-
-const hashN = (n: number): number => {
-  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
-  return s - Math.floor(s);
-};
-
-/** Дрожь пламени (как у лампы в руке, HeldLantern): множитель яркости около 0.92, размах amp. */
-function flame(t: number, ph: number, amp: number): number {
-  const k = 0.92 + 0.05 * Math.sin(t * 11.3 + ph) + 0.03 * Math.sin(t * 27.1 + 0.7 + ph * 2) + 0.02 * (hashN(Math.floor(t * 14) + ph * 100) - 0.5);
-  return 1 - amp * (1 - k);
-}
 
 let itemColors: Map<string, string> | null = null;
 /** Цвет предмета по таблице src/data/items.ts. */
@@ -198,32 +171,43 @@ export interface WorldItemsOptions {
   camera?: () => Camera | null;
   /** цвет предмета '#rrggbb' — по умолчанию из src/data/items.ts */
   itemColor?: (item: string) => string | null | undefined;
-  /** шаблон модели предмета (выключенный меш, как PropModels.get: пивот — центр низа, метры) или null — коробка (пока
-   *  модели нет — коробка, догрузилась — пересобирается); фонарик — всегда своя модель */
+  /** шаблон модели предмета, у вида которого нет своей модели (реестр ./itemLooks.ts главнее): выключенный меш, как
+   *  PropModels.get (пивот — центр низа, метры), или null — коробка (догрузилась — пересобирается) */
   itemModel?: (item: string) => Mesh | null;
 }
 
 interface Entry {
   d: WorldDrop;
   look: ItemLook;
-  kind: 'flash' | 'model' | 'box';
+  kind: 'model' | 'box';
   root: TransformNode;
-  /** узел модели предмета (поза 'lie' — повёрнут на бок); null — фонарь, коробка */
-  pose: TransformNode | null;
-  /** всё, что рисуется (для поставщика портального рендера) */
+  /** узлы поз штук стопки (модель или коробка в осях модели: поза, масштаб); [0] — главная (свет, навесное) */
+  poses: TransformNode[];
+  /** модель (то, что подсвечивается) — для поставщика портального рендера и подсветки */
   meshes: Mesh[];
-  flash: FlashlightModel | null;
+  /** сколько штук горкой и навесное — при смене пересборка */
+  copies: number;
+  partsKey: string;
   /** фонарь: светлая полоса на полу перед линзой (включена, пока горит; не подсвечивается) */
   pool: Mesh | null;
-  /** середина предмета (мировая) и радиус следа на полу, м */
+  /** светящееся стекло (горит) */
+  lens: Mesh | null;
+  /** язычок пламени (горит) */
+  flame: { node: TransformNode; meshes: Mesh[] } | null;
+  /** блик мелочи */
+  glint: Mesh | null;
+  /** середина предмета (мировая), верх, радиус следа на полу, м */
   center: Vector3;
+  top: number;
   foot: number;
-  /** горит (look.light и on) */
+  /** горит: свет по lightOnFloor и цвет */
   lit: boolean;
+  light: Light | null;
+  color: Color3;
   /** свет: откуда и куда (spot) — мировые; null — не светит */
   lightAt: Vector3 | null;
   lightDir: Vector3 | null;
-  /** фаза дрожи пламени */
+  /** фаза дрожи пламени и блика */
   ph: number;
   /** соседи у проёма (портальный рендер) и кусок, по которому посчитаны */
   near: string[];
@@ -252,12 +236,23 @@ interface Variant {
   own: Material[];
 }
 
+/** Поворот и сдвиг узла позы: модель с габаритом [min, max] (оси модели) — низом на пол, серединой над пивотом. */
+function poseOf(pose: ItemLook['pose'], min: Vector3, max: Vector3): { rot: V3; off: V3 } {
+  const cx = (min.x + max.x) / 2, cy = (min.y + max.y) / 2, cz = (min.z + max.z) / 2;
+  // на бок: +90° вокруг z — (x, y) → (−y, x): низ — min.x, по x середина −cy
+  if (pose === 'lie') return { rot: [0, 0, Math.PI / 2], off: [cy, -min.x, -cz] };
+  // лицом вверх: +90° вокруг x — (y, z) → (−z, y): низ — −max.z, по z середина cy
+  if (pose === 'flat') return { rot: [Math.PI / 2, 0, 0], off: [-cx, max.z, -cy] };
+  return { rot: [0, 0, 0], off: [-cx, -min.y, -cz] };
+}
+
 export class WorldItems {
   /** счётчики работы (тесты, HUD): построено, удалено, изменено на месте */
   readonly stats = { created: 0, disposed: 0, updated: 0 };
   private readonly entries = new Map<string, Entry>();
   private lastArr: readonly WorldDrop[] | null = null;
   private lastRev: number | null = null;
+  private lookAt = lookRev();
   private byRoom = new Map<string, Mesh[]>();
   private roomsDirty = true;
   private roomsAt = 0;
@@ -301,10 +296,21 @@ export class WorldItems {
     return this.entries.has(id);
   }
 
+  /** Сколько штук стопки нарисовано у предмета id (0 — нет такого). */
+  copiesOf(id: string): number {
+    return this.entries.get(id)?.poses.length ?? 0;
+  }
+
+  /** Модель (true) или коробка-заглушка (false) у предмета id; нет такого — null. */
+  modelOf(id: string): boolean | null {
+    const e = this.entries.get(id);
+    return e ? e.kind === 'model' : null;
+  }
+
   /**
    * Привести меши к списку предметов: новые — построить, пропавшие — удалить, изменившиеся — поправить (другой
-   * предмет — пересобрать). rev (StreamWorld.dropsRev) тот же или тот же массив — ничего не делает. true — что-то
-   * изменилось.
+   * предмет, другая горка или навесное — пересобрать). rev (StreamWorld.dropsRev) тот же или тот же массив — ничего не
+   * делает. true — что-то изменилось.
    */
   sync(drops: readonly WorldDrop[], rev?: number): boolean {
     if (this.disposed) return false;
@@ -343,7 +349,7 @@ export class WorldItems {
         }
         unhl();
         changed = true;
-        if (e.d.item !== d.item) {
+        if (e.d.item !== d.item || pileCount(d.n, e.look.pile) !== e.copies || partsKey(e.look, d) !== e.partsKey) {
           this.drop(e);
           this.entries.set(d.id, this.build(d));
         } else {
@@ -363,48 +369,107 @@ export class WorldItems {
 
   // ───────────────────────── модели ─────────────────────────
 
+  /** Шаблон модели предмета: из реестра видов (лут), иначе opts.itemModel; null — пока коробка. */
+  private template(item: string, look: ItemLook): Mesh | null {
+    if (look.model) return look.model(this.scene);
+    return this.opts.itemModel?.(item) ?? null;
+  }
+
   private build(d: WorldDrop): Entry {
     const sc = this.scene;
-    const look = itemLook(d.item);
+    const look = itemLookOf(d.item);
     const root = new TransformNode(`drop:${d.id}`, sc);
     root.setEnabled(false);
-    let kind: Entry['kind'];
-    let meshes: Mesh[];
-    let flash: FlashlightModel | null = null;
-    let pose: TransformNode | null = null;
-    let pool: Mesh | null = null;
-    const tpl = d.item === FLASHLIGHT_ITEM ? null : (this.opts.itemModel?.(d.item) ?? null);
-    if (d.item === FLASHLIGHT_ITEM) {
-      kind = 'flash';
-      // на боку: опоры — колпачок и ободок (ось чуть поднята к голове), поворот вокруг оси — по id (ползунок не снизу)
-      flash = new FlashlightModel(sc, `drop:${d.id}:flash`, root);
-      flash.root.position.y = FLASH_LIE.axisY;
-      flash.root.rotation.set(-FLASH_LIE.tilt, 0, (hash01(d.id) - 0.5) * 2.4);
-      meshes = flash.meshes;
-      pool = this.poolKit().mesh.clone(`drop:${d.id}:pool`, root, true);
-      pool.isPickable = false;
-      pool.checkCollisions = false;
-      pool.layerMask = this.layer;
-      pool.setEnabled(false);
-    } else if (tpl) {
-      kind = 'model';
-      pose = new TransformNode(`drop:${d.id}:pose`, sc);
-      pose.parent = root;
-      const c = tpl.clone(`drop:${d.id}:model`, pose, false);
-      meshes = [c, ...(c.getChildMeshes(false) as Mesh[])].filter((m) => m.getTotalVertices() > 0);
-      for (const m of [c, ...c.getChildMeshes(false)]) {
-        m.setEnabled(true);
-        m.isVisible = true;
+    const tpl = this.template(d.item, look);
+    const kind: Entry['kind'] = tpl ? 'model' : 'box';
+    const copies = pileCount(d.n, look.pile);
+    const s = tpl ? floorScale(look) : 1;
+    const poses: TransformNode[] = [];
+    const meshes: Mesh[] = [];
+    let rot: V3 = [0, 0, 0], off: V3 = [0, 0, 0];
+    let size: V3 = BOX_SIZE;
+    for (let k = 0; k < copies; k++) {
+      const tag = copies > 1 ? `:${k}` : '';
+      const node = new TransformNode(`drop:${d.id}:copy${tag}`, sc);
+      node.parent = root;
+      const pose = new TransformNode(`drop:${d.id}:pose${tag}`, sc);
+      pose.parent = node;
+      poses.push(pose);
+      if (tpl) {
+        const c = tpl.clone(`drop:${d.id}:model${tag}`, pose, false);
+        const all = [c, ...c.getChildMeshes(false)];
+        for (const m of all) {
+          m.setEnabled(true);
+          m.isVisible = true;
+        }
+        for (const m of all) if (m instanceof Mesh && m.getTotalVertices() > 0) meshes.push(m);
+      } else {
+        const t = this.boxKit();
+        const box = t.box.clone(`drop:${d.id}:box${tag}`, pose, true);
+        box.material = this.boxMat(d.item);
+        const twine = t.twine.clone(`drop:${d.id}:twine${tag}`, pose, true);
+        for (const m of [box, twine]) {
+          m.setEnabled(true);
+          meshes.push(m);
+        }
       }
-      if (look.pose === 'lie') layOnSide(pose);
-    } else {
-      kind = 'box';
-      const t = this.boxKit();
-      const box = t.box.clone(`drop:${d.id}:box`, root, true);
-      box.material = this.boxMat(d.item);
-      const twine = t.twine.clone(`drop:${d.id}:twine`, root, true);
-      meshes = [box, twine];
-      for (const m of meshes) m.setEnabled(true);
+      if (k === 0) {
+        // габарит модели в её осях (корень ещё в начале координат, без поворота): поза — по нему
+        if (tpl) {
+          const { min, max } = pose.getHierarchyBoundingVectors(true);
+          if (Number.isFinite(min.x) && Number.isFinite(max.x) && min.x <= max.x) {
+            ({ rot, off } = poseOf(look.pose, min, max));
+            size = posedSize([max.x - min.x, max.y - min.y, max.z - min.z], look.pose);
+          }
+        } else ({ rot, off } = poseOf('stand', new Vector3(-BOX_SIZE[0] / 2, 0, -BOX_SIZE[2] / 2), new Vector3(BOX_SIZE[0] / 2, BOX_SIZE[1], BOX_SIZE[2] / 2)));
+      }
+      pose.rotation.set(rot[0], rot[1], rot[2]);
+      pose.position.set(off[0] * s, off[1] * s, off[2] * s);
+      pose.scaling.setAll(s);
+      // перед: к бросившему (модели смотрят на −Z) или по yaw (линза фонаря); штуки горки — вразброс
+      const along = look.front === 'along';
+      const j = (salt: number) => hash01(d.id, 31 * k + salt) - 0.5;
+      const w = size[0] * s, h = size[1] * s, dp = size[2] * s;
+      const mode = look.pile?.mode ?? 'scatter';
+      let ox = 0, oy = 0, oz = 0, yaw = 0;
+      if (k > 0 || copies > 1) {
+        if (mode === 'row') {
+          ox = (k - (copies - 1) / 2) * w * 1.08;
+          oz = j(1) * dp * 0.3;
+          yaw = j(2) * 0.24;
+        } else if (mode === 'stack') {
+          ox = j(1) * w * 0.25;
+          oz = j(2) * dp * 0.25;
+          oy = k * h * 1.02;
+          yaw = j(3) * 0.8;
+        } else if (k > 0) {
+          // россыпь: спираль Фогеля, шаг — чуть больше габарита, повороты — любые
+          const r = Math.max(w, dp) * 0.66 * Math.sqrt(k);
+          const a = k * 2.39996 + hash01(d.id, 5) * 6.283;
+          ox = Math.cos(a) * r;
+          oz = Math.sin(a) * r;
+          oy = k * 0.0004;
+          yaw = j(3) * 6.283;
+        } else yaw = j(3) * 6.283;
+      }
+      node.position.set(ox, oy, oz);
+      node.rotation.y = (along ? Math.PI : 0) + yaw;
+    }
+    // навесное (удлинение тубуса на П-2): модель предмета низом-центром в точке at главной штуки
+    const pk = partsKey(look, d);
+    if (tpl && look.parts) {
+      for (const p of look.parts(slotOf(d))) {
+        const pl = itemLookOf(p.item);
+        const pt = this.template(p.item, pl);
+        if (!pt) continue;
+        const c = pt.clone(`drop:${d.id}:part:${p.item}`, poses[0], false);
+        c.position.set(p.at[0], p.at[1], p.at[2]);
+        for (const m of [c, ...c.getChildMeshes(false)]) {
+          m.setEnabled(true);
+          m.isVisible = true;
+          if (m instanceof Mesh && m.getTotalVertices() > 0) meshes.push(m);
+        }
+      }
     }
     for (const m of meshes) {
       m.isPickable = false;
@@ -412,18 +477,46 @@ export class WorldItems {
       m.layerMask = this.layer;
       m.receiveShadows = false;
     }
+    // свечение: линза, пламя, полоса луча, блик
+    const fx = (m: Mesh) => {
+      m.isPickable = false;
+      m.checkCollisions = false;
+      m.layerMask = this.layer;
+      m.setEnabled(false);
+      return m;
+    };
+    const lens = tpl && look.lens && look.light ? fx(lensDisc(sc, `drop:${d.id}:lens`, poses[0], look.lens, lootFx(sc).lensOn)) : null;
+    let flame: Entry['flame'] = null;
+    if (tpl && look.flame && look.light) {
+      flame = flameMeshes(sc, `drop:${d.id}:flame`, poses[0], look.flame.h);
+      flame.node.position.set(look.flame.at[0], look.flame.at[1], look.flame.at[2]);
+      for (const m of flame.meshes) fx(m);
+    }
+    let pool: Mesh | null = null;
+    if (look.light?.floorBeam) {
+      pool = fx(this.poolKit().mesh.clone(`drop:${d.id}:pool`, root, true));
+    }
+    const glint = look.glint ? fx(glintMesh(sc, `drop:${d.id}:glint`, GLINT_S)) : null;
+    if (glint) glint.alwaysSelectAsActiveMesh = true;
     const e: Entry = {
       d,
       look,
       kind,
       root,
-      pose,
+      poses,
       meshes,
-      flash,
+      copies,
+      partsKey: pk,
       pool,
+      lens,
+      flame,
+      glint,
       center: new Vector3(),
+      top: 0,
       foot: look.foot,
       lit: false,
+      light: null,
+      color: new Color3(1, 1, 1),
       lightAt: null,
       lightDir: null,
       ph: hash01(d.id, 3) * Math.PI * 2,
@@ -436,31 +529,60 @@ export class WorldItems {
     return e;
   }
 
+  /** Меши свечения предмета, которые сейчас включены (рисуются после модели). */
+  private extras(e: Entry): Mesh[] {
+    const out: Mesh[] = [];
+    if (e.lit) {
+      if (e.lens) out.push(e.lens);
+      if (e.flame) out.push(...e.flame.meshes);
+      if (e.pool) out.push(e.pool);
+    }
+    if (e.glint) out.push(e.glint);
+    return out;
+  }
+
   /** Поставить на место (x, y, z, yaw) и включить/выключить свет; мировые точки — заново, матрицы заморожены. */
   private place(e: Entry, d: WorldDrop) {
     e.d = d;
     const r = e.root;
     for (const m of e.meshes) m.unfreezeWorldMatrix();
     r.position.set(d.x, d.y, d.z);
-    // посылку бросили как попало; фонарь — точно по взгляду (туда светит)
-    r.rotation.y = d.yaw + (e.kind === 'flash' ? 0 : (hash01(d.id, 7) - 0.5) * 0.6);
+    // бросили как попало; фонарь — точно по взгляду (туда светит)
+    r.rotation.y = d.yaw + (e.look.front === 'along' ? 0 : (hash01(d.id, 7) - 0.5) * 0.6);
+    // матрицы — по цепочке сверху (родитель в том же кадре отдал бы прежнюю)
     r.computeWorldMatrix(true);
+    for (const p of e.poses) {
+      (p.parent as TransformNode).computeWorldMatrix(true);
+      p.computeWorldMatrix(true);
+    }
     const L = e.look.light;
-    e.lit = dropLit(d);
+    e.light = dropLight(d, e.look);
+    e.lit = !!e.light;
+    if (e.light) e.color = Color3.FromHexString(e.light.color);
     e.lightAt = e.lightDir = null;
-    if (e.flash) {
-      e.flash.setKnob(!!d.on);
-      e.flash.setLensLit(!!d.on);
-      const w = e.flash.root.computeWorldMatrix(true);
-      Vector3.TransformCoordinatesToRef(Vector3.Zero(), w, e.center);
-      const lens = Vector3.TransformCoordinates(new Vector3(0, 0, FLASH.lensZ + 0.012), w);
-      // источник — над линзой и позади, луч — к полу в FLOOR_AIM перед линзой (см. DROP_UP)
+    // середина и след — по модели (без свечения)
+    const set = new Set<AbstractMesh>(e.meshes);
+    const { min, max } = r.getHierarchyBoundingVectors(true, (m) => set.has(m));
+    if (Number.isFinite(min.x) && Number.isFinite(max.x) && min.x <= max.x) {
+      e.center.set((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2);
+      e.top = max.y;
+      e.foot = Math.max(e.look.foot, Math.max(max.x - min.x, max.z - min.z) / 2 + 0.03);
+    } else {
+      e.center.set(d.x, d.y + 0.05, d.z);
+      e.top = d.y + 0.1;
+      e.foot = e.look.foot;
+    }
+    const w0 = e.poses[0].getWorldMatrix();
+    if (L && L.floorBeam) {
+      // луч лежащего фонаря: линза — по точке вида (или середина), перед — по yaw
+      const la = L.at ?? e.look.lens?.at ?? [0, 0.05, -0.1];
+      const lens = Vector3.TransformCoordinates(new Vector3(la[0], la[1], la[2]), w0);
       const fx = Math.sin(r.rotation.y), fz = Math.cos(r.rotation.y);
+      // источник — над линзой и позади, луч — к полу в FLOOR_AIM перед линзой (см. DROP_UP)
       const at = new Vector3(lens.x - fx * DROP_BACK, lens.y + DROP_UP, lens.z - fz * DROP_BACK);
       const run = DROP_BACK + FLOOR_AIM;
       e.lightAt = at;
       e.lightDir = new Vector3(fx * run, d.y - at.y, fz * run).normalize();
-      e.foot = e.look.foot;
       if (e.pool) {
         // полоса — от линзы вперёд (в осях корня: z — по yaw); стена ближе — до неё
         const p = e.pool;
@@ -475,25 +597,22 @@ export class WorldItems {
         p.computeWorldMatrix(true);
         p.freezeWorldMatrix();
       }
-    } else if (e.kind === 'box') {
-      Vector3.TransformCoordinatesToRef(new Vector3(0, BOX.h / 2, 0), r.getWorldMatrix(), e.center);
-      e.foot = 0.13;
-    } else {
-      const { min, max } = r.getHierarchyBoundingVectors(true);
-      if (Number.isFinite(min.x) && Number.isFinite(max.x) && min.x <= max.x) {
-        e.center.set((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2);
-        e.foot = Math.max(0.1, Math.max(max.x - min.x, max.z - min.z) / 2 + 0.06);
-      } else e.center.set(d.x, d.y + 0.05, d.z);
+    } else if (L) {
+      // источник — в осях модели (коробка вместо модели — от её узла позы)
+      const a = L.at ?? [0, 0.1, 0];
+      e.lightAt = Vector3.TransformCoordinates(new Vector3(a[0], a[1], a[2]), w0);
+      if (L.kind === 'spot') e.lightDir = Vector3.TransformNormal(new Vector3(0, 0, -1), w0).normalize();
     }
-    if (L && !e.flash) {
-      // источник — в осях модели (коробка вместо модели — от её корня)
-      const w = (e.pose ?? r).computeWorldMatrix(true);
-      const a = L.at ?? [0, 0, 0];
-      e.lightAt = Vector3.TransformCoordinates(new Vector3(a[0], a[1], a[2]), w);
-      if (L.kind === 'spot') e.lightDir = Vector3.TransformNormal(new Vector3(0, 0, 1), w).normalize();
+    e.lens?.setEnabled(e.lit);
+    if (e.flame) for (const m of e.flame.meshes) m.setEnabled(e.lit);
+    if (e.glint) {
+      e.glint.position.set(e.center.x, e.top + 0.012, e.center.z);
+      e.glint.setEnabled(e.shown);
+      e.glint.visibility = 0;
     }
-    // статичны: мировые матрицы — один раз (модели предметов с подвижными частями — без заморозки)
-    if (e.kind !== 'model') for (const m of e.meshes) m.freezeWorldMatrix();
+    // статичны: мировые матрицы — один раз
+    for (const m of e.meshes) m.freezeWorldMatrix();
+    e.lens?.freezeWorldMatrix();
     e.nearOf = undefined;
     this.roomsDirty = true;
   }
@@ -505,19 +624,18 @@ export class WorldItems {
       this.glow?.setEnabled(false);
     }
     for (const l of this.lamps) if (l.e === e) l.e = null;
-    if (e.flash) e.flash.dispose();
-    else for (const m of e.meshes) m.dispose(false, false);
+    for (const m of e.meshes) m.dispose(false, false);
+    for (const m of [e.pool, e.lens, e.glint, ...(e.flame?.meshes ?? [])]) m?.dispose(false, false);
+    e.flame?.node.dispose(false, false);
     e.root.dispose(false, false);
     this.stats.disposed++;
   }
 
-  /** Коробки предметов, чья модель догрузилась после постройки (PropModels — асинхронно), — пересобрать моделью. */
-  private retryModels() {
-    const get = this.opts.itemModel;
-    if (!get) return;
+  /** Пересобрать: коробки, чья модель догрузилась (PropModels — асинхронно), или всё (реестр видов поменялся). */
+  private rebuild(all: boolean) {
     let hl: string | null = null;
     for (const [id, e] of this.entries) {
-      if (e.kind !== 'box' || !get(e.d.item)) continue;
+      if (!all && (e.kind !== 'box' || !this.template(e.d.item, e.look))) continue;
       if (hl === null && this.hlId) {
         hl = this.hlId;
         this.highlight(null);
@@ -532,13 +650,14 @@ export class WorldItems {
   private boxKit() {
     if (this.boxTpl) return this.boxTpl;
     const sc = this.scene;
-    const box = CreateBox('drop:boxTpl', { width: BOX.w, height: BOX.h, depth: BOX.d }, sc);
-    box.position.y = BOX.h / 2;
+    const [bw, bh, bd] = BOX_SIZE;
+    const box = CreateBox('drop:boxTpl', { width: bw, height: bh, depth: bd }, sc);
+    box.position.y = bh / 2;
     box.bakeCurrentTransformIntoVertices();
     // бечёвка крест-накрест
-    const a = CreateBox('drop:twinePart', { width: BOX.w + 0.003, height: BOX.h + 0.003, depth: 0.009 }, sc);
-    const b = CreateBox('drop:twinePart', { width: 0.009, height: BOX.h + 0.003, depth: BOX.d + 0.003 }, sc);
-    a.position.y = b.position.y = BOX.h / 2;
+    const a = CreateBox('drop:twinePart', { width: bw + 0.003, height: bh + 0.003, depth: 0.009 }, sc);
+    const b = CreateBox('drop:twinePart', { width: 0.009, height: bh + 0.003, depth: bd + 0.003 }, sc);
+    a.position.y = b.position.y = bh / 2;
     const twine = Mesh.MergeMeshes([a, b], true, true)!;
     twine.name = 'drop:twineTpl';
     const twineMat = new StandardMaterial('drop:twine', sc);
@@ -618,9 +737,13 @@ export class WorldItems {
     const dt = Math.min(0.25, Math.max(0, (now - this.last) / 1000));
     this.last = now;
     this.t += dt;
-    if (now - this.retryAt > MODEL_RETRY_MS) {
+    if (this.lookAt !== lookRev()) {
+      // реестр видов поменялся (сессия зарегистрировала свой предмет) — всё заново
+      this.lookAt = lookRev();
+      this.rebuild(true);
+    } else if (now - this.retryAt > MODEL_RETRY_MS) {
       this.retryAt = now;
-      this.retryModels();
+      this.rebuild(false);
     }
     const on = this.opts.shown?.() ?? true;
     if (on !== this.lastOn) {
@@ -640,7 +763,7 @@ export class WorldItems {
       this.layer = layer;
       for (const e of this.entries.values()) {
         for (const m of e.meshes) m.layerMask = layer;
-        if (e.pool) e.pool.layerMask = layer;
+        for (const m of [e.pool, e.lens, e.glint, ...(e.flame?.meshes ?? [])]) if (m) m.layerMask = layer;
       }
       if (this.glow) this.glow.layerMask = layer;
       this.visDirty = true;
@@ -655,6 +778,8 @@ export class WorldItems {
         if (v !== e.shown) {
           e.shown = v;
           e.root.setEnabled(v);
+          // свечение — без родителя-корня (блик) или с ним; включение блика — по свету
+          if (e.glint) e.glint.setEnabled(v);
         }
       }
     }
@@ -662,6 +787,8 @@ export class WorldItems {
     else if (!portal && this.byRoom.size) this.byRoom = new Map();
     this.pulse(portal);
     this.lights(dt, portal);
+    this.flames();
+    this.glints(portal);
   }
 
   /** Меши по комнатам для портального рендера: своя комната и соседи у проёма; подсветка — с подсвеченным. */
@@ -677,10 +804,9 @@ export class WorldItems {
     const hl = this.hlId ? this.entries.get(this.hlId) : undefined;
     for (const e of this.entries.values()) {
       this.nearOf(e, portal);
-      // полоса света — после модели (прозрачная, аддитивная); портальный рендер рисует всё отданное, включено оно или
-      // нет, — погашенного фонаря не отдавать
-      let ms: readonly Mesh[] = e.meshes;
-      if (e.pool && e.lit) ms = [...ms, e.pool];
+      // свечение — после модели (прозрачное, аддитивное); портальный рендер рисует всё отданное, включено оно или нет,
+      // — погашенного не отдавать
+      let ms: readonly Mesh[] = [...e.meshes, ...this.extras(e)];
       if (e === hl && this.glow) ms = [...ms, this.glow];
       push(e.d.inst, ms);
       for (const r of e.near) push(r, ms);
@@ -758,8 +884,8 @@ export class WorldItems {
       for (const b of this.hlVariants.get(src)?.base ?? []) if (!this.hlPulse.includes(b)) this.hlPulse.push(b);
     }
     const g = this.glowMesh();
-    g.position.set(e.d.x, e.d.y + 0.004, e.d.z);
-    g.scaling.setAll(e.foot * 2.2);
+    g.position.set(e.center.x, e.d.y + 0.004, e.center.z);
+    g.scaling.setAll(Math.max(0.16, e.foot * 2.2));
     g.layerMask = this.layer;
     g.setEnabled(true);
   }
@@ -769,37 +895,15 @@ export class WorldItems {
     return this.hlId && this.entries.has(this.hlId) ? this.hlId : null;
   }
 
-  /** Копия материала для подсветки (текстуры — общие, не копии); у MultiMaterial — по подматериалам; не Standard —
-   *  как есть (без свечения). Созданное здесь — в own: удаляется только оно, исходные — общие, их не трогать. */
+  /** Копия материала для подсветки (текстуры — общие, не копии; стекло — с прозрачностью); у MultiMaterial — по
+   *  подматериалам; не Standard — как есть (без свечения). Созданное здесь — в own: удаляется только оно, исходные —
+   *  общие (шаблоны моделей), их не трогать. */
   private variant(m: Material): Material {
     const hit = this.hlVariants.get(m);
     if (hit) return hit.m;
     const base: Variant['base'] = [];
     const own: Material[] = [];
-    const one = (src: Material | null): Material | null => {
-      if (!(src instanceof StandardMaterial)) return src;
-      const v = new StandardMaterial(src.name + ':hl', this.scene);
-      v.diffuseColor = src.diffuseColor.clone();
-      v.diffuseTexture = src.diffuseTexture;
-      v.specularColor = src.specularColor.clone();
-      v.specularPower = src.specularPower;
-      v.emissiveColor = src.emissiveColor.clone();
-      v.emissiveTexture = src.emissiveTexture;
-      v.disableLighting = src.disableLighting;
-      v.backFaceCulling = src.backFaceCulling;
-      v.alpha = src.alpha;
-      v.maxSimultaneousLights = src.maxSimultaneousLights;
-      base.push({ mat: v, em: src.emissiveColor.clone() });
-      own.push(v);
-      return v;
-    };
-    let out: Material;
-    if (m instanceof MultiMaterial) {
-      const mm = new MultiMaterial(m.name + ':hl', this.scene);
-      mm.subMaterials = m.subMaterials.map((s) => one(s));
-      own.push(mm);
-      out = mm;
-    } else out = one(m) ?? m;
+    const out = copyMaterial(m, ':hl', own, (c, src) => base.push({ mat: c, em: src.emissiveColor.clone() }));
     this.hlVariants.set(m, { m: out, base, own });
     return out;
   }
@@ -883,6 +987,7 @@ export class WorldItems {
     for (const l of this.lamps) if (!l.e || !want.includes(l.e) || l.kind !== l.e.look.light?.kind) free.push(l);
     for (const e of want) {
       const L = e.look.light!;
+      const Lt = e.light!;
       let l = this.lamps.find((x) => x.e === e && x.kind === L.kind);
       if (!l) {
         const i = free.findIndex((x) => x.kind === L.kind);
@@ -900,15 +1005,15 @@ export class WorldItems {
           l = this.newLamp(L.kind);
         }
         l.e = e;
-        l.l.diffuse.copyFrom(L.color);
-        L.color.scaleToRef(0.3, l.l.specular);
-        l.l.range = L.range;
       }
+      l.l.diffuse.copyFrom(e.color);
+      e.color.scaleToRef(0.3, l.l.specular);
+      l.l.range = Lt.range * (L.rangeMul ?? 1) + (L.rangeAdd ?? 0);
       l.l.position.copyFrom(e.lightAt!);
       if (l.l instanceof SpotLight && e.lightDir) l.l.direction.copyFrom(e.lightDir);
       l.idle = 0;
-      const base = typeof L.intensity === 'function' ? L.intensity(this.scene) : L.intensity;
-      l.l.intensity = base * (L.flicker ? flame(this.t, e.ph, L.flicker) : 1);
+      const base = typeof L.base === 'function' ? L.base(this.scene) : L.base;
+      l.l.intensity = base * Lt.intensity * (L.flicker ? flameFlicker(this.t, e.ph, L.flicker) : 1);
       if (!l.l.isEnabled()) l.l.setEnabled(true);
     }
     for (const l of free) {
@@ -938,6 +1043,61 @@ export class WorldItems {
   /** Какие предметы сейчас светят (id; тесты, HUD). */
   get litIds(): string[] {
     return this.lamps.filter((l) => l.e && l.l.isEnabled()).map((l) => l.e!.d.id);
+  }
+
+  /** Язычки пламени горящих (керосинка на полу) — дрожат. */
+  private flames() {
+    for (const e of this.entries.values()) {
+      if (!e.flame || !e.lit || !e.shown) continue;
+      const k = flameFlicker(this.t * 1.3, e.ph, 2.2);
+      e.flame.node.scaling.set(0.94 + 0.06 * k, 0.82 + 0.18 * k + 0.05 * Math.sin(this.t * 17 + e.ph), 0.94 + 0.06 * k);
+    }
+  }
+
+  /** Освещённость точки 0…1: свет сцены и включённые источники (луч фонаря — в его конусе). */
+  private illum(p: Vector3): number {
+    let k = sceneLitness(this.scene) * 0.6;
+    for (const l of this.scene.lights) {
+      if (!l.isEnabled() || l.intensity <= 0) continue;
+      if (l instanceof SpotLight) {
+        const pos = (l.parent ? l.transformedPosition : null) ?? l.position;
+        const dir = (l.parent ? l.transformedDirection : null) ?? l.direction;
+        const v = p.subtract(pos);
+        const d = v.length();
+        if (d < 1e-3 || d > l.range) continue;
+        const c = Vector3.Dot(v, dir) / (d * (dir.length() || 1));
+        const cc = Math.cos(l.angle / 2);
+        if (c < cc) continue;
+        k += l.intensity * Math.pow(Math.max(0, c), Math.min(16, l.exponent)) * (1 - d / l.range) * 1.4;
+      } else if (l instanceof PointLight) {
+        const d = Vector3.Distance(p, l.getAbsolutePosition());
+        if (d < l.range) k += l.intensity * (1 - d / l.range) * 0.5;
+      }
+    }
+    return Math.min(1, k);
+  }
+
+  /** Блики мелочи под светом: короткие вспышки (по времени и сдвигу камеры — «играет», когда идёшь), в темноте — нет. */
+  private glints(portal: PortalRenderer | null) {
+    const cam = this.opts.camera?.() ?? this.scene.activeCamera;
+    if (!cam) return;
+    const c = cam.globalPosition;
+    for (const e of this.entries.values()) {
+      const g = e.glint;
+      if (!g) continue;
+      if (!(portal || e.shown)) continue;
+      let v = 0;
+      if (Vector3.DistanceSquared(c, e.center) < GLINT_R * GLINT_R) {
+        const lit = this.illum(e.center);
+        if (lit > GLINT_MIN) {
+          const s = Math.max(0, Math.sin(this.t * 1.25 + e.ph + c.x * 2.3 + c.z * 1.9));
+          const tw = Math.pow(s, 18);
+          v = Math.min(1, lit * 1.4) * (0.1 + 0.9 * tw);
+          g.scaling.setAll(0.55 + 0.6 * tw);
+        }
+      }
+      g.visibility = v;
+    }
   }
 
   // ───────────────────────── что подобрать ─────────────────────────
@@ -1006,7 +1166,7 @@ export class WorldItems {
     this.byRoom.clear();
     for (const l of this.lamps) l.l.dispose();
     this.lamps = [];
-    // только копии подсветки (и подматериалы-копии MultiMaterial); исходные — общие (шаблоны моделей, наборы фонаря)
+    // только копии подсветки (и подматериалы-копии MultiMaterial); исходные — общие (шаблоны моделей)
     for (const v of this.hlVariants.values()) for (const m of v.own) m.dispose(false, false);
     this.hlVariants.clear();
     this.hlOrig.clear();
@@ -1033,20 +1193,16 @@ export class WorldItems {
   }
 }
 
-/** Модель предмета — на бок: поворот на 90° вокруг z (вперёд), снизу — бывший бок, середина — над пивотом. */
-function layOnSide(pose: TransformNode) {
-  // границы модели в её осях (корень предмета ещё в начале координат, без поворота)
-  pose.position.setAll(0);
-  pose.rotation.setAll(0);
-  const { min, max } = pose.getHierarchyBoundingVectors(true);
-  pose.rotation.z = Math.PI / 2;
-  if (!(Number.isFinite(min.x) && Number.isFinite(max.x) && min.x <= max.x)) return;
-  // поворот на +90° вокруг z: (x, y) → (−y, x) — низ теперь min.x, по x середина −(min.y + max.y)/2
-  pose.position.set((min.y + max.y) / 2, -min.x, 0);
+function same(a: WorldDrop, b: WorldDrop): boolean {
+  return (
+    a.id === b.id && a.item === b.item && a.inst === b.inst && a.x === b.x && a.y === b.y && a.z === b.z && a.yaw === b.yaw &&
+    a.on === b.on && a.n === b.n && a.q === b.q && a.w === b.w && a.u === b.u
+  );
 }
 
-function same(a: WorldDrop, b: WorldDrop): boolean {
-  return a.id === b.id && a.item === b.item && a.inst === b.inst && a.x === b.x && a.y === b.y && a.z === b.z && a.yaw === b.yaw && !!a.on === !!b.on && (a.on === undefined) === (b.on === undefined);
+/** Ключ навесного (пересборка, когда поменялся). */
+function partsKey(look: ItemLook, d: WorldDrop): string {
+  return look.parts ? look.parts(slotOf(d)).map((p) => p.item).join(',') : '';
 }
 
 function rectDist(r: { x0: number; y0: number; x1: number; y1: number }, x: number, y: number): number {

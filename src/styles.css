@@ -75,6 +75,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: var(--text-2); font-family: var(--font-c); font-weight: 500; font-size: 13px;
   letter-spacing: 0.03em; border-bottom: 2px solid transparent;
 }
+/* бестиарий: с новой вкладкой шапка не помещалась в 1440 — подписи не переносим, подзаголовок бренда прячем на узких */
+.tab { white-space: nowrap; }
+@media (max-width: 1560px) { .brand span { display: none; } }
 .tab:hover { color: var(--text); }
 .tab.on { color: var(--accent); border-bottom-color: var(--accent); }
 .topbar .spacer { flex: 1; }

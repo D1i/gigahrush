@@ -1,6 +1,7 @@
 // Пропы метро: записи p_metro_* (src/data/props.ts) и модели src/view3d/assets/metro_props.glb (tools/make-metro-props.mjs)
 // совпадают по id и габаритам плана; коллайдеры по тегам — как задумано (пути, кромка, панно, свет — 1 см, скамья —
-// 0.45, обломки — 0.25).
+// 0.45; обломки — «россыпь», 1 см: куча пепла по щиколотку, бокс 0.25 на весь план 1.2 × 1.0 — невидимая ступень-стена
+// вокруг низкой модели).
 import { describe, expect, it } from 'vitest';
 import { NodeIO, getBounds } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
@@ -31,7 +32,7 @@ describe('пропы метро', () => {
     for (const id of byId.keys()) expect(METRO.some((p) => p.id === id), id).toBe(true);
   });
 
-  it('коллайдеры: накладное, настенное и подвесное — 1 см, скамья 0.45, обломки 0.25', () => {
+  it('коллайдеры: накладное, настенное, подвесное и обломки — 1 см, скамья 0.45', () => {
     const h = (id: string) => {
       const p = METRO.find((x) => x.id === id)!;
       return propHeightM(p.tags, p.name);
@@ -40,7 +41,7 @@ describe('пропы метро', () => {
       expect(h(id), id).toBe(0.01);
     }
     expect(h('p_metro_bench')).toBe(0.45);
-    expect(h('p_metro_debris')).toBe(0.25);
+    expect(h('p_metro_debris')).toBe(0.01);
     for (const id of ['p_metro_turnstile', 'p_metro_kassa', 'p_metro_esc_booth', 'p_metro_esc_wreck', 'p_metro_gears']) expect(h(id), id).toBe(0.8);
   });
 });

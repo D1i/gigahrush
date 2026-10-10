@@ -90,6 +90,8 @@ export interface StoryWalkHost {
   busy(): boolean;
   /** можно управлять: нет спец-сцены поверх, от первого лица */
   live(): boolean;
+  /** игра на паузе (BlockoutViewer.paused: кадры не идут) — E не берётся, сценарий не начинается */
+  paused?(): boolean;
   onHud(h: StoryHud): void;
 }
 
@@ -309,7 +311,7 @@ export class StoryWalk {
     if (e.code !== 'KeyE' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
-    if (!this.host.live()) return;
+    if (!this.host.live() || this.host.paused?.()) return;
     this.press();
   }
 

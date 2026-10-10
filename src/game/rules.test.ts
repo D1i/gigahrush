@@ -25,7 +25,7 @@ describe('tierCard', () => {
     const card = tierCard(rx, 'tier_1');
     expect(card[0]).toBe('Элитность 1 — Обычная квартира');
     expect(card).toContain('Проход: опасность +2');
-    expect(card).toContain('Копейки: до 6 — 50%, иначе до 4 — 70% (в среднем 2.6)');
+    expect(card).toContain('Копейка: до 6 — 50%, иначе до 4 — 70% (в среднем 2.6)');
     expect(card).toContain('Самогонка в «сервант»: 5%');
   });
 
@@ -49,7 +49,7 @@ describe('tierCard', () => {
     expect(tierCard(lean, 'tier_5')).toEqual(['Элитность 5 — Номенклатурная квартира', 'Проход: опасность +10']);
     // мусор в строках лута отбрасывается
     const junk = { ...rx, tiers: [{ id: 'x', name: 'X', level: 1, color: '#fff', danger: 1, loot: [null, { source: 5 }, { source: { kind: 'item', id: 'it_kopeyki' }, steps: [{ upTo: 3, chance: 1 }] }] }] } as unknown as RunExport;
-    expect(tierCard(junk, 'x')).toEqual(['X', 'Проход: опасность +1', 'Копейки: до 3 — 100% (в среднем 2)']);
+    expect(tierCard(junk, 'x')).toEqual(['X', 'Проход: опасность +1', 'Копейка: до 3 — 100% (в среднем 2)']);
   });
 });
 
@@ -60,13 +60,13 @@ describe('inventoryView', () => {
     const rows = inventoryView(p.items, { inventory: inv });
     expect(rows.map((r) => r.itemId)).toEqual(['it_kopeyki', 'it_samogon', 'it_matches', 'it_medkit', 'mystery']);
     expect(rows.map((r) => r.currency)).toEqual([true, true, false, false, false]);
-    expect(rows[0]).toEqual({ itemId: 'it_kopeyki', name: 'Копейки', count: 12, color: '#d4a017', currency: true, tags: ['currency', 'деньги'] });
+    expect(rows[0]).toEqual({ itemId: 'it_kopeyki', name: 'Копейка', count: 12, color: '#d4a017', currency: true, tags: ['currency', 'деньги'] });
     expect(rows[4]).toMatchObject({ name: 'mystery', color: '#888888', tags: [] });
   });
 
   it('принимает и экспорт прогона', () => {
     const rows = inventoryView(rx, { inventory: { it_kopeyki: 1 } });
-    expect(rows).toEqual([expect.objectContaining({ itemId: 'it_kopeyki', name: 'Копейки', currency: true })]);
+    expect(rows).toEqual([expect.objectContaining({ itemId: 'it_kopeyki', name: 'Копейка', currency: true })]);
   });
 });
 

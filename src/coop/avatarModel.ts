@@ -8,9 +8,11 @@
 //    напарник читался.
 //  • Шинель (материалы «Field wool» и «Worn seams») — по месту игрока в лобби (PlayerInfo.slot): у первого — как в
 //    наборе, у второго — слегка перекрашена (бурее), у третьего — синее, у четвёртого — рыжее (COAT_TINTS).
-//  • Поза — по высоте глаз (PlayerState.eye) и скорости: клипы стоя и ползком смешиваются весами (postureWeights) —
-//    стоя 1.6 м, скрючившись ~1.1 — наполовину согнут, на четвереньках и лёжа — ползком (ниже модели — сплюснут по
-//    высоте). На ходу — Walk / Crawl, скорость клипа — по скорости. Голова — наклон взгляда (pitch).
+//  • Поза — по высоте глаз (PlayerState.eye) и скорости (postureWeights): стоя 1.6 м — клипы стоя; скрючившись (до
+//    1.1) — те же клипы, поверх — согнутые колени и наклон корпуса (CROUCH), ноги — на пол по щиколотке; ниже — к
+//    клипам ползком (на четвереньках 0.5, лёжа 0.22 — ниже модели, сплюснута по высоте). В клипах ползком набора
+//    носки уходят в пол — ступни довёрнуты носками назад (CRAWL_FOOT), модель чуть приподнята (CRAWL_LIFT). На ходу —
+//    Walk / Crawl, темп клипа — по скорости. Голова — по наклону взгляда (pitch).
 //  • Портальный рендер рисует меши аватара сам (m.render), минуя выбор активных мешей сцены, — поэтому скелет и матрицы
 //    узлов обновляются здесь, в update (после анимаций кадра).
 import { LoadAssetContainerAsync } from '@babylonjs/core/Loading/sceneLoader';
@@ -34,11 +36,21 @@ import modelUrl from './assets/bandaged_man.glb?url';
 export const CLIPS = ['Idle_Standing', 'Walk', 'Idle_Crawl', 'Crawl'] as const;
 export type Clip = (typeof CLIPS)[number];
 
-/** Голова модели (кость Head) над ногами, м: стоя / на четвереньках (verification.json набора). Стоя глаз камеры — 1.6. */
-export const HEAD_STAND = 1.6;
-export const HEAD_CRAWL = 0.67;
-/** …и вперёд от ног на четвереньках, м (стоя — над ногами). */
+/** Глаз (голова модели, кость Head) над ногами, м: стоя / скрючившись (Posture: 1.6 / 1.1). */
+export const EYE_STAND = 1.6;
+export const EYE_CROUCH = 1.1;
+/** Скрючившись — поверх клипов стоя, град (вокруг оси X кости): бедро вперёд, колено согнуто, ступня — ровно по полу,
+ *  поясница и грудь вперёд. Голова — на 1.10 м над подошвами, вперёд на HEAD_CROUCH_FWD (tmp-замер по модели). */
+const CROUCH = { thigh: 55, shin: 100, spine: 25, chest: 20 } as const;
+export const HEAD_CROUCH_FWD = 0.29;
+/** Щиколотка (кость Foot) над подошвой стоя, м: скрючившись — модель опускается, пока нижняя щиколотка не на ней. */
+const ANKLE = 0.13;
+/** Ползком: голова над ногами (с подъёмом CRAWL_LIFT) и вперёд от них, м; ступни — носками назад, град; подъём — м
+ *  (кулаки в клипе набора — ниже кисти: так они уходят в пол на ~2 см, колени — над полом). */
+export const HEAD_CRAWL = 0.724;
 export const HEAD_CRAWL_FWD = 0.33;
+const CRAWL_FOOT = 40;
+const CRAWL_LIFT = 0.05;
 /** Ниже модели ползком (лаз, под кроватью) — сплюснута по высоте, но не меньше стольких от роста. */
 const MIN_SQUASH = 0.35;
 /** Скорость, при которой клип идёт в своём темпе, м/с: шаг стоя (цикл 1.07 с) и ползком (1.6 с). */
@@ -70,7 +82,9 @@ export const coatTint = (slot: number | undefined): Color3 =>
 export interface PostureWeights {
   /** веса клипов (в сумме 1) */
   w: Record<Clip, number>;
-  /** доля позы ползком 0…1 (0 — стоя) */
+  /** насколько скрючен 0…1 (поверх клипов стоя; к ползку — сходит на нет) */
+  crouch: number;
+  /** доля клипов ползком 0…1 */
   crawl: number;
   /** сплющивание по высоте (1 — нет) */
   squash: number;
@@ -80,19 +94,18 @@ export interface PostureWeights {
 
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
 
-/** Веса клипов по высоте глаз над полом (м) и скорости (м/с): стоя ↔ ползком — по глазу, на месте ↔ на ходу — по
- *  скорости. */
+/** Поза по высоте глаз над полом (м) и скорости (м/с): стоя → скрючившись (1.6 → 1.1) — сгиб поверх клипов стоя,
+ *  дальше → ползком (1.1 → HEAD_CRAWL) — клипы ползком, ниже — сплющивание; на месте ↔ на ходу — по скорости. */
 export function postureWeights(eye: number, speed: number): PostureWeights {
-  const c = clamp01((HEAD_STAND - eye) / (HEAD_STAND - HEAD_CRAWL));
+  const k = clamp01((EYE_STAND - eye) / (EYE_STAND - EYE_CROUCH));
+  const c = clamp01((EYE_CROUCH - eye) / (EYE_CROUCH - HEAD_CRAWL));
   const m = clamp01((speed - MOVE_MPS) / MOVE_HALF);
-  // голова модели при таком смешении — между стоя и ползком; глаз ниже — сплюснуть
-  const head = HEAD_STAND + (HEAD_CRAWL - HEAD_STAND) * c;
-  const squash = Math.max(MIN_SQUASH, Math.min(1, eye / head));
   return {
     w: { Idle_Standing: (1 - c) * (1 - m), Walk: (1 - c) * m, Idle_Crawl: c * (1 - m), Crawl: c * m },
+    crouch: k * (1 - c),
     crawl: c,
-    squash,
-    headFwd: HEAD_CRAWL_FWD * c,
+    squash: Math.max(MIN_SQUASH, Math.min(1, eye / HEAD_CRAWL)),
+    headFwd: HEAD_CROUCH_FWD * k * (1 - c) + HEAD_CRAWL_FWD * c,
   };
 }
 
@@ -114,9 +127,13 @@ export class AvatarBody {
   readonly meshes: Mesh[];
   readonly hand: { L: TransformNode; R: TransformNode };
   readonly head: TransformNode;
+  /** кости, которые гнёт поза поверх клипов */
+  private readonly bones: Record<'thighL' | 'thighR' | 'shinL' | 'shinR' | 'footL' | 'footR' | 'spine' | 'chest', TransformNode>;
   private readonly nodes: TransformNode[];
   private readonly groups = new Map<Clip, AnimationGroup>();
   private readonly tilt = new Quaternion();
+  /** поворот кости от клипа и наш поверх него (bend) — с прошлого кадра */
+  private readonly bent = new Map<TransformNode, { clip: Quaternion; mine: Quaternion }>();
 
   constructor(
     private readonly scene: Scene,
@@ -133,6 +150,16 @@ export class AvatarBody {
     };
     this.hand = { L: node('Hand.L'), R: node('Hand.R') };
     this.head = node('Head');
+    this.bones = {
+      thighL: node('Thigh.L'),
+      thighR: node('Thigh.R'),
+      shinL: node('Shin.L'),
+      shinR: node('Shin.R'),
+      footL: node('Foot.L'),
+      footR: node('Foot.R'),
+      spine: node('Spine'),
+      chest: node('Chest'),
+    };
     // по порядку обхода: родитель раньше детей (матрицы мира — сверху вниз)
     this.nodes = [this.root, ...all];
     this.meshes = all.filter((n): n is Mesh => 'subMeshes' in n && !!(n as AbstractMesh).getTotalVertices?.());
@@ -170,8 +197,9 @@ export class AvatarBody {
     return o;
   }
 
-  /** Поза кадра: веса и темп клипов, положение (голова — у глаз), наклон головы; затем матрицы и скелет. Звать после
-   *  анимаций кадра (onBeforeRenderObservable): клипы уже записали повороты костей. */
+  /** Поза кадра: веса и темп клипов, сгиб поверх клипов (скрючившись, ступни ползком, голова по взгляду), положение
+   *  (голова — у глаз, ноги — на полу); затем матрицы и скелет. Звать после анимаций кадра (onBeforeRenderObservable):
+   *  клипы уже записали повороты костей. */
   update(p: BodyPose) {
     const pw = postureWeights(p.eye, p.speed);
     for (const [c, g] of this.groups) {
@@ -179,20 +207,50 @@ export class AvatarBody {
       const nominal = c === 'Walk' ? WALK_MPS : c === 'Crawl' ? CRAWL_MPS : 0;
       g.speedRatio = nominal ? Math.min(2.2, Math.max(0.6, p.speed / nominal)) : 1;
     }
+    const k = pw.crouch, c = pw.crawl, b = this.bones;
+    this.bend(b.thighL, -CROUCH.thigh * k);
+    this.bend(b.thighR, -CROUCH.thigh * k);
+    this.bend(b.shinL, CROUCH.shin * k);
+    this.bend(b.shinR, CROUCH.shin * k);
+    const foot = -(CROUCH.shin - CROUCH.thigh) * k + CRAWL_FOOT * c;
+    this.bend(b.footL, foot);
+    this.bend(b.footR, foot);
+    this.bend(b.spine, CROUCH.spine * k);
+    this.bend(b.chest, CROUCH.chest * k);
+    this.bend(this.head, (p.pitch * HEAD_PITCH * 180) / Math.PI);
     const feet = p.y - p.eye;
     const fx = Math.sin(p.yaw), fz = Math.cos(p.yaw);
-    const fwd = pw.headFwd * pw.squash;
+    const fwd = pw.headFwd;
     this.root.position.set(p.x - fx * fwd, feet, p.z - fz * fwd);
     this.root.rotation.set(0, p.yaw, 0);
-    this.root.scaling.set(1, pw.squash, 1);
-    // наклон взгляда — головой (поверх клипа; клип пишет поворот кости каждый кадр)
-    const q = this.head.rotationQuaternion;
-    if (q) {
-      Quaternion.RotationAxisToRef(Vector3.Right(), p.pitch * HEAD_PITCH, this.tilt);
-      q.multiplyInPlace(this.tilt);
+    this.root.scaling.set(1, 1, 1);
+    for (const n of this.nodes) n.computeWorldMatrix(true);
+    // скрючившись — ноги на пол: нижняя щиколотка на высоту стоя (колени согнуты — без этого ступни в воздухе)
+    let lift = CRAWL_LIFT * c;
+    if (k > 0) {
+      const ankle = Math.min(b.footL.getAbsolutePosition().y, b.footR.getAbsolutePosition().y) - feet;
+      lift += (ANKLE - ankle) * Math.min(1, k * 4);
     }
+    this.root.position.y = feet + lift * pw.squash;
+    this.root.scaling.set(1, pw.squash, 1);
     for (const n of this.nodes) n.computeWorldMatrix(true);
     for (const s of this.entries.skeletons) s.prepare(true);
+  }
+
+  /** Повернуть кость поверх клипа на deg вокруг её оси X. Клип пишет поворот каждый кадр анимаций; не записал (кадр
+   *  без анимаций) — поворот ещё наш с прошлого раза: сгиб — от поворота клипа, не копится. */
+  private bend(n: TransformNode, deg: number) {
+    const q = n.rotationQuaternion;
+    if (!q) return;
+    let b = this.bent.get(n);
+    if (!b) this.bent.set(n, (b = { clip: q.clone(), mine: q.clone() }));
+    else if (q.equalsWithEpsilon(b.mine, 1e-7)) q.copyFrom(b.clip);
+    b.clip.copyFrom(q);
+    if (Math.abs(deg) > 1e-3) {
+      Quaternion.RotationAxisToRef(Vector3.Right(), (deg * Math.PI) / 180, this.tilt);
+      q.multiplyInPlace(this.tilt);
+    }
+    b.mine.copyFrom(q);
   }
 
   /** Точка в руке (мир). */

@@ -8,7 +8,7 @@ import { exportRunJSON } from '../gen/world';
 import { generateFoldRun } from '../gen4d/fold';
 import type { Project } from '../model/types';
 import { buildBlockoutModel, validateBlockout } from './core';
-import { buildPiece, mergePieces, neighborIds, pieceFloorRects, piecePortals } from './pieces';
+import { buildPiece, mergePieces, neighborIds, pieceFloorRects, piecePortals, translateInstance } from './pieces';
 import { overlapIds } from './subrun';
 import type { BlockoutModel, Rect, RunExport } from './types';
 
@@ -116,4 +116,22 @@ describe('владение (ownership) на фикстурах обычных п
       expect(plain.solids.some((s) => s.inst !== undefined)).toBe(false);
     });
   }
+});
+
+describe('сдвиг экземпляра (шов бесконечного хода, translateInstance)', () => {
+  it('отрицательные координаты клеток: отрезки сдвигаются целиком, ядро разбирает строки', () => {
+    const run = fixtures['./fixtures/run-gap1-30.json'];
+    const src = run.instances[0];
+    const i = { ...src, cells: ['5:-317--273,-10,4-6', '-2:0'] };
+    expect(translateInstance(i, -604, 3).cells).toEqual(['8:-921--877,-614,-600--598', '1:-604']);
+    // настоящий экземпляр, уведённый в минус и обратно: пол тот же, ни одной неразобранной строки
+    const cells = (m: BlockoutModel) => m.stats.floorCells;
+    const base = buildBlockoutModel({ ...run, instances: [src], links: [] });
+    const neg = translateInstance(src, -5000, -7000);
+    const back = translateInstance(neg, 5000, 7000);
+    expect(back.cells).toEqual(src.cells);
+    const m = buildBlockoutModel({ ...run, instances: [neg], links: [] });
+    expect(m.issues.filter((s) => s.includes('не разобрана'))).toEqual([]);
+    expect(cells(m)).toBe(cells(base));
+  });
 });

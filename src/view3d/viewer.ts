@@ -22,6 +22,7 @@ import { buildBabylonBlockout, type BabylonBlockout, type BlockoutMeta } from '.
 import { PropModels } from './propModels';
 import { Posture, type Pose } from './posture';
 import { Sprint } from './sprint';
+import { dropAudioPause, setAudioPaused, trackAudioContexts } from './pauseAudio';
 import type { BlockoutModel, DeadEnd, Rect } from '../blockout/types';
 
 export type CamMode = 'orbit' | 'fps';
@@ -106,6 +107,13 @@ export class BlockoutViewer {
   private disposed = false;
   /** спец-локация поверх: пока задана, движок рисует её, а камеры болванки не слушают ввод */
   private overlay: ViewerOverlay | null = null;
+  /** пауза игры (setPaused): с какого момента; сколько мс пауз было до неё (игровые часы gameNow) */
+  private pause: { at: number } | null = null;
+  private pausedMs = 0;
+  /** прогрев (warmUp): до этого момента кадры рисуются и на паузе */
+  private warmUntil = 0;
+  /** размер холста сменился на паузе — пересчитать после неё (иначе холст очищается до чёрного) */
+  private resizeLater = false;
   private onLock = () => this.cb.onPointerLock?.(document.pointerLockElement === this.canvas);
   /** C — на четвереньки / встать (от первого лица, без спец-сцены поверх) */
   private onPoseKey = (e: KeyboardEvent) => {
@@ -197,15 +205,57 @@ export class BlockoutViewer {
     document.addEventListener('pointerlockchange', this.onLock);
 
     scene.onAfterRenderObservable.add(() => this.afterRender());
+    // звук страницы — в реестре паузы (./pauseAudio.ts): до первого AudioContext модулей звука
+    trackAudioContexts();
     this.engine.runRenderLoop(() => {
+      // пауза игры: кадр не рисуется — логика кадра стоит, на холсте последний кадр (прогрев нового мира — рисуется)
+      if (this.pause && performance.now() > this.warmUntil) return;
       if (this.overlay) {
         this.overlay.render();
         this.overlayStats();
       } else if (scene.activeCamera) scene.render();
     });
 
-    this.ro = new ResizeObserver(() => this.engine.resize());
+    this.ro = new ResizeObserver(() => {
+      if (this.pause && performance.now() > this.warmUntil) this.resizeLater = true;
+      else this.engine.resize();
+    });
     this.ro.observe(host);
+  }
+
+  /**
+   * Пауза игры (одиночная игра без отладки, src/play/): кадры не рисуются — наблюдатели кадра (логика прогулки: общага,
+   * снег, сюжет, метро, катакомбы…; сцена спец-локации) не шагают, на холсте остаётся последний кадр; звук страницы — на
+   * паузе (./pauseAudio.ts); игровые часы (gameNow) стоят. После паузы шаг кадра обычный: Engine.getDeltaTime меряется
+   * и без отрисовки, сцены спец-локаций режут свой шаг до 0.1 с — пропущенное не догоняется.
+   */
+  setPaused(on: boolean) {
+    if (on === !!this.pause || this.disposed) return;
+    if (on) this.pause = { at: performance.now() };
+    else {
+      this.pausedMs += performance.now() - this.pause!.at;
+      this.pause = null;
+      if (this.resizeLater) {
+        this.resizeLater = false;
+        this.engine.resize();
+      }
+    }
+    setAudioPaused(on);
+  }
+
+  get paused(): boolean {
+    return !!this.pause;
+  }
+
+  /** Игровые часы, мс: performance.now() без пауз (кулдауны страницы на абсолютном времени не тают на паузе). */
+  gameNow(): number {
+    const now = performance.now();
+    return now - this.pausedMs - (this.pause ? now - this.pause.at : 0);
+  }
+
+  /** Прогрев: ms кадры рисуются и на паузе — новый мир встаёт и виден за экраном входа (логика шагает это время). */
+  warmUp(ms: number) {
+    this.warmUntil = performance.now() + ms;
   }
 
   /**
@@ -225,6 +275,9 @@ export class BlockoutViewer {
       this.fps.cameraRotation.set(0, 0);
     }
     this.canvas.focus();
+    // на паузе сцена сменилась (срыв из сцены — в прогулку, сцена догрузилась): прогреть, чтобы за меню паузы была она,
+    // а не последний кадр прежней
+    if (this.pause) this.warmUp(600);
   }
 
   get hasOverlay(): boolean {
@@ -562,6 +615,8 @@ export class BlockoutViewer {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    // закрылись на паузе: контексты закроют их модули — только снять флаг (иначе новый звук родится на паузе)
+    if (this.pause) dropAudioPause();
     document.removeEventListener('pointerlockchange', this.onLock);
     window.removeEventListener('keydown', this.onPoseKey);
     this.sprint.dispose();

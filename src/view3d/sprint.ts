@@ -3,6 +3,8 @@
 //  • Бег — Shift + вперёд (W / ↑), стоя, не заморожен, и игрок реально идёт (сдвиг камеры за кадр). Выносливость —
 //    src/game/stamina.ts (чистая логика): тает на бегу, выдохся — бега нет, пока не отдышится.
 //  • Скорость ×RUN_MUL, разгон и сброс плавно (~0.25 с) — через Posture.speedMul (поза пишет cam.speed каждый кадр).
+//    Предметы (src/view3d/inventory.ts) множат её на extraMul: еда-бафф, сумка-мешок; лежит (обморок) — 0, бега нет.
+//    Еда — refill() (стамина до полной), «Жучок» — spend(v) (качать — тратит стамину).
 //  • Видно: шире угол обзора (+8%), на бегу — качание головы (вверх-вниз по шагу и лёгкий крен); выдохся — грудь
 //    ходит в такт тяжёлому дыханию (и слышно: WebAudio-шум, своя кнопка-ключ BREATH_SOUND_KEY).
 //    Угол, качание и крен — ТОЛЬКО на время рисования кадра: ставятся после всех onBeforeRender (поза, общага,
@@ -57,6 +59,8 @@ const smooth = (k: number) => k * k * (3 - 2 * k);
 export class Sprint {
   /** бег разрешён (View3DPage: только «Прогулка») */
   enabled = true;
+  /** множитель скорости от предметов (Inventory: эффекты еды × сумка; 0 — лежит: ни хода, ни бега) — к posture.speedMul */
+  extraMul = 1;
   private readonly st: SprintState = { v: 1, sprinting: false, exhausted: false, mul: 1 };
   private sta: Stamina = newStamina();
   private shift = false;
@@ -94,6 +98,22 @@ export class Sprint {
   /** Снимок кадра (только чтение; объект один и тот же). */
   get state(): Readonly<SprintState> {
     return this.st;
+  }
+
+  /** Стамина до полной (еда): выдохся — больше нет. */
+  refill() {
+    this.sta = { ...this.sta, v: 1, exhausted: false };
+    this.st.v = 1;
+    this.st.exhausted = false;
+  }
+
+  /** Потратить v стамины (доля шкалы; «Жучок» — качать): до нуля — выдохся; восстановление — заново после паузы. */
+  spend(v: number) {
+    if (!(v > 0) || !Number.isFinite(v)) return;
+    const left = Math.max(0, this.sta.v - v);
+    this.sta = { ...this.sta, v: left, exhausted: this.sta.exhausted || left <= 0, rest: 0 };
+    this.st.v = left;
+    this.st.exhausted = this.sta.exhausted;
   }
 
   /** Звук дыхания (localStorage BREATH_SOUND_KEY). */
@@ -147,14 +167,15 @@ export class Sprint {
     this.lastZ = c.z;
     this.speedS += (step / dt - this.speedS) * Math.min(1, dt * 15);
     const moving = live && this.speedS > MOVE_MIN;
-    const canRun = live && this.enabled && this.posture.pose === 'stand' && !this.posture.frozen && !this.posture.rising && !this.posture.side; // side — боком в щели погреба
+    const extra = Number.isFinite(this.extraMul) ? Math.max(0, this.extraMul) : 1;
+    const canRun = live && this.enabled && this.posture.pose === 'stand' && !this.posture.frozen && !this.posture.rising && !this.posture.side && extra > 0; // side — боком в щели погреба; extra 0 — лежит
     this.sta = stepStamina(this.sta, dt, { want: this.shift && this.fwd.size > 0, moving, canRun });
     // разгон / сброс; позу сменили или заморозили — сброс втрое быстрее
     const rate = (dt / EASE_T) * (canRun ? 1 : 3);
     this.k = this.sta.sprinting ? Math.min(1, this.k + rate) : Math.max(0, this.k - rate);
     const e = smooth(this.k);
     const mul = 1 + (RUN_MUL - 1) * e;
-    this.posture.speedMul = live ? mul : 1;
+    this.posture.speedMul = live ? mul * extra : 1;
     this.phase += (step / STRIDE) * Math.PI * 2;
     // выдохся — тяжёлое дыхание, слабеет к recoverAt; на излёте бега — тише
     const s = this.sta;

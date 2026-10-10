@@ -7,6 +7,8 @@
 // подвала — сеть ходов (layout 'tunnels') с одними комнатами и разной отделкой: сухой, заброшенный, затопленный;
 // сарай — тоже сеть ходов, но из своих комнат (проходы 1.5 м, стойла, сеновал); общага — сеть длинных коридоров с
 // комнатами по бокам (src/data/roomsObshaga.ts, docs/GENERATOR-4D.md §22).
+// catacombs: катакомбы — тёмная сеть ходов трёх эпох с лазами, трубами и сухими площадками убежищ от наводнения
+// (src/data/roomsCatacombs.ts, docs/GENERATOR-4D.md, раздел «Катакомбы»).
 import type { ApartmentSettings, Biome, FinishRule, Room, TunnelSettings, WalkGenSettings, WorldSettings } from '../model/types';
 import { DEFAULT_WET, normWet } from './wet';
 import { STORY_PLACEHOLDER, STORY_START, storyBiomes, storyStep } from '../game/story';
@@ -131,7 +133,7 @@ const CELLAR_TAGS: [string, number][] = [['погреб', 1]];
  *  клетушки, крепь; света нет совсем (dark 1 — только фонарь). Выход — камера с дверью в снег (хаб со спец-локацией:
  *  переходов по счётчику нет). */
 function cellarBiome(): Biome {
-  const { note, ...rest } = T('cellar', 'Погреб', '#3b2e22', [
+  const { note, ...rest } = T('cellar', 'Погреб', '#6e5640', [
     rule('погреб', [['f_cel_soil', 1]], [['f_cel_floor', 5], ['f_cel_boards', 1]]),
   ], 'Земляной погреб: узкие ходы 0.6 м в чёрной земле, крепь из старых брёвен, со свода сыплется земля; щели 0.4 м — ' +
     'только боком; крошечные камеры и клетушки за щелями (банки, мешки, осыпи). Света нет — только фонарь, пыль. Вход — ' +
@@ -144,6 +146,68 @@ function cellarBiome(): Biome {
   // свой предел обзора 6 м (клетушки крошечные; ходы и камеры — длинный обзор, им предел не мешает); порядок полей — как
   // у normBiome
   return { ...rest, sightM: 6, note };
+}
+
+// catacombs
+/** Катакомбы — сеть ходов из своих комнат (src/data/roomsCatacombs.ts). */
+const CATACOMB_TAGS: [string, number][] = [['катакомбы', 1]];
+
+/** Катакомбы: питерские подземные ходы трёх эпох — имперский кирпичный свод, советский бетон с зелёной панелью,
+ *  смешанные (облицовка отваливается до кирпича); лазы 0.8×0.8, трубы поперёк хода, насосные станции; периодически
+ *  затапливает до 2.0 м (src/locations/catacombsFlood.ts) — сухо только на площадках убежищ на +2.1: у каждого хаба и в
+ *  боковых нишах. Отделка — по эпохе и виду (правила 'катакомбы' нет — иначе оно бы победило). Света нет (dark 1). */
+function catacombsBiome(): Biome {
+  return T('catacombs', 'Катакомбы', '#5e6b58', [
+    rule('имперский', [['f_cat_brick', 1]], [['f_cat_stone', 3], ['f_cat_silt', 1]]),
+    rule('советский', [['f_cat_green', 3], ['f_cat_concrete', 2]], [['f_cat_floor', 3], ['f_cat_silt', 1]]),
+    rule('смешанный', [['f_cat_peel', 1]], [['f_cat_silt', 2], ['f_cat_stone', 1]]),
+    rule('лаз', [['f_cat_concrete', 2], ['f_cat_brick', 1]], [['f_cat_silt', 1]]),
+    rule('станция', [['f_cat_green', 2], ['f_cat_concrete', 1]], [['f_cat_floor', 1]]),
+    rule('убежище', [['f_cat_brick', 2], ['f_cat_peel', 1]], [['f_cat_floor', 1], ['f_cat_stone', 1]]),
+  ], 'Питерские катакомбы: тёмные ходы 2 м трёх эпох — имперский кирпичный свод XIX века, советский бетон с зелёной ' +
+    'панелью, кабелями и гермодверями, смешанные, где облицовка отваливается до старого кирпича; трубы поперёк хода ' +
+    '(перелезть, проползти, пригнуться), квадратные лазы 0.8×0.8 только ползком, насосные станции с колоннами. Света нет ' +
+    '— только фонарь. Ходы периодически затапливает до 2 метров: спасает только сухое место на +2.1 — машинная площадка ' +
+    'или антресоль хаба, полати в боковой нише-убежище; услышал воду — беги наверх. Вход — бесконечной лестницей или ' +
+    'переходом, выход — марш наверх хаба или переход.',
+  CATACOMB_TAGS,
+  // хаб (всегда с сухой площадкой) — через 24–48 м хода: до сухого места не дальше ~50 м, а с нишами (75% боковых
+  // проёмов — ниша-убежище) обычно 10–20 м; повороты 12%, развилки 14% на кусок; кольца из хабов умеренно (12%, 30–70 м),
+  // бесконечный участок — редко (2%, 16–28 м, не ближе 16 м к хабу)
+  { hubEvery: [24, 48], turn: 0.12, branch: 0.14, storage: 0.75, ring: 0.12, ringLen: [30, 70], loop: 0.02, loopLen: [16, 28], loopMinDist: 16 }, 1);
+}
+
+// sanatorium
+/** Санаторий — сеть коридоров из своих комнат (src/data/roomsSanatorium.ts). */
+const SANATORIUM_TAGS: [string, number][] = [['санаторий', 1]];
+
+/** Санаторий: обычное трёхмерное здание без 4D (Biome.flat) — коридоры-галереи 3 м с красной дорожкой и окнами в тюле,
+ *  палаты, процедурные (водолечебница, грязи, душ Шарко, массаж), столовая, комнаты в ремонте; хабы — вестибюль (вход и
+ *  выход — двери к корпусам 'stair') и зал бассейна. Отделка — по тегу помещения (правила 'санаторий' нет — иначе оно бы
+ *  победило). Залы до 18×14 м: без предела обзора (sightM 0 — складок нет, обзор ничему не мешает). */
+function sanatoriumBiome(): Biome {
+  const { note, ...rest } = T('sanatorium', 'Санаторий', '#7fb3a6', [
+    rule('коридор', [['f_san_wall_teal', 1]], [['f_san_parquet', 1]]),
+    rule('вестибюль', [['f_san_plaster', 1]], [['f_san_terrazzo', 1]]),
+    rule('бассейн', [['f_san_pool_wall', 1]], [['f_san_pool_floor', 1]]),
+    rule('палата', [['f_san_plaster', 3], ['f_san_wall_teal', 1]], [['f_san_parquet', 1]]),
+    rule('ремонт', [['f_san_reno_wall', 1]], [['f_san_boards_yellow', 1]]),
+    rule('водолечебница', [['f_san_wood_panel', 1]], [['f_metlakh', 1]]),
+    rule('грязелечебница', [['f_san_tile_white', 1]], [['f_metlakh', 1]]),
+    rule('душ', [['f_san_tile_white', 1]], [['f_metlakh', 1]]),
+    rule('кабинет', [['f_san_wall_teal', 1]], [['f_san_parquet', 1]]),
+    rule('столовая', [['f_san_plaster', 1]], [['f_san_parquet', 1]]),
+  ], 'Санаторий: обычное трёхмерное здание без 4D-сдвигов — пошёл налево, ещё налево и ещё — вернёшься, только если ' +
+    'коридоры по-настоящему сомкнулись. Длинные коридоры-галереи 3 м: красная ковровая дорожка по паркету «ёлочкой», ' +
+    'окна в белом тюле с бирюзовыми ламбрекенами, фикусы и пальмы в кадках, банкетки; палаты, процедурные — водолечебница ' +
+    'с кафельной ванной, грязелечебница, душ Шарко, массаж; столовая; комнаты в ремонте. Хабы — вестибюль с регистратурой ' +
+    '(вход и выход — двери к корпусам) и огромный зал бассейна под бетонными сводами.',
+  SANATORIUM_TAGS,
+  // длинные прямые: поворот 10%, развилка 8% на кусок; хаб через 60–140 м; 75% дверей палат открываются; колец и
+  // бесконечных участков нет (flat гарантирует это и сам)
+  { hubEvery: [60, 140], turn: 0.1, branch: 0.08, storage: 0.75, ring: 0, ringLen: [30, 60], loop: 0, loopLen: [16, 30], loopMinDist: 30 });
+  // обзор 50 м, без предела обзора, евклидов рост (flat); порядок полей — как у normBiome
+  return { ...rest, viewM: 50, sightM: 0, flat: true, note };
 }
 
 /** Биомы по умолчанию (свежие объекты при каждом вызове). */
@@ -191,6 +255,10 @@ export function defaultBiomes(): Biome[] {
     metroBiome(),
     // cellar
     cellarBiome(),
+    // catacombs
+    catacombsBiome(),
+    // sanatorium
+    sanatoriumBiome(),
     B('rich', 'Богатая квартира', '#d06a4e', [
       ['прихожая', 1], ['кухня', 1], ['санузел', 1], ['жилая', 1.5], ['балкон', 1], ['кладовка', 1], ['коридор', 0.2],
     ], 'Сюда ведут переходы: квартира с усиленной элитностью (richBoost), выходы — в обычные квартиры биома, откуда пришли.', true),
@@ -350,18 +418,35 @@ const METRO_PASS = ['metro_hall', 'metro_per', 'metro_slu', 'esc>hall', 'hall>es
 const METRO_STORE = ['room>slu'];
 const METRO_SIDE = ['slu>room'];
 const METRO_DOORS = ['hall>per', 'per>hall', 'per>slu', 'slu>per'];
+// cellar: метки погреба (src/data/roomsCellar.ts, §25): ходы 0.6 м между собой; щель 0.4 м из хода в клетушку — как
+// кладовая подвала (шанс storage)
+const CELLAR_PASS = ['cellar'];
+const CELLAR_STORE = ['bin>cellar'];
+const CELLAR_SIDE = ['cellar>bin'];
+// catacombs: метки катакомб (src/data/roomsCatacombs.ts): ходы 2.0 м и лазы 0.8 м — одна сеть (устье лаза — кусок с
+// обеими метками); проём хода в нишу-убежище — как кладовая подвала (шанс storage)
+const CAT_PASS = ['catacombs', 'cat_duct'];
+const CAT_STORE = ['refuge>catacombs'];
+const CAT_SIDE = ['catacombs>refuge'];
+// sanatorium: метки санатория (src/data/roomsSanatorium.ts): проход сети — коридоры и хабы 'sanat' (3.0 м); дверь палаты
+// (комнаты в ремонте) — как кладовая подвала (шанс storage); дверь процедурной / общего помещения 'sanat>proc' — растёт
+// всегда (любой совместимой комнатой биома, как служебка)
+const SAN_PASS = ['sanat'];
+const SAN_STORE = ['room>sanat'];
+const SAN_SIDE = ['sanat>room'];
+const SAN_DOORS = ['sanat>proc'];
 /** Проходы сетей ходов: подвал — 'basement' (1.0 м), сарай — 'barn' (1.5 м), снег — 'snow' (лаз 1.2 м), завод —
  *  'factory' (2.0 м), общага — коридоры 'obshaga' (2.0 м) и ходы затопленного подвала 'obshaga_bsm' (1.6 м). Сети друг
  *  с другом не стыкуются. */
-export const TUNNEL_PASS_TAGS: ReadonlySet<string> = new Set([TUNNEL_TAG, 'barn', 'snow', 'factory', 'obshaga', 'obshaga_bsm', ...METRO_PASS]);
+export const TUNNEL_PASS_TAGS: ReadonlySet<string> = new Set([TUNNEL_TAG, 'barn', 'snow', 'factory', 'obshaga', 'obshaga_bsm', ...METRO_PASS, ...CELLAR_PASS, ...CAT_PASS, ...SAN_PASS]);
 /** Дверь бокового помещения (кладовая подвала, комната общаги) — со стороны помещения: по ней кусок — «кладовая». */
-export const TUNNEL_STORE_TAGS: ReadonlySet<string> = new Set(['storage>basement', 'den>snow', 'room>obshaga', ...METRO_STORE]);
+export const TUNNEL_STORE_TAGS: ReadonlySet<string> = new Set(['storage>basement', 'den>snow', 'room>obshaga', ...METRO_STORE, ...CELLAR_STORE, ...CAT_STORE, ...SAN_STORE]);
 /** Дверь хода в боковое помещение (кладовая, комната общаги) — со стороны хода: за ней с шансом tunnels.storage —
  *  помещение, иначе дверь заперта (тупик). */
-export const TUNNEL_SIDE_TAGS: ReadonlySet<string> = new Set(['basement>storage', 'snow>den', 'obshaga>room', ...METRO_SIDE]);
+export const TUNNEL_SIDE_TAGS: ReadonlySet<string> = new Set(['basement>storage', 'snow>den', 'obshaga>room', ...METRO_SIDE, ...CELLAR_SIDE, ...CAT_SIDE, ...SAN_SIDE]);
 /** Метки кусков роста ходов (кроме хабов): проходы, двери в боковые помещения, дверь в служебку, двери коридора общаги
  *  в общее помещение (кухня, туалет, душевая, прачечная) и на лестничную клетку — растут всегда, как служебка. */
-const TUNNEL_DOORS: ReadonlySet<string> = new Set([...TUNNEL_PASS_TAGS, ...TUNNEL_SIDE_TAGS, 'corridor>service', 'obshaga>common', 'obshaga>stairs', ...METRO_DOORS]);
+const TUNNEL_DOORS: ReadonlySet<string> = new Set([...TUNNEL_PASS_TAGS, ...TUNNEL_SIDE_TAGS, 'corridor>service', 'obshaga>common', 'obshaga>stairs', ...METRO_DOORS, ...SAN_DOORS]);
 
 /** Вид комнаты в сети ходов: хаб (тег «хаб»), кладовая (дверь к ходу 'storage>basement'), прямой (два
  *  прохода на противоположных стенах), поворот (на соседних), развилка (три и больше); null — не кусок хода. */
@@ -425,6 +510,8 @@ export function normBiome(v: unknown): Biome | null {
     ...(fin(o.viewM) && o.viewM > 0 ? { viewM: clampN(o.viewM, 1, 200) } : {}),
     // свой предел обзора: 0 — без предела (в отличие от viewM ноль — значение, а не «нет поля»)
     ...(fin(o.sightM) && o.sightM >= 0 ? { sightM: clampN(o.sightM, 0, 200) } : {}),
+    // sanatorium: евклидов рост без 4D-сдвигов — только true (нет поля / мусор — как раньше)
+    ...(o.flat === true ? { flat: true } : {}),
     note: typeof o.note === 'string' ? o.note : '',
   };
 }
@@ -576,6 +663,9 @@ export function plainBiomes(w: WorldSettings): Biome[] {
 
 /** Биом растёт сетью ходов (подвал). */
 export const isTunnels = (b: Biome | null | undefined): boolean => b?.layout === 'tunnels';
+
+/** sanatorium: сеть ходов биома растёт евклидово, без 4D-сдвигов (Biome.flat; квартирные биомы флаг не меняет). */
+export const isFlat = (b: Biome | null | undefined): boolean => b?.flat === true && isTunnels(b);
 
 /** Подвалы мира (биомы с сетью ходов). */
 export function tunnelBiomes(w: WorldSettings): Biome[] {

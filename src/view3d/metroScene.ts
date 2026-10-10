@@ -285,6 +285,8 @@ interface Tunnel {
   statics: Mesh[];
   lanes: LaneMeshes[];
   gaps: Gap[];
+  /** невидимый коллайдер балюстрад между дорожками (от пола до настила): см. build() */
+  bal: Mesh | null;
   used: number;
   list: Mesh[];
 }
@@ -331,8 +333,10 @@ export class MetroEscScene {
     for (const T of this.by.values()) {
       if (now - T.used > 1500) {
         for (const L of T.lanes) if (L.collider) L.collider.checkCollisions = false;
+        if (T.bal) T.bal.checkCollisions = false;
         continue;
       }
+      if (T.bal) T.bal.checkCollisions = colliding(T.inst);
       const lamps = new Map<number, number>();
       for (const L of T.lanes) {
         const v = view(T.inst, L.lane.lane);
@@ -404,7 +408,7 @@ export class MetroEscScene {
     const vert = up === 'N' || up === 'S';
     const Ltun = vert ? room.y1 - room.y0 : room.x1 - room.x0;
     const Wtun = vert ? room.x1 - room.x0 : room.y1 - room.y0;
-    const T: Tunnel = { key, inst: inst.id, root, statics: [], lanes: [], gaps: [], used: performance.now(), list: [] };
+    const T: Tunnel = { key, inst: inst.id, root, statics: [], lanes: [], gaps: [], bal: null, used: performance.now(), list: [] };
     const same = lanes.filter((l) => l.up === up);
     // дорожки в системе тоннеля: угол дорожки (s = 0, b = 0 в её системе) → (s, b)
     const placed = same.map((l) => {
@@ -416,6 +420,7 @@ export class MetroEscScene {
     for (const P of placed) T.lanes.push(this.buildLane(inst, P.l, [P.b, P.l.z0 - Bz, P.s], root, seed));
     // ── статика тоннеля: настилы, торшеры, свод
     const S = new StairBatch();
+    const BAL = new StairBatch();
     const lead = placed[0];
     if (lead) {
       const pr = profile(lead.l);
@@ -445,6 +450,19 @@ export class MetroEscScene {
           [[e.b0, hz + DECK_TOP - 0.06, s0], [e.b1, hz + DECK_TOP - 0.06, s0], [e.b1, hz + DECK_TOP - 0.06, s0 + 0.04], [e.b0, hz + DECK_TOP - 0.06, s0 + 0.04]],
           C.panelEdge, C.panel,
         );
+        // коллайдер балюстрады — от пола до настила на всю её длину: у марша блокаут ставит только стенки перил по краям
+        // дорожек (src/blockout/stairs.ts, с 0.3 м перепада) — между ними 0.64 м, капсула игрока 0.6 пролезала под настил
+        // и шла «внутри» балюстрады до верхней площадки
+        for (let k = 0; k + 1 < ss.length; k++) {
+          const sa = ss[k], sb = ss[k + 1];
+          if (sb - sa < 1e-6) continue;
+          const ta = hT(sa) + DECK_TOP, tb = hT(sb) + DECK_TOP;
+          BAL.hexa(
+            [[e.b0, hz, sa], [e.b1, hz, sa], [e.b1, hz, sb], [e.b0, hz, sb]],
+            [[e.b0, ta, sa], [e.b1, ta, sa], [e.b1, tb, sb], [e.b0, tb, sb]],
+            C.deck, C.deck,
+          );
+        }
         if (wall) continue;
         // торшеры: бронзовая стойка и матовый плафон (светится — отдельный меш промежутка)
         const L = new StairBatch();
@@ -461,6 +479,8 @@ export class MetroEscScene {
       }
       const st = meshOf(scene, `metro:escDeck:${inst.id}`, S, this.mats.body, root);
       if (st) T.statics.push(st);
+      T.bal = meshOf(scene, `metro:escBalCol:${inst.id}`, BAL, this.mats.body, root);
+      if (T.bal) T.bal.isVisible = false;
       // свод: ровный над площадками, наклонный над маршами; пята — над линией носков, поперёк — дуга на всю ширину
       const vault = this.vault(inst.id, Ltun, Wtun, hT, ss, Number(inst.ceilM) || 0, root);
       if (vault) T.statics.push(vault);

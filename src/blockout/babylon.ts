@@ -469,7 +469,8 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
     for (const s of list) for (const r of s.rects) slab > 0 ? g.planBox(r, s.z, s.z + slab) : g.planQuad(r, s.z, false);
     const portal = inst == null;
     const m = g.toMesh(portal ? 'portalCeiling' : `ceiling:${inst}`, scene);
-    ceilings.push(add(m, portal ? { kind: 'portalCeiling' } : { kind: 'ceiling', inst }, materials.ceiling, false));
+    // низкий потолок (Surface.solid — лаз ниже роста, src/blockout/stairs.ts liftPiece) — коллайдер, иначе без коллизий
+    ceilings.push(add(m, portal ? { kind: 'portalCeiling' } : { kind: 'ceiling', inst }, materials.ceiling, list.some((s) => s.solid === true)));
   }
 
   // ── облицовка: квады по faces, батч по отделке; dado — низ грани до heightM другой отделкой ──
@@ -670,7 +671,12 @@ export function buildBabylonBlockout(scene: Scene, model: BlockoutModel, opts: B
       extraMats.push(mat);
     }
     const md = (): BlockoutMeta => ({ kind: 'prop', inst: p.inst, propId: p.propId, name: p.name });
-    const m = add(g.toMesh(`prop:${p.inst}:${p.propId}`, scene), clear ? { ...md(), cover: p.cover, clear } : md(), mat, true);
+    // подвесной (тег «потолок») — без коллизий: его болванка в 1–2 см стоит на p.z, а модель — на p.z + wallHeightM; в
+    // комнате со своим потолком или лестницей (stairs.ts liftPiece: z = низ + подъём + ceilM − wallHeightM) болванка
+    // висела бы плитой поперёк хода — кессоны переходов метро (потолок 3.2) на 0.7 м, у эскалатора (3.5) на 1.0 м, над
+    // маршем — на уровне головы: невидимая стена
+    const hang = p.tags.includes('потолок');
+    const m = add(g.toMesh(`prop:${p.inst}:${p.propId}`, scene), clear ? { ...md(), cover: p.cover, clear } : md(), mat, !hang);
     m.position.set(p.x, p.z ?? floorZ.get(p.inst) ?? 0, -p.y);
     m.rotation.y = (p.rot || 0) * deg;
     props.push(m);

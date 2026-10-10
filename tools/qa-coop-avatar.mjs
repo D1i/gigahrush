@@ -92,6 +92,8 @@ function MATE(light = false) {
   const pos = (s) => nd(s)?.getAbsolutePosition().clone() ?? null;
   const head = m.head.getAbsolutePosition().clone();
   const root = m.root.position.clone();
+  // высоты — от ног аватара (глаза − их высота): корень модели скрючившись / ползком сдвинут по высоте
+  const feetY = a.y - a.eye;
   const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
   const fwd = (q) => (q.x - root.x) * fx + (q.z - root.z) * fz;
   const side = (q) => (q.x - root.x) * fz - (q.z - root.z) * fx;
@@ -100,10 +102,10 @@ function MATE(light = false) {
     enabled: m.root.isEnabled(), meshes: m.meshes.length, layer: m.meshes[0]?.layerMask,
     meshesEnabled: m.meshes.filter((x) => x.isEnabled() && x.isVisible).length,
     root: V(root), rootYaw: +m.root.rotation.y.toFixed(3), squash: +m.root.scaling.y.toFixed(3),
-    head: V(head), headFwd: +fwd(head).toFixed(3), headAboveFeet: +(head.y - root.y).toFixed(3),
-    handRSide: +side(hr).toFixed(3), handLSide: +side(hl).toFixed(3), handRUp: +(hr.y - root.y).toFixed(3), handLUp: +(hl.y - root.y).toFixed(3),
+    head: V(head), headFwd: +fwd(head).toFixed(3), headAboveFeet: +(head.y - feetY).toFixed(3),
+    handRSide: +side(hr).toFixed(3), handLSide: +side(hl).toFixed(3), handRUp: +(hr.y - feetY).toFixed(3), handLUp: +(hl.y - feetY).toFixed(3),
     handFwdDiff: +(fwd(hl) - fwd(hr)).toFixed(3),
-    footFwdDiff: +(fwd(footL) - fwd(footR)).toFixed(3), footLUp: +(footL.y - root.y).toFixed(3), footRUp: +(footR.y - root.y).toFixed(3),
+    footFwdDiff: +(fwd(footL) - fwd(footR)).toFixed(3), footLUp: +(footL.y - feetY).toFixed(3), footRUp: +(footR.y - feetY).toFixed(3),
   };
   if (light) return r;
   let min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
@@ -122,7 +124,7 @@ function MATE(light = false) {
   const boneY = {};
   for (const b of ['Hips', 'Chest', 'Head', 'Shin.L', 'Foot.L', 'Shin.R', 'Foot.R', 'Hand.L', 'Hand.R']) {
     const q = pos(b);
-    if (q) boneY[b] = [+(q.y - root.y).toFixed(3), +fwd(q).toFixed(3)];
+    if (q) boneY[b] = [+(q.y - feetY).toFixed(3), +fwd(q).toFixed(3)];
   }
   // матрицы костей, которые уходят в шейдер (скиннинг): сумма модулей — «отпечаток» позы
   const sk = m.entries?.skeletons?.[0];

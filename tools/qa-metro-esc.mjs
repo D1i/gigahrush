@@ -1,4 +1,4 @@
-// QA эскалаторов метро в браузере (docs/LOCATIONS.md §16 «Метро: эскалаторы»):
+// QA эскалаторов метро в браузере (docs/LOCATIONS.md §18 «Метро: эскалаторы»):
 //  A  старт в метро: режим метро включён, свет холодный, туман метро;
 //  B  эскалаторный тоннель: дорожки, направления; лента везёт вверх / вниз (сдвиг по наклону ≈ 0.75 м/с);
 //  C  срыв под игроком высоко на дорожке: рывок → лента бежит вниз → обрыв, падение, затемнение, «Эскалатор сорвался»;
@@ -209,16 +209,20 @@ try {
 
   // ═════════════════ D: перелезть ═════════════════
   const mid = lanes[1];
-  await standOn(page, mid.lane, mid.len * 0.7);
+  // как можно выше (перелезать можно не ближе ESC.climbEndM 1.2 к концам): у короткого тоннеля (марш 9.4) лента в
+  // разгоне уносит к низу за ~2 с — подсказку и E проверять сразу, снимок — после
+  await standOn(page, mid.lane, mid.len - 1.6);
   await page.waitForTimeout(400);
   const keyD = await page.evaluate((n) => window.__rfMetro.forceCollapse(n), mid.lane);
   ok('D срыв начался под игроком', !!keyD, keyD);
   const sh = await waitSt(page, (s) => s.runs.some((r) => r.stage === 'runaway'), 15000);
   ok('D рывок → лента бежит вниз, тревога', sh.runs.some((r) => r.stage === 'runaway') && sh.alarm === 'runaway', JSON.stringify({ runs: sh.runs, alarm: sh.alarm, climb: sh.climb }));
-  await page.screenshot({ path: out + 'metro-esc-5-runaway.png' });
-  const hud = await page.evaluate(() => document.querySelector('.v3-lift-prompt')?.textContent ?? null);
+  const hud = await page
+    .waitForFunction(() => /перелезть/.test(document.querySelector('.v3-lift-prompt')?.textContent ?? ''), null, { timeout: 3000, polling: 50 })
+    .then(() => page.evaluate(() => document.querySelector('.v3-lift-prompt')?.textContent ?? null), () => null);
   ok('D подсказка «E — перелезть через балюстраду»', /перелезть/.test(hud ?? ''), String(hud));
   await pressE(page);
+  await page.screenshot({ path: out + 'metro-esc-5-runaway.png' });
   const cl = await waitSt(page, (s) => !s.climbing && s.lane && s.lane.lane !== mid.lane, 10000);
   ok('D перелез на соседнюю дорожку, жив', cl && !cl.dead && !cl.falling && cl.lane && cl.lane.lane !== mid.lane, JSON.stringify({ lane: cl?.lane, dead: cl?.dead }));
   const brokeD = await page.waitForFunction((k) => {
@@ -258,11 +262,14 @@ try {
   ok('C осталась целая дорожка', rest2.length >= 1, JSON.stringify(rest2.map((l) => l.lane)));
   if (rest2.length) {
     const cL = rest2[0];
-    // у самого верха: лента до обрыва убежит 8.75 м по наклону — не донесёт (короткий тоннель — почти донесёт)
-    await standOn(page, cL.lane, cL.len - 0.3, true);
+    // лента до обрыва убежит 8.75 м по наклону: у короткого тоннеля (марш 9.4) даже с самого верха почти донесёт до низа,
+    // а при редких кадрах (dt 0.1) — донесёт. Поэтому: срыв, и на бегущую ленту у верха — во второй половине разгона
+    // (до обрыва убежит ≤ ~6.6 м) — не донесёт ни в каком тоннеле
     await page.evaluate(() => window.__rfMetro.noGrace());
     const keyC = await page.evaluate((n) => window.__rfMetro.forceCollapse(n), cL.lane);
-    ok('C срыв под игроком у верха', !!keyC, String(keyC));
+    const midRun = await waitSt(page, (s) => s.runs.some((r) => r.key === keyC && r.stage === 'runaway' && r.t >= 2.4), 15000);
+    await standOn(page, cL.lane, cL.len - 0.5, true);
+    ok('C срыв у верха, игрок на бегущей ленте', !!keyC && midRun?.runs.some((r) => r.key === keyC), String(keyC));
     const fl = await waitSt(page, (s) => s.falling || s.dead, 30000);
     ok('C не успел: падение с лентой', fl && (fl.falling || fl.dead), JSON.stringify({ falling: fl?.falling, dead: fl?.dead, runs: fl?.runs }));
     await page.screenshot({ path: out + 'metro-esc-7-fall.png' });

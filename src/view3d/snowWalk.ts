@@ -86,6 +86,8 @@ export interface SnowWalkHost {
   onHud(h: SnowHud): void;
   /** можно ли сейчас управлять (нет спец-сцены поверх, режим от первого лица) */
   live(): boolean;
+  /** множитель частоты обвалов от предметов (Inventory.fx.collapseMul: горит зиппа — 2); нет — 1 */
+  collapseMul?(): number;
 }
 
 export class SnowWalk {
@@ -121,6 +123,8 @@ export class SnowWalk {
   private collidersAt = 0;
   /** ушёл из снега облётом — встать, когда поза снова действует не в снегу */
   private standLater = false;
+  /** на четвереньки опустил сам снег (скрючившись упёрся в низкий свод) — когда место есть, сам и поднимет */
+  private autoLow = false;
   /** сколько с пробует встать после снега (стоячие коллайдеры лаза/берлоги ещё включены — ждать, а не бросать) */
   private standTry = 0;
 
@@ -208,11 +212,26 @@ export class SnowWalk {
       this.last = null;
     }
     if (P.pose !== 'crawl') {
+      // сам на четвереньки опускает только снег (ниже); игрок встал или лёг сам (C) — его выбор, не трогать
+      this.autoLow = false;
       // свод впереди — только на ходу: стоя лицом к низкому лазу C давала бы «скрючился — снова на четвереньки» без конца
       const go = this.last ? Math.hypot(c.x - this.last.x, c.z - this.last.z) : 0;
       const fwd = this.cam.getDirection(Vector3.Forward());
       const ahead = go > 0.003 ? this.ceiling(c.x + fwd.x * 0.45, P.feet, c.z + fwd.z * 0.45) : Infinity;
-      if (ahead < ROOM_CROUCH || this.ceiling(c.x, P.feet, c.z) < ROOM_CROUCH) P.set('crawl');
+      if (ahead < ROOM_CROUCH || this.ceiling(c.x, P.feet, c.z) < ROOM_CROUCH) {
+        P.set('crawl');
+        this.autoLow = true;
+      }
+    } else if (this.autoLow) {
+      // сам опустился на четвереньки у низкого свода (скрючившись в берлоге) — место снова есть: сам и скрючится
+      const go = this.last ? Math.hypot(c.x - this.last.x, c.z - this.last.z) : 0;
+      const fwd = this.cam.getDirection(Vector3.Forward());
+      const here = this.ceiling(c.x, P.feet, c.z);
+      const ahead = go > 0.003 ? this.ceiling(c.x + fwd.x * 0.45, P.feet, c.z + fwd.z * 0.45) : here;
+      if (here >= ROOM_CROUCH + 0.1 && ahead >= ROOM_CROUCH + 0.1) {
+        P.set('crouch');
+        this.autoLow = false;
+      }
     }
     const crouch = P.pose !== 'crawl';
     P.frozen = this.col.phase === 'buried';
@@ -220,7 +239,7 @@ export class SnowWalk {
     const moved = this.last ? Vector3.Distance(p, this.last) : 0;
     this.last = p;
     const px = c.x, py = -c.z;
-    for (const e of stepCollapse(this.spec, this.col, dt, den || crouch || moved > 1 ? 0 : moved, { x: px, y: py })) this.onEvent(e, r.id);
+    for (const e of stepCollapse(this.spec, this.col, dt, den || crouch || moved > 1 ? 0 : moved * (this.host.collapseMul?.() ?? 1), { x: px, y: py })) this.onEvent(e, r.id);
     // тряска (треск, обвал) — крен поверх хода
     this.shake = Math.max(0, this.shake - dt * 1.5);
     P.roll = this.shake > 0 ? (Math.random() - 0.5) * 0.03 * this.shake : 0;

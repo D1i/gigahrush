@@ -438,12 +438,15 @@ describe('blockout: высоты и опции', () => {
   });
 
   it('укрытия: кровать и стол на ножках получают cover/clear, сплошные — нет', () => {
-    // все id таблицы — настоящие предметы каталога, вид совпадает с каталогом (кровать / стол)
+    // все id таблицы — настоящие предметы каталога; кровать — просвет BED_CLEAR_M и тег кровати; 'table' — любая
+    // нависающая плита (стол, труба катакомб) с просветом не ниже стола: под ней проходят на четвереньках
     for (const [id, c] of Object.entries(PROP_COVER)) {
       const def = PROP_BY_ID[id];
       expect(def, id).toBeDefined();
-      expect(c.clear).toBe(c.cover === 'bed' ? BED_CLEAR_M : TABLE_CLEAR_M);
-      expect(def.tags.includes(c.cover === 'bed' ? 'кровать' : 'стол') || def.tags.includes('раскладушка'), id).toBe(true);
+      if (c.cover === 'bed') {
+        expect(c.clear, id).toBe(BED_CLEAR_M);
+        expect(def.tags.includes('кровать') || def.tags.includes('раскладушка'), id).toBe(true);
+      } else expect(c.clear, id).toBeGreaterThanOrEqual(TABLE_CLEAR_M);
       // под болванкой есть плита: высота по тегам выше просвета
       expect(propHeightM(def.tags, def.name), id).toBeGreaterThan(c.clear + 0.04);
     }

@@ -395,6 +395,9 @@ export function dwOrder(f: FoldSettings, mode: ShiftMode, wP: number, rng: Rng):
   return out.filter((d) => Math.abs(wP + d) <= f.maxLayer);
 }
 
+/** sanatorium: порядок проб при заданном слое (GrowOpts.layer): один сдвиг dw, если его допускает режим порога. */
+const layerOrder = (mode: ShiftMode, dw: number): number[] => ((mode === 'never' && dw !== 0) || (mode === 'always' && dw === 0) ? [] : [dw]);
+
 /** Настройки складчатой стыковки для потокового мира. */
 export interface GrowOpts {
   /** вес комнаты при взвешенном выборе (по умолчанию room.gen.weight; поток — ветвистость и модификаторы сида) */
@@ -405,6 +408,9 @@ export interface GrowOpts {
   /** «комната важнее слоя»: кандидат сразу пробует все свои dw (без отложенной фазы 2) — выбор комнаты не
    *  зависит от занятости слоёв, от неё зависит только W */
   stick?: boolean;
+  /** sanatorium: слой новой комнаты задан (вход во flat-биом на свежий слой W, stream.ts): кандидат пробует только его —
+   *  без розыгрыша dwOrder и без предела maxShift; правила порогов 'never' (только dw = 0) и 'always' (dw ≠ 0) — как обычно */
+  layer?: number;
 }
 
 /** Кандидат стыковки, прошедший правила порогов и локальную проверку: тело в 3D и порядок проб dw. */
@@ -465,7 +471,7 @@ export function growFrom(ctx: Ctx, lay: Lay, parent: Node, ai: number, groups: I
           if (why === 'seam') { fails.seam++; continue; }
           pvs = why;
         }
-        const c: Cand = { info, bi, rot, body, order: dwOrder(ctx.f, mode, parent.w, rng), pvs };
+        const c: Cand = { info, bi, rot, body, order: opts.layer === undefined ? dwOrder(ctx.f, mode, parent.w, rng) : layerOrder(mode, opts.layer - parent.w), pvs };
         if (opts.stick) {
           for (const dw of c.order) if (layerFree(ctx, lay, parent.w + dw, body, parent.floor)) return put(c, dw);
           fails.space++;

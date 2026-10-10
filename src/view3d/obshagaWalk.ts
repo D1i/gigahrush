@@ -13,8 +13,8 @@
 //    хотбаре есть — операция мира 'lamp': взятая не стоит больше ни у кого; лампа — в хотбар и в руку; места нет — «Руки
 //    заняты»). Держит — лампа выбрана в хотбаре (host.lampHeld; модель у камеры и тусклый жёлтый свет рисует хотбар);
 //    другая ячейка — лампа убрана. G — поставить на пол (предмет мира), E — подобрать. Держащего рука не хватает; поле
-//    лампы (3 м) — у лампы в руках и у стоящей на полу (host.drops) — защищает всех рядом.
-//  • Рука: в темноте из невидимой двери; ползёт кончиком по пути к ближайшему незащищённому игроку (проёмы комнат),
+//    лампы (1 м) — у лампы в руках и у стоящей на полу (host.drops) — защищает всех рядом.
+//  • Рука: в темноте из невидимой двери; ползёт кончиком по пути к своей цели — одному незащищённому игроку (проёмы комнат),
 //    только пока её не видят (кадр + линия взгляда сквозь проёмы + свет: лампа ближе LANTERN_LIGHT_R или горящие
 //    лампы); невидимая и близко — хватает и утаскивает за свою дверь: чёрный экран, «Тебя утащили за дверь», «Ещё раз» —
 //    возрождение в ближайшем вестибюле с вахтой (кооп — рядом с живым напарником). Свет вернулся посреди волочения —
@@ -25,7 +25,17 @@
 //    у утащенного (здоровье снова 100). Кооп: напарник под кроватью — у хоста по PlayerState.eye < SHELTER_EYE (глаз
 //    над полом: лёжа 0.22, на четвереньках 0.5) И внутри рамки кровати (bedAt: рядом с кроватью лёжа — не укрыт);
 //    тычок — событие среза, урон считает жертва у себя, смерть — PlayerState.dead. Кровать руке известна
-//    (HandPlayer.cover / NavPlayer.cover — рамка из навигации): ползёт к свободному боку, кисть и пальцы — снаружи.
+//    (HandPlayer.cover / NavPlayer.cover — рамка из навигации): ползёт к свободному боку, кисть и пальцы — снаружи;
+//    ближе не подойти — палец вытягивается до OBSHAGA.pokeMaxM.
+//  • Цель руки — одна (HandView.target, aimHand механики): счёт «агро − путь». Хост у всех игроков одинаково меряет
+//    горизонтальную скорость по смещениям (окно SPEED_WIN_S; скачок быстрее SPEED_MAX — телепорт, не шум) →
+//    HandPlayer.speed (режиссёр копит память шума); фонарик — свой host.torch(), напарник — PlayerState.torch; путь до
+//    каждого — pathLen по навигации (HandPlayer.dist); handGoal ведёт только к цели. Кровати не-целей — пол для руки.
+//  • Предметы (host.fx — эффекты хотбара, сессия лута): invuln — тычки не отнимают здоровье, хватка не держит (рука
+//    хватает и тащит пустой кулак за дверь, своего игрока не волочёт и смерти нет — slip до released / killed);
+//    marked — HandPlayer.marked (+OBSHAGA.aggroMarkM), у напарника — PlayerState.mk (если есть); noise — HandPlayer.loud
+//    (в единицах шума: 1 — бег; только свой: в PlayerState его нет); down (лежит) — шум шага 0; drunk — не здесь.
+//    heal(hp) — еда: +hp, не выше OBSHAGA.hp. Увидел руку (фронт seesHand) — host.sawCreature('hand').
 //  • Вода по пояс в затопленном подвале: плоскость воды, шаг 0.55.
 //  • Кооп (docs/COOP.md §2.5): хост ведёт режиссёра за всех (видит ли руку каждый и на какие двери смотрит — присылают
 //    клиенты, fx 'obshSee'; E у двери — fx 'obshDoor'), ~10 раз в секунду рассылает срез (fx 'obsh'); клиенты рисуют по
@@ -56,7 +66,7 @@ import type { Posture } from './posture';
 import type { CoopSession } from '../coop/session';
 import type { CoopPresence } from '../coop/presence';
 import {
-  bedAt, chartOf, doorPoints, handGoal, nearestHub, navOf, remoteCover, roomAt, spawnCandidates, type LampSpot, type NavPlayer, type ObshDoor, type ObshNav,
+  bedAt, chartOf, doorPoints, handGoal, nearestHub, navOf, pathLen, remoteCover, roomAt, spawnCandidates, type LampSpot, type NavPlayer, type ObshDoor, type ObshNav,
 } from './obshagaNav';
 import { advanceRemote, fromWire, toWire, type ObshRemote } from './obshagaSync';
 import { ArmColliders, makeHand, LANTERN_COLOR, ObshagaGlow, ObshagaWater, VoidPlanes, WARM_TINT, armSamples, sceneMul, type HandRender } from './obshagaScene';
@@ -94,6 +104,12 @@ const DRAG_EYE = 0.42;
  *  кровати (с запасом SHELTER_PAD). */
 const SHELTER_EYE = 0.35;
 const SHELTER_PAD = 0.1;
+/** Скорость игрока (шум шага, агро руки) — по смещению за окно не короче, с; быстрее SPEED_MAX м/с — телепорт (0). */
+const SPEED_WIN_S = 0.3;
+const SPEED_MAX = 8;
+
+/** Игрок общаги у режиссёра: навигация + видит ли руку, укрытие и агро (HandPlayer). */
+type WalkPlayer = NavPlayer & { sees: boolean; sheltered: boolean; speed: number; loud?: number; light: boolean; marked: boolean };
 
 export interface ObshagaHud {
   /** игрок в общаге */
@@ -120,6 +136,8 @@ export interface ObshagaHud {
   hint: string | null;
   /** звук общаги включён */
   sound: boolean;
+  /** smile: погиб не от руки — заголовок панели смерти (kill); подсказка — в hint */
+  title?: string | null;
 }
 
 export interface ObshagaHost {
@@ -151,6 +169,41 @@ export interface ObshagaHost {
   /** кооп: лобби (null — одиночная игра) */
   co: CoopSession | null;
   presence(): CoopPresence | null;
+  /** горит фонарик в руке (Inventory.torchOn) — агро руки; нет метода — не горит */
+  torch?(): boolean;
+  /** эффекты предметов хотбара (Inventory.fx); нет — нет эффектов */
+  fx?: () => ObshagaFx | undefined;
+  /** свой игрок увидел существо ('hand' — руку): по фронту, не каждый кадр */
+  sawCreature?(kind: 'hand'): void;
+}
+
+/** Эффекты предметов для общаги (host.fx): см. шапку файла. */
+export interface ObshagaFx {
+  /** неуязвим: тычки и хватка без последствий */
+  invuln: boolean;
+  /** помечен: рука выбирает его (агро +aggroMarkM) */
+  marked: boolean;
+  drunk: boolean;
+  /** лежит без сил: шум шага 0 */
+  down: boolean;
+  /** шум предметов (единицы шума: 1 — бег) — к агро */
+  noise: number;
+}
+
+// smile: крючки других систем общаги — «Улыбка» (src/view3d/smileWalk.ts) и номера/ключи комнат
+// (src/view3d/obshagaRoomsView.ts), tmp/smile-wip/CONTRACT.md §9.1. Каждый — список: системы добавляют свои функции.
+export interface ObshagaHooks {
+  /** дверь заперта: строка — подсказка («Заперто. Нужен ключ»), null — нет. Тогда E не открывает (звук doorBlocked +
+   *  вспышка подсказки), хост отклоняет чужой obshDoor, рука не открывает её на своём пути */
+  locked: ((doorId: string) => string | null)[];
+  /** E у двери: true — нажатие съедено (например, отпереть ключом); зовётся ДО проверки locked */
+  doorKey: ((doorId: string) => boolean)[];
+  /** своя подсказка у двери вместо «E — открыть дверь» (null — обычная) */
+  prompt: ((doorId: string) => string | null)[];
+  /** множители света сцены и свечения ламп (ловушка гасит свет у жертвы) — перемножаются */
+  light: (() => number)[];
+  /** дверь открывается/закрывается беззвучно (её тихо приоткрыла «Улыбка») */
+  silent: ((doorId: string) => boolean)[];
 }
 
 /** Вид режиссёра для картинки: свой (одиночная игра, хост) или присланный хостом. */
@@ -276,6 +329,10 @@ export class ObshagaWalk {
   private diagContact = false;
   /** почему рука уходит (для диагностики): recall — в её карте никого, lost — игрок ушёл; иначе — лампа */
   private withdrawWhy: string | null = null;
+  /** скорость игроков по смещениям (агро руки): последняя выборка плана, время (мс) и скорость, м/с */
+  private track = new Map<string, { x: number; y: number; t: number; v: number }>();
+  /** хватка не держит (неуязвим, host.fx): рука схватила своего игрока, но не тащит — до released / killed / ухода руки */
+  private slip = false;
   private onKey = (e: KeyboardEvent) => this.key(e);
   private onGesture = () => {
     if (this.on) this.audio.start();
@@ -350,6 +407,7 @@ export class ObshagaWalk {
       if (!this.dir) this.adopt();
       if (this.qaCalm && this.dir!.blackout.phase === 'lit') this.dir!.blackout.dur = Math.max(this.dir!.blackout.dur, 1e9);
       this.stepAuthority(dt, nav, portal);
+      this.shutFrame(dt); // smile: closeDoor — дверь ловушки закрывается
     } else if (this.remote) advanceRemote(this.remote, dt);
     const v = this.view();
     // ── картинка: двери (везде), рука, вода, свет (только в общаге)
@@ -369,6 +427,9 @@ export class ObshagaWalk {
     if (this.on) {
       this.host.light(sceneMul(v.level), WARM_TINT);
       this.glow.set(v.level);
+      // smile: свет гасят крючки (ловушка «Улыбки» у жертвы)
+      const lm = this.lightMul();
+      if (lm < 1) (this.host.light(sceneMul(v.level) * lm, WARM_TINT), this.glow.set(v.level * lm));
       this.phaseFx(v);
     } else this.glow.set(1);
     // ── взгляд (свой игрок): рука и двери
@@ -414,6 +475,8 @@ export class ObshagaWalk {
     return {
       zOf: (room: string | undefined) => (room ? (nav.rooms.get(room)?.z ?? 0) : 0),
       roomOf: (p: Pt) => roomAt(nav, p, (id) => portal?.cache.peek(id)?.floor ?? null),
+      /** кровати комнаты (рамки плана, NavRoom.beds): не-цели рука переползает поверху (рендер кладёт кисть на матрас) */
+      beds: (room: string | undefined): readonly Rect[] => (room ? (nav.rooms.get(room)?.beds ?? []) : []),
     };
   }
 
@@ -463,29 +526,58 @@ export class ObshagaWalk {
     this.remote = null;
   }
 
-  /** Игроки в общаге (свой и — у хоста — остальные), живые и в мире; под кроватью — sheltered и рамка кровати (cover). */
-  private players(nav: ObshNav): (NavPlayer & { sees: boolean; sheltered: boolean })[] {
-    const out: (NavPlayer & { sees: boolean; sheltered: boolean })[] = [];
+  /** Игроки в общаге (свой и — у хоста — остальные), живые и в мире; под кроватью — sheltered и рамка кровати (cover);
+   *  агро: скорость по смещениям (speedOf — у всех одинаково), фонарик, метка, шум предметов (свой). */
+  private players(nav: ObshNav): WalkPlayer[] {
+    const out: WalkPlayer[] = [];
     const room = this.cur;
-    if (this.on && !this.dead && room && this.host.live() && performance.now() >= this.graceUntil) {
+    const now = performance.now();
+    if (this.on && !this.dead && room && this.host.live() && now >= this.graceUntil) {
       const c = this.cam.position;
       const yaw = this.cam.rotation.y;
       const p = { x: c.x, y: -c.z, room };
-      out.push({ id: this.myId, p, protected: this.holding, sees: this.seesHand, fx: Math.sin(yaw), fy: -Math.cos(yaw), ...this.shelter(this.myId, p, nav) });
+      const it = this.host.fx?.();
+      const v = this.speedOf(this.myId, p, now);
+      out.push({
+        id: this.myId, p, protected: this.holding, sees: this.seesHand, fx: Math.sin(yaw), fy: -Math.cos(yaw), ...this.shelter(this.myId, p, nav),
+        speed: it?.down ? 0 : v, ...(it && it.noise > 0 ? { loud: it.noise } : {}), light: !!this.host.torch?.(), marked: !!it?.marked,
+      });
     }
     const co = this.co;
     if (co) {
-      const now = performance.now();
       for (const pl of co.players.values()) {
         const s = pl.state;
         if (!s || s.loc || s.dead || !s.room || !s.fps || !nav.rooms.get(s.room)?.obsh) continue;
         const rep = this.reports.get(pl.id);
         const fresh = !!rep && now - rep.at < REPORT_TTL;
         const p = { x: s.p[0], y: -s.p[2], room: s.room };
-        out.push({ id: pl.id, p, protected: !!s.lamp, sees: fresh && rep!.sees, fx: Math.sin(s.yaw), fy: -Math.cos(s.yaw), ...this.shelter(pl.id, p, nav) });
+        out.push({
+          id: pl.id, p, protected: !!s.lamp, sees: fresh && rep!.sees, fx: Math.sin(s.yaw), fy: -Math.cos(s.yaw), ...this.shelter(pl.id, p, nav),
+          // метка напарника — PlayerState.mk (поле предметов; нет поля — нет метки)
+          speed: this.speedOf(pl.id, p, now), light: !!s.torch, marked: !!(s as { mk?: unknown }).mk,
+        });
       }
     }
+    for (const [id, t] of this.track) if (now - t.t > 5000) this.track.delete(id);
     return out;
+  }
+
+  /** Горизонтальная скорость игрока id, м/с: смещение в плане за окно не короче SPEED_WIN_S (свой и напарники — одинаково);
+   *  быстрее SPEED_MAX (телепорт, шов) — 0; выборки не было 2 с — заново с нуля. */
+  private speedOf(id: string, p: Pt, now: number): number {
+    const s = this.track.get(id);
+    if (!s || now - s.t > 2000) {
+      this.track.set(id, { x: p.x, y: p.y, t: now, v: 0 });
+      return 0;
+    }
+    const dt = (now - s.t) / 1000;
+    if (dt < SPEED_WIN_S) return s.v;
+    const v = Math.hypot(p.x - s.x, p.y - s.y) / dt;
+    s.v = v > SPEED_MAX ? 0 : v;
+    s.x = p.x;
+    s.y = p.y;
+    s.t = now;
+    return s.v;
   }
 
   private stepAuthority(dt: number, nav: ObshNav, portal: PortalRenderer | null) {
@@ -528,14 +620,21 @@ export class ObshagaWalk {
     const goalLamps = lamps;
     this.lastGoal = null;
     this.lastTarget = null;
+    // путь от кончика до каждого (счёт цели руки; null — не дойти)
+    const tip = h ? { ...h.tip } : null;
     const ev = stepDirector(dir, dt, {
-      players: players.map((p) => ({ id: p.id, p: p.p, protected: p.protected, sees: p.sees, sheltered: p.sheltered, ...(p.cover ? { cover: p.cover } : {}) })),
+      players: players.map((p) => ({
+        id: p.id, p: p.p, protected: p.protected, sees: p.sees, sheltered: p.sheltered, ...(p.cover ? { cover: p.cover } : {}),
+        speed: p.speed, ...(p.loud ? { loud: p.loud } : {}), light: p.light, marked: p.marked,
+        ...(tip && chart ? { dist: pathLen(nav, tip, p.p, chart, floor) } : {}),
+      })),
       lanterns: lamps,
       playerSpeed: PLAYER_SPEED,
       spawnCandidates: cands,
       goal: (hv) => {
         if (!chart) return null;
-        const r = handGoal(nav, hv.tip, goalPlayers, goalLamps, chart, floor);
+        // только к цели руки (нет цели — к ближайшему, как раньше)
+        const r = handGoal(nav, hv.tip, goalPlayers, goalLamps, chart, floor, hv.target ?? null);
         this.lastGoal = r.goal;
         this.lastTarget = r;
         return r.goal;
@@ -572,6 +671,7 @@ export class ObshagaWalk {
     if (dir.hand && g && dir.hand.phase === 'stalking') {
       for (const dd of nav.doorsByRoom.get(g.room ?? '') ?? []) {
         if (!dd.room || Math.hypot(dd.x - g.x, dd.y - g.y) > 0.05) continue;
+        if (this.lockedMsg(dd.id)) continue; // smile: запертую рука не открывает
         if (Math.hypot(dir.hand.tip.x - dd.x, dir.hand.tip.y - dd.y) < 1.6 && doorOpenness(dir, dd.id) < 0.98 && dir.doors[dd.id]?.phase !== 'opening') openDoorById(dir, dd.id);
       }
     }
@@ -658,7 +758,7 @@ export class ObshagaWalk {
     } else {
       const ok = this.cands.filter((c) => !c.seen && c.id !== dir.lastDoor);
       if (!ok.length) why = this.cands.every((c) => c.seen) ? 'все двери видны' : 'только прошлая дверь';
-      else if (ok.every((c) => c.inField || lanterns.some((l) => Math.hypot(l.x - c.mouth.x, l.y - c.mouth.y) < 4.5))) why = 'поле лампы';
+      else if (ok.every((c) => c.inField || lanterns.some((l) => Math.hypot(l.x - c.mouth.x, l.y - c.mouth.y) < OBSHAGA.spawnLanternM))) why = 'поле лампы';
       else why = 'дальше/ближе предела';
     }
     cur.noSpawn[why] = +((cur.noSpawn[why] ?? 0) + dt).toFixed(2);
@@ -706,6 +806,7 @@ export class ObshagaWalk {
     }
     if (k === 'obshDoor') {
       const id = (d as { id?: unknown } | null)?.id;
+      if (typeof id === 'string' && this.lockedMsg(id)) return; // smile: запертую хост не открывает
       if (typeof id === 'string' && this.dir && id.length < 80) openDoorById(this.dir, id);
     }
   }
@@ -768,7 +869,7 @@ export class ObshagaWalk {
       const dd = nav.doorById.get(id);
       // звук: распахнулась / закрылась (дверь руки и двери, сквозь которые она лезет, — без звука)
       if (dd && this.on) {
-        const silent = id === v.handDoor || (!!v.hand && handThrough(dd, v.hand.trail, v.hand.tip, 1.2));
+        const silent = id === v.handDoor || (!!v.hand && handThrough(dd, v.hand.trail, v.hand.tip, 1.2)) || this.hooks.silent.some((f) => f(id)); // smile: silent
         const p = { x: dd.x, y: dd.z + 1.1, z: -dd.y };
         const near = Math.hypot(this.cam.position.x - p.x, this.cam.position.z - p.z) < 18;
         if (!silent && near && cur === 0 && next > 0) this.audio.doorOpen(p);
@@ -903,7 +1004,10 @@ export class ObshagaWalk {
     // взгляд держится чуть дольше кадра, где точка руки попала в кадр (качание лампы, шаг): рука не дёргается
     const nowS = performance.now();
     if (sees) this.seenHandAt = nowS;
+    const was = this.seesHand;
     this.seesHand = sees || nowS - this.seenHandAt < SEE_HOLD_MS;
+    // увидел руку — один раз на фронте (эффекты предметов: «пьяный» и т. п.)
+    if (this.seesHand && !was) this.host.sawCreature?.('hand');
     // двери — 10 раз в секунду
     const now = performance.now();
     if (now - this.seenAt < 100) return;
@@ -973,14 +1077,20 @@ export class ObshagaWalk {
 
   private victimEvent(type: string) {
     if (type === 'grab') this.startDrag();
-    else if (type === 'killed') this.die();
-    else if (type === 'released') this.release();
-    else if (type === 'poke') this.poked();
+    else if (type === 'killed') {
+      // неуязвимого рука утащила пустой кулак — смерти нет
+      if (this.slip) this.slip = false;
+      else this.die();
+    } else if (type === 'released') {
+      this.slip = false;
+      this.release();
+    } else if (type === 'poke') this.poked();
   }
 
   /** Тычок пальцем под кровать: здоровье −pokeDmg, красная вспышка (HUD hit), тряска (крен позы), вскрик; кончилось — смерть. */
   private poked() {
-    if (this.dead || this.drag) return;
+    // неуязвим (предмет) — тычок без последствий
+    if (this.dead || this.drag || this.host.fx?.()?.invuln) return;
     this.hp = Math.max(0, this.hp - OBSHAGA.pokeDmg);
     this.sinceHit = 0;
     this.hits++;
@@ -1002,7 +1112,13 @@ export class ObshagaWalk {
   }
 
   private startDrag() {
-    if (this.drag || this.dead) return;
+    if (this.drag || this.dead || this.slip) return;
+    if (this.host.fx?.()?.invuln) {
+      // неуязвим: хватка не держит — рука тащит за дверь пустой кулак, игрока не волочёт (до released / killed)
+      this.slip = true;
+      this.host.flash('Не удержала!', '#e8b04b', 1400);
+      return;
+    }
     const v = this.view();
     this.drag = { door: v.handDoor, t: 0, fov: this.cam.fov };
     this.posture.frozen = true;
@@ -1016,6 +1132,7 @@ export class ObshagaWalk {
     this.shake = Math.max(0, this.shake - dt * 1.2);
     const hv = v.hand;
     const me = !!hv && hv.victim === this.myId && hv.phase === 'grabbing';
+    if (!me) this.slip = false;
     if (me && !this.drag && !this.dead) this.startDrag();
     if (this.drag && !this.dead) {
       if (!me) {
@@ -1108,10 +1225,18 @@ export class ObshagaWalk {
     this.audio.death();
   }
 
+  /** Еда и т. п. (предметы хотбара, View3DPage): +hp здоровья, не выше OBSHAGA.hp; погибшему — нет. */
+  heal(hp: number) {
+    if (this.dead || !(hp > 0) || !Number.isFinite(hp)) return;
+    this.hp = Math.min(OBSHAGA.hp, this.hp + hp);
+  }
+
   /** «Ещё раз»: возрождение — в коопе рядом с живым напарником, иначе в ближайшем вестибюле с вахтой (или на старте). */
   retry() {
     if (!this.dead) return;
     this.dead = false;
+    this.killText = null; // smile
+    this.smileHold = false; // smile
     this.posture.frozen = false;
     this.posture.roll = 0;
     this.cam.checkCollisions = true;
@@ -1185,12 +1310,14 @@ export class ObshagaWalk {
     if (!this.on || this.dead || this.drag) return null;
     if (this.nearLamp) return 'E — взять керосиновую лампу';
     const d = this.nearDoor;
+    if (d && d.room && (this.shown.get(d.id) ?? 0) < 0.85) { const sp = this.smilePrompt(d.id); if (sp) return sp; } // smile
     if (d && (this.shown.get(d.id) ?? 0) < 0.85) return 'E — открыть дверь';
     return null;
   }
 
   private key(e: KeyboardEvent) {
     if (e.code !== 'KeyE' || e.repeat || !this.on || this.dead || this.drag || !this.host.live() || this.host.busy()) return;
+    if (this.smileHold) return; // smile: hold — ввод заморожен
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
     const lamp = this.nearLamp;
@@ -1207,6 +1334,7 @@ export class ObshagaWalk {
       this.host.flash('Заперто', '#c9b98a', 900);
       return;
     }
+    if (this.smileDoorKey(d.id, p)) return; // smile: ключ (doorKey), замки (locked)
     this.openDoor(d.id);
   }
 
@@ -1274,6 +1402,8 @@ export class ObshagaWalk {
       hint: this.on ? (this.hint?.text ?? null) : null,
       sound: this.audio.enabled,
     };
+    // smile: смерть со своим текстом (kill) — заголовок и подсказка панели
+    if (this.dead && this.killText) (h.title = this.killText.title), (h.hint = this.killText.hint);
     const k = JSON.stringify(h);
     if (k === this.hudKey) return;
     this.hudKey = k;
@@ -1382,7 +1512,7 @@ export class ObshagaWalk {
         return {
           on: self.on, holding: self.holding, dead: self.dead, dragging: !!self.drag, authority: self.authority,
           phase: v.phase, level: v.level, handDoor: v.handDoor,
-          hand: v.hand && { phase: v.hand.phase, tip: v.hand.tip, length: v.hand.length, frozen: v.hand.frozen, blocked: v.hand.blocked, victim: v.hand.victim, drag: v.hand.dragProgress, trail: v.hand.trail.length },
+          hand: v.hand && { phase: v.hand.phase, tip: v.hand.tip, length: v.hand.length, frozen: v.hand.frozen, blocked: v.hand.blocked, victim: v.hand.victim, drag: v.hand.dragProgress, trail: v.hand.trail.length, target: v.hand.target ?? null },
           doors: Object.fromEntries(self.shown), seesHand: self.seesHand, seenDoors: [...self.seenDoors], nearDoor: self.nearDoor?.id ?? null,
           nearLamp: self.nearLamp ? `${self.nearLamp.inst}/${self.nearLamp.spot}` : null, prompt: self.promptText(), room: self.cur,
           handColliders: self.hand?.colliderCount?.() ?? 0, grace: Math.max(0, self.graceUntil - performance.now()),
@@ -1407,6 +1537,163 @@ export class ObshagaWalk {
       },
     };
   }
+
+  // ───────────────────────── smile: фасад для «Улыбки» и комнат общаги ─────────────────────────
+  // tmp/smile-wip/CONTRACT.md §9.1: src/view3d/smileWalk.ts (моб), src/view3d/obshagaRoomsView.ts (номера, ключи).
+
+  /** Крючки: замки, ключи, подсказки у дверей, множители света. */
+  readonly hooks: ObshagaHooks = { locked: [], doorKey: [], prompt: [], light: [], silent: [] };
+  /** смерть со своим текстом (kill): заголовок и подсказка панели */
+  private killText: { title: string; hint: string } | null = null;
+  /** hold(): поза и ввод заморожены (жертву ест «Улыбка», ловушка) */
+  private smileHold = false;
+  /** closeDoor (хост): двери, что закрываются сейчас, — время, длительность, открытость в начале */
+  private shut = new Map<string, { t: number; dur: number; from: number }>();
+  /** кадр, на котором посчитан фрустум для seen() */
+  private planesFrame = -1;
+
+  /** Навигация общаги мира (нет мира — null). */
+  nav(): ObshNav | null {
+    const rx = this.host.rx();
+    return rx ? navOf(rx) : null;
+  }
+
+  /** Портальный рендер (активный) или null. */
+  portal(): PortalRenderer | null {
+    const p = this.host.driver()?.portal;
+    return p?.isActive ? p : null;
+  }
+
+  /** id своего игрока (кооп — co.me.id, соло — 'me'). */
+  me(): string {
+    return this.myId;
+  }
+
+  /** Свой игрок в общаге. */
+  inside(): boolean {
+    return this.on;
+  }
+
+  /** Экземпляр, где стоит свой игрок (кадр назад), или null. */
+  room(): string | null {
+    return this.cur;
+  }
+
+  /** Этот клиент ведёт режиссёра (хост коопа или соло). */
+  isAuthority(): boolean {
+    return this.authority;
+  }
+
+  /** Текущий уровень света режиссёра 0…1 (свой или из среза хоста). */
+  lightLevel(): number {
+    return this.view().level;
+  }
+
+  /** Видна ли своему игроку точка P (Babylon) в комнате room: в кадре, ближе 28 м и сквозь цепочку проёмов. */
+  seen(P: Vector3, room: string): boolean {
+    const portal = this.portal();
+    const cur = this.cur;
+    const rx = this.host.rx();
+    if (!portal || !cur || !rx) return false;
+    const f = this.scene.getFrameId();
+    if (f !== this.planesFrame) {
+      this.planesFrame = f;
+      this.planes = Frustum.GetPlanes(this.cam.getTransformationMatrix());
+    }
+    if (this.bfs?.room !== cur) this.bfs = { room: cur, prev: bfsTree(navOf(rx), cur, 6) };
+    return this.visible(P, room, portal);
+  }
+
+  /** Смерть со своим текстом (панель View3DPage: ObshagaHud.title / hint); «Ещё раз» — как у руки. */
+  kill(title: string, hint: string) {
+    if (this.dead) return;
+    this.killText = { title, hint };
+    this.smileHold = false;
+    if (this.drag) this.release();
+    this.die();
+  }
+
+  /** Заморозить позу и ввод (жертва): шаг 0, E не работает; отпустить — если не погиб и не волокут. */
+  hold(on: boolean) {
+    if (on === this.smileHold) return;
+    this.smileHold = on;
+    if (on) {
+      this.posture.frozen = true;
+      this.cam.cameraDirection.setAll(0);
+    } else if (!this.dead && !this.drag) this.posture.frozen = false;
+  }
+
+  /** Хост: дверь id закрывается сейчас за durS (срез 'obsh' разносит открытость); клиент — ничего. */
+  closeDoor(id: string, durS: number) {
+    if (!this.authority) return;
+    if (!this.dir) this.adopt();
+    const d = this.dir!.doors[id];
+    if (!d || !(d.open > 0)) return;
+    this.shut.set(id, { t: 0, dur: Math.max(0, durS), from: d.open });
+  }
+
+  /** Хост: отменить closeDoor (жертва выскочила) — дальше дверь живёт по правилам режиссёра. */
+  stopClose(id: string) {
+    this.shut.delete(id);
+  }
+
+  /** Заперта ли дверь крючками: подсказка или null. */
+  lockedMsg(id: string): string | null {
+    for (const f of this.hooks.locked) {
+      const s = f(id);
+      if (s) return s;
+    }
+    return null;
+  }
+
+  private lightMul(): number {
+    let m = 1;
+    for (const f of this.hooks.light) {
+      const k = f();
+      if (Number.isFinite(k)) m *= Math.min(1, Math.max(0, k));
+    }
+    return m;
+  }
+
+  private smilePrompt(id: string): string | null {
+    for (const f of this.hooks.prompt) {
+      const s = f(id);
+      if (s) return s;
+    }
+    return null;
+  }
+
+  /** E у двери: ключ съел нажатие — true; заперта — звук и вспышка подсказки, true; иначе false. */
+  private smileDoorKey(id: string, p: { x: number; y: number; z: number }): boolean {
+    for (const f of this.hooks.doorKey) if (f(id)) return true;
+    const lk = this.lockedMsg(id);
+    if (!lk) return false;
+    this.audio.doorBlocked(p);
+    this.host.flash(lk, '#c9b98a', 1100);
+    return true;
+  }
+
+  /** Ход closeDoor поверх режиссёра: открытость — по своим часам (взгляды и проём не держат), закрылась — запись долой. */
+  private shutFrame(dt: number) {
+    const dir = this.dir;
+    if (!dir) return this.shut.clear();
+    for (const [id, s] of this.shut) {
+      const d = dir.doors[id];
+      if (!d) {
+        this.shut.delete(id);
+        continue;
+      }
+      s.t += dt;
+      const u = s.dur > 0 ? Math.min(1, s.t / s.dur) : 1;
+      d.open = s.from * (1 - u);
+      d.held = 0;
+      if (u >= 1) {
+        delete dir.doors[id];
+        this.shut.delete(id);
+      } else d.phase = 'paused';
+    }
+  }
+  // ───────────────────────── /smile ─────────────────────────
 
   dispose() {
     if (this.on) this.leave();
