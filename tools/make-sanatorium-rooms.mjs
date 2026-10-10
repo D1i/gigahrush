@@ -493,7 +493,7 @@ const C = {
   // светится: лицо светового короба (emissive × текстура надписи)
   sloganGlow: mat('san_rm_slogan_glow', '#f6f1e2', { tex: TEX.slogan, glow: '#f4efe2', uv: (p) => [(p[0] + 0.8) / 1.6, (2.45 - p[1]) / 0.3] }),
   // манекен
-  skin: mat('san_rm_skin', '#d8b59b', { rough: 0.45 }),
+  skin: mat('san_rm_skin', '#cfb79f', { rough: 0.45 }),
   hair: mat('san_rm_hair', '#3a291d'),
   // ремонт и мусор: штукатурка, пыль/цемент, кирпич, тёмная пустота под полом, жёлтые доски, линолеум, крафт-мешки
   plaster: mat('san_rm_plaster', '#d8d3c6', { rough: 0.95 }),
@@ -1068,9 +1068,9 @@ bed(new Model('p_san_bed_frame'), true);
     M.poly(C.mud, pts, [0, 1, 0]);
   }
   // штукатурка и камешки
-  for (let k = 0; k < 34; k++) {
-    const px = rr(-1.2, 1.2), pz = rr(-0.5, 0.5), r = rr(0.015, 0.05);
-    M.pebble(k % 3 ? C.plaster : C.dust, [px, B, pz], r, r * rr(0.4, 0.9), rnd() * 2 * PI);
+  for (let k = 0; k < 26; k++) {
+    const px = rr(-1.2, 1.2), pz = rr(-0.5, 0.5), r = rr(0.012, 0.04);
+    M.pebble(k % 3 ? C.dust : C.plaster, [px, B, pz], r, r * rr(0.4, 0.9), rnd() * 2 * PI);
   }
   // обрезок ржавой трубы, доска, осколок бутылки, бумага
   M.tube(C.rust, [[0.35, B + 0.035, 0.32], [0.95, B + 0.035, 0.1]], 0.035, { seg: 8, caps: true });

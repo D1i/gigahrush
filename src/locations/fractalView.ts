@@ -588,8 +588,6 @@ export class FractalView {
   /** ядра 2 ≤ |k|∞ ≤ LIGHT_R — без свечения, своя кривая угасания */
   private farCoreCold: Thin | null = null;
   private farCoreWarm: Thin | null = null;
-  /** «струны» вдоль внешних рёбер пилонов (один меш на LIGHT_R ячеек во все стороны) */
-  private strings: Mesh | null = null;
   /** расширяемые полосы: полуширина на метр дальности — от высоты кадра (update) */
   private widen: FrFadePlugin[] = [];
   private lineCold: Thin | null = null;
@@ -615,6 +613,8 @@ export class FractalView {
   private lastCam: V3 = [1e9, 0, 0];
   private lastFwd: V3 = [0, 0, 1];
   private lastPick = 0;
+  /** точка пропа при отборе (переиспользуется) */
+  private readonly pickP: V3 = [0, 0, 0];
   private time = 0;
   private escNear = 0;
   private propCount = 0;
@@ -789,7 +789,6 @@ export class FractalView {
     m.isPickable = false;
     m.alwaysSelectAsActiveMesh = true;
     this.add(m);
-    this.strings = m;
   }
 
   /** Световые линии: полоса-брус вдоль ребра (наполовину в камне — видна с обеих граней). LOOK: только грани наружу
@@ -946,7 +945,7 @@ export class FractalView {
       }
     }
     // ── торшеры у проходов пилонов сквозь плиту (стоят на плите по диагонали наружу от угла дыры)
-    const pools: V3[] = [], poolUp: number[] = [];
+    const pools: { c: V3; n: V3 }[] = [];
     for (let a = 0; a < 3; a++) {
       for (const k of fc.pylons.L1[a] ?? []) {
         const uo = k & 1 ? t2 : t1, vo = k & 2 ? t2 : t1;
@@ -969,32 +968,27 @@ export class FractalView {
           prism(B, F, 0, 3.0, 0, 0.12, 0.08, COL.shelf);
           prism(L, F, 0, 3.08, 0, 0.2, 0.7, C.white);
           prism(B, F, 0, 3.78, 0, 0.23, 0.06, COL.shelf);
-          pools.push([at[0] + U[0] * 0.03, at[1] + U[1] * 0.03, at[2] + U[2] * 0.03]);
-          poolUp.push(a);
+          pools.push({ c: [at[0] + U[0] * 0.03, at[1] + U[1] * 0.03, at[2] + U[2] * 0.03], n: U });
         }
       }
     }
-    const P0 = this.P;
     const near = (t: Thin | null) => {
       if (!t) return;
-      for (const k of NEAR) t.t(k[0] * P0, k[1] * P0, k[2] * P0);
+      for (const k of NEAR) t.t(k[0] * P, k[1] * P, k[2] * P);
       t.commit();
     };
     near(this.thin(this.add(batchMesh(this.scene, 'fr:decor', B, this.bodyMat)), NEAR.length));
     near(this.thin(this.add(batchMesh(this.scene, 'fr:decorLamps', L, this.lampOn)), NEAR.length));
-    // тёплые пятна света: квад 5 × 5 м на камне (сложение цвета, без записи глубины)
+    // тёплые пятна света: квад 5.5 × 5.5 м на камне, лицом в воздух (сложение цвета, без записи глубины)
     if (pools.length) {
       const pos: number[] = [], nr: number[] = [], uv: number[] = [], idx: number[] = [];
-      pools.forEach((c, i) => {
-        const a = poolUp[i], ax = [0, 1, 2].filter((x) => x !== a);
-        const e1: V3 = [0, 0, 0], e2: V3 = [0, 0, 0], n: V3 = [0, 0, 0];
+      for (const { c, n } of pools) {
+        const ax = [0, 1, 2].filter((x) => n[x] === 0);
+        const e1: V3 = [0, 0, 0], e2: V3 = [0, 0, 0];
         e1[ax[0]] = 1;
         e2[ax[1]] = 1;
-        // нормаль — от камня (в сторону воздуха): воздух там, куда смотрит up торшера
-        const s = vAt([c[0] + (a === 0 ? 0.6 : 0), c[1] + (a === 1 ? 0.6 : 0), c[2] + (a === 2 ? 0.6 : 0)]) === VX.AIR ? 1 : -1;
-        n[a] = s;
         texQuad(c, e1, e2, 5.5, 5.5, n, pos, nr, uv, idx);
-      });
+      }
       const mat = new StandardMaterial('fr:pool', this.scene);
       mat.disableLighting = true;
       mat.diffuseColor = Color3.Black();
@@ -1136,9 +1130,12 @@ export class FractalView {
       m.isPickable = false;
       m.checkCollisions = false;
       const rot = new Float32Array(list.length * 9), atA = new Float32Array(list.length * 3), scale = new Float32Array(list.length);
+      // кессоны на гранях станции 18 — эти грани для кого-то пол: высота 0.3 → 0.12 м (плоская световая панель, через
+      // неё проходят, как через любой проп)
+      const flat = id === 'p_metro_light' ? 0.4 : 1;
       list.forEach((p, i) => {
         const u = AXIS_VEC[p.up] as V3, f = AXIS_VEC[p.fwd] as V3, r = cross(u, f);
-        rot.set([...r, ...u, ...f], i * 9);
+        rot.set([...r, ...u.map((x) => x * flat), ...f], i * 9);
         atA.set(p.at, i * 3);
         scale[i] = p.s;
       });
@@ -1351,7 +1348,11 @@ export class FractalView {
         const cx = kx + P / 2 - eye[0], cy = ky + P / 2 - eye[1], cz = kz + P / 2 - eye[2];
         if (Math.hypot(cx, cy, cz) - P * 0.87 > reach) continue;
         for (let i = 0; i < n; i++) {
-          const p: V3 = [g.at[i * 3] + kx, g.at[i * 3 + 1] + ky, g.at[i * 3 + 2] + kz];
+          // без аллокаций: отбор идёт и посреди поворота (скамьи вдали — сотни экземпляров на копию)
+          const p = this.pickP;
+          p[0] = g.at[i * 3] + kx;
+          p[1] = g.at[i * 3 + 1] + ky;
+          p[2] = g.at[i * 3 + 2] + kz;
           const sz = g.size * g.scale[i];
           const full = Math.min(PROP_MAX, PROP_NEAR + PROP_PER_M * sz);
           if (!this.inView(p, 0.6 * g.cull * g.scale[i], eye, fwd, px ? PROP_MAX : full)) continue;

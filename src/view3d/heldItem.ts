@@ -76,10 +76,14 @@ const AIM_M = 5;
 const BUG_ANGLE = FLASH_ANGLE * 0.85;
 const BUG_EXP = 18;
 /** Огонёк: яркость при Light.intensity = 1; источник не дальше POINT_Z перед глазом (к центру — POINT_PULL). */
-const POINT_BASE = 1.4;
+const POINT_BASE = 1.6;
 const POINT_Z = 0.16;
 const POINT_PULL: V3 = [0.6, 0.75, 1];
-/** Плечо (конец рукава) в осях камеры — за краем кадра. */
+/** Локоть и плечо в осях камеры (правая рука): предплечье — от запястья к локтю (уходит вниз-вправо из кадра, а не
+ *  поперёк него, как прямая к плечу у поднятой руки), плечо — за краем кадра. */
+const ELBOW = new Vector3(0.31, -0.42, 0.2);
+/** Висящее (лампа) держат вытянутой рукой сбоку: локоть правее, за краем кадра — предплечье идёт по краю, не поперёк. */
+const ELBOW_HANG = new Vector3(0.58, -0.2, 0.32);
 const SHOULDER = new Vector3(0.3, -0.5, -0.05);
 /** Скорость шага «как пешком», м/с, и путь за два шага (полный цикл покачивания), м. */
 const WALK_V = 1.4;
@@ -359,7 +363,7 @@ export class HeldItem {
       this.flameCam = v.rotateByQuaternionToRef(r, new Vector3()).addInPlace(h.position);
     } else this.flameCam = null;
     // модель ещё грузится — пустую руку не показывать (свет — уже)
-    if (this.meshes.length) this.buildHand(h, H.hand);
+    if (this.meshes.length) this.buildHand(h, H.hand, H.r);
     for (const m of this.meshes) this.prep(m);
     h.setEnabled(this.crawlK < 0.9);
     this.lastYaw = null;
@@ -422,7 +426,7 @@ export class HeldItem {
   }
 
   /** Кисть в вязаной перчатке и рукав ватника к плечу за краем кадра — по виду хвата (начало узла — точка хвата). */
-  private buildHand(h: TransformNode, kind: HoldPose['hand']) {
+  private buildHand(h: TransformNode, kind: HoldPose['hand'], r = 0.02) {
     const sc = this.scene;
     const sd = this.side;
     const glove = new StandardMaterial('held:glove', sc);
@@ -445,14 +449,17 @@ export class HeldItem {
     let wrist: V3;
     if (kind === 'fist') {
       // кулак вокруг корпуса вдоль взгляда, большой палец сверху
-      blob('held:fist', [0.078, 0.07, 0.086], [0.008, -0.01, -0.012]);
-      blob('held:thumb', [0.022, 0.02, 0.05], [-0.02, 0.022, 0.016], [0, 0.25, 0]);
-      wrist = [0.014, -0.016, -0.06];
+      blob('held:fist', [0.084, 0.078, 0.09], [0.014, -0.016, -0.004]);
+      blob('held:thumb', [0.024, 0.022, 0.054], [-0.022, 0.024, 0.02], [0, 0.25, 0]);
+      wrist = [0.02, -0.026, -0.058];
     } else if (kind === 'grip') {
-      // кулак вокруг стоящего: тыл ладони справа, большой палец — со стороны игрока
-      blob('held:fist', [0.062, 0.072, 0.064], [0.016, -0.004, 0.006]);
-      blob('held:thumb', [0.02, 0.019, 0.044], [-0.014, 0.014, -0.022], [0, -0.9, 0.2]);
-      wrist = [0.03, -0.05, -0.03];
+      // кулак вокруг стоящего (r — его полуширина): тыл ладони справа, пальцы обхватывают спереди, большой палец —
+      // со стороны игрока
+      blob('held:fist', [0.056, 0.07, 0.06], [r * 0.85 + 0.012, -0.004, -0.004]);
+      blob('held:fingers', [0.03, 0.062, 0.03], [r * 0.3, -0.004, r * 0.9 + 0.004]);
+      // большой палец — слева снизу, не на этикетке
+      blob('held:thumb', [0.018, 0.017, 0.04], [-r * 0.75, -0.02, -r * 0.6 - 0.006], [0.3, -1.0, 0.2]);
+      wrist = [r + 0.03, -0.05, -0.03];
     } else if (kind === 'palm') {
       // ладонь снизу, пальцы вперёд, большой палец слева
       blob('held:palm', [0.088, 0.026, 0.1], [0.004, -0.014, -0.004]);
@@ -471,25 +478,35 @@ export class HeldItem {
       blob('held:index', [0.016, 0.016, 0.048], [0.008, -0.002, 0.012], [-0.35, -0.2, 0]);
       wrist = [0.022, -0.046, -0.05];
     }
-    // манжета и рукав — от запястья к плечу (в осях кисти)
+    // манжета и рукав: предплечье — от запястья к локтю, плечо — от локтя за край кадра (в осях кисти)
     const w = new Vector3(wrist[0] * sd, wrist[1], wrist[2]);
+    const E = kind === 'hang' ? ELBOW_HANG : ELBOW;
+    const el = new Vector3(E.x * sd, E.y, E.z).subtract(h.position);
+    // кисть ниже / ближе локтя (держат у пояса) — локоть ещё ниже и дальше назад (висящее — локоть в сторону)
+    if (kind !== 'hang') el.y = Math.min(el.y, w.y - 0.16);
+    el.z = Math.min(el.z, w.z - 0.12);
     const sh = new Vector3(SHOULDER.x * sd, SHOULDER.y, SHOULDER.z).subtract(h.position);
-    const d = sh.subtract(w);
-    const len = d.length();
-    const ax = d.scale(1 / len);
-    const pitch = Math.acos(Math.max(-1, Math.min(1, ax.y)));
-    const yaw = Math.atan2(ax.x, ax.z);
-    const cuff = CreateCylinder('held:cuff', { diameter: 0.07, height: 0.03, tessellation: 12 }, sc);
-    cuff.position.copyFrom(w.add(ax.scale(0.012)));
-    cuff.rotation.set(pitch, yaw, 0);
-    cuff.material = glove;
-    cuff.parent = h;
-    const arm = CreateCylinder('held:sleeve', { diameterBottom: 0.078, diameterTop: 0.11, height: len, tessellation: 12 }, sc);
-    arm.position.copyFrom(w.add(d.scale(0.5)));
-    arm.rotation.set(pitch, yaw, 0);
-    arm.material = sleeve;
-    arm.parent = h;
-    this.meshes.push(cuff, arm);
+    const tube = (name: string, a: Vector3, b: Vector3, d0: number, d1: number, mat: StandardMaterial, cut = 0) => {
+      const d = b.subtract(a);
+      const len = d.length();
+      const ax = d.scale(1 / len);
+      const m = CreateCylinder(name, { diameterBottom: d0, diameterTop: d1, height: len + cut, tessellation: 12 }, sc);
+      m.position.copyFrom(a.add(d.scale(0.5)));
+      m.rotation.set(Math.acos(Math.max(-1, Math.min(1, ax.y))), Math.atan2(ax.x, ax.z), 0);
+      m.material = mat;
+      m.parent = h;
+      this.meshes.push(m);
+      return { m, ax };
+    };
+    const fa = w.subtract(el).normalize();
+    tube('held:cuff', w.add(fa.scale(0.0)), w.subtract(fa.scale(0.03)), 0.07, 0.07, glove);
+    tube('held:sleeve', w.subtract(fa.scale(0.02)), el, 0.074, 0.092, sleeve, 0.05);
+    tube('held:upperArm', el, sh, 0.1, 0.115, sleeve, 0.04);
+    const elbow = CreateSphere('held:elbow', { diameter: 0.105, segments: 8 }, sc);
+    elbow.position.copyFrom(el);
+    elbow.material = sleeve;
+    elbow.parent = h;
+    this.meshes.push(elbow);
   }
 
   private prep(m: Mesh) {
@@ -626,7 +643,7 @@ export class HeldItem {
         if (g.kind === 'eat' || g.kind === 'drink') {
           // ко рту: к середине кадра снизу, ближе к лицу; пьют — запрокинуть
           const k = plateau(p);
-          const to: V3 = g.kind === 'eat' ? [0.05, -0.1, 0.24] : [0.035, -0.05, 0.21];
+          const to: V3 = g.kind === 'eat' ? [0.07, -0.15, 0.3] : [0.01, -0.07, 0.25];
           gx = (to[0] - at[0]) * sd * k;
           gy = (to[1] - at[1]) * k + (g.kind === 'eat' ? 0.006 * Math.sin(g.t * 22) * k : 0);
           gz = (to[2] - at[2]) * k;

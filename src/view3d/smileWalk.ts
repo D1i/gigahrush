@@ -77,7 +77,6 @@ export const SMILE_WALK = {
   hearM: 20,
 };
 
-const TAU = Math.PI * 2;
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 const clamp01 = (v: number) => clamp(v, 0, 1);
 const smooth = (k: number) => {
@@ -566,6 +565,12 @@ export const SMILE_DEATH = {
 
 const isFlash = (item: string | null | undefined) => !!item && SMILE_WALK.flashItems.includes(item);
 
+/** Жертва: к концу броска её рот — столько перед глазами, м; лёжа — её голова (шея жертвы) столько впереди камеры, м;
+ *  глаза лежащей жертвы над полом, м. */
+const VICTIM_MOUTH_M = 0.65;
+const VICTIM_NECK_M = 0.8;
+const VICTIM_EYE = 0.3;
+
 export class SmileWalk {
   /** механика (одиночная игра, хост) */
   private st: SmileState | null = null;
@@ -590,13 +595,14 @@ export class SmileWalk {
   private aim = false;
   private seenOnce = false;
   private on = false;
+  private audible = true;
   private time = 0;
   private lastMap: SmileMap | null = null;
   private lastNav: ObshNav | null = null;
   /** двери, что она тихо приоткрыла (до, мс) */
   private quiet = new Map<string, number>();
   /** жертва — я: бросок к камере, потом еда (камера на полу) */
-  private victim: { t: number; from: Vector3 | null; chosen: boolean; dir: Vector3; floor: number; yaw0: number; eatT: number } | null = null;
+  private victim: { t: number; lost: number; from: Vector3 | null; chosen: boolean; dir: Vector3; floor: number; yaw0: number; eatT: number } | null = null;
   /** ловушка — я */
   private trapMe: { t: number } | null = null;
   private eyesPos = new Vector3();
@@ -662,6 +668,12 @@ export class SmileWalk {
     if (on !== this.on) {
       this.on = on;
       if (!on) this.leave();
+    }
+    // слышно: в общаге, звук общаги включён (кнопка HUD), жив
+    const audible = on && this.obsh.audio.enabled && !this.obsh.dead;
+    if (audible !== this.audible) {
+      this.audible = audible;
+      this.audio.fade(audible);
     }
     const portal = this.obsh.portal();
     if (portal !== this.extrasOf) {
@@ -879,14 +891,16 @@ export class SmileWalk {
 
   private startVictim(s: SmileState | null) {
     const c = this.cam.position;
-    const from = this.model?.visible ? this.model.root.position.clone() : null;
+    // откуда кинулась: место провокации / выглядывания (не видел её — всё равно оттуда)
+    const o = s?.at ? { x: s.at.p.x, y: s.at.p.y, z: s.at.z } : s?.spot ? { ...spotRoot(s.spot), z: s.spot.z } : null;
+    const from = o ? new Vector3(o.x, o.z, -o.y) : this.model?.visible ? this.model.root.position.clone() : null;
     let dir = from ? from.subtract(c) : new Vector3(Math.sin(this.cam.rotation.y), 0, Math.cos(this.cam.rotation.y));
     dir.y = 0;
     if (dir.lengthSquared() < 1e-6) dir = new Vector3(Math.sin(this.cam.rotation.y), 0, Math.cos(this.cam.rotation.y));
     dir.normalize();
     const room = this.obsh.room();
     const floor = (room ? this.lastNav?.rooms.get(room)?.z : undefined) ?? c.y - 1.6;
-    this.victim = { t: 0, from, chosen: s?.chosen === this.obsh.me(), dir, floor, yaw0: this.cam.rotation.y, eatT: 0 };
+    this.victim = { t: 0, lost: 0, from, chosen: s?.chosen === this.obsh.me(), dir, floor, yaw0: this.cam.rotation.y, eatT: 0 };
     this.obsh.hold(true);
     this.shake = 1.4;
     this.audio.sting();
@@ -915,7 +929,7 @@ export class SmileWalk {
       vc.eatT += dt;
       // упал: глаза у пола, взгляд вверх на неё
       const k = smooth(vc.eatT / 0.45);
-      c.y += (vc.floor + 0.24 - c.y) * Math.min(1, dt * 9) * (0.4 + 0.6 * k);
+      c.y += (vc.floor + VICTIM_EYE - c.y) * Math.min(1, dt * 9) * (0.4 + 0.6 * k);
       const head = this.model?.visible ? this.model.headPos() : null;
       let pitch = -0.55;
       if (head) {
@@ -925,7 +939,14 @@ export class SmileWalk {
       this.cam.rotation.x += (pitch - this.cam.rotation.x) * Math.min(1, dt * 6);
       this.shake = Math.max(this.shake, 0.5 + 0.4 * Math.abs(Math.sin(this.time * 7.3)));
     } else {
-      this.cam.rotation.x += (0.02 - this.cam.rotation.x) * Math.min(1, dt * 10);
+      // бросок: взгляд — на её рот (чуть выше: пасть и глаза в кадре)
+      const mouth = this.model?.visible ? this.model.mouthPos().scaleInPlace(0.7).addInPlace(this.model.headPos().scaleInPlace(0.3)) : null;
+      let pitch = 0.02;
+      if (mouth) {
+        const dx = mouth.x - c.x, dz = mouth.z - c.z;
+        pitch = -Math.atan2(mouth.y - c.y, Math.max(0.2, Math.hypot(dx, dz)));
+      }
+      this.cam.rotation.x += (pitch - this.cam.rotation.x) * Math.min(1, dt * 10);
       this.shake = Math.max(this.shake, 0.8);
     }
   }
@@ -983,9 +1004,10 @@ export class SmileWalk {
     const chosen = !!v && v.chosen === me && this.on && !dead;
     const victimMe = !!v && !!v.eat && v.eat.victim === me && (v.phase === 'pounce' || v.phase === 'eat') && this.on && !dead;
     if (this.victim && (!victimMe || dead)) {
-      // бросок сорвался (хост ушёл) или уже погиб
-      if (dead || this.victim.t > 1) this.endVictim();
-    }
+      // бросок сорвался (хост ушёл, срезов нет) или уже погиб
+      this.victim.lost += dt;
+      if (dead || this.victim.lost > 1) this.endVictim();
+    } else if (this.victim) this.victim.lost = 0;
     if (victimMe && !this.victim) this.startVictim(this.cur());
     const show = !!v && v.visible && this.on && (chosen || victimMe);
     const model = this.model;
@@ -1059,9 +1081,19 @@ export class SmileWalk {
     }
     // камера жертвы, тряска
     if (victimMe) this.victimCam(dt, v);
-    this.shake = Math.max(0, this.shake - dt * 1.1);
+    const shook = this.shake > 0;
+    // тряска кренит камеру: «верх» — от поворота каждый кадр (как задумано в posture.ts; флаг в рантайме бывает сброшен —
+    // тогда Babylon пересчитывает верх только при смене крена, вместе с наклоном взгляда, и горизонт потом заваливается)
+    if (this.on || this.shake > 0 || victimMe) this.cam.updateUpVectorFromRotation = true;
+    this.shake = dead ? 0 : Math.max(0, this.shake - dt * 1.1);
     if (trapMe && tr?.ph === 'choke') this.shake = Math.max(this.shake, 0.35);
-    if (this.shake > 0 && !dead) this.obsh.posture.roll = (Math.random() - 0.5) * 0.06 * this.shake;
+    if (this.shake > 0) this.obsh.posture.roll = (Math.random() - 0.5) * 0.06 * this.shake;
+    else if (shook) {
+      // тряска кончилась: крен — ноль и «верх» камеры — мировой (Babylon пересчитал его на крене вместе с наклоном
+      // взгляда; без поворота мышью он так бы и остался — горизонт заваливался бы при поворотах)
+      this.obsh.posture.roll = 0;
+      this.cam.upVector.set(0, 1, 0);
+    }
     // звук: сердце и писк — у избранного; жертве — сердце в горле
     let heart = chosen && v ? v.heart : 0;
     const ring = chosen && v ? v.ring : 0;
@@ -1092,15 +1124,16 @@ export class SmileWalk {
       yaw = Math.atan2(-d.x, -d.z);
       if (v.pose === 'pounce') {
         pounce = clamp01(v.lean);
-        const reach = SMILE_MODEL.pounce.reach;
-        const tgt = new Vector3(c.x + d.x * (reach + 0.1), c.y - SMILE_MODEL.pounce.mouthY, c.z + d.z * (reach + 0.1));
+        // к концу броска рот — в VICTIM_MOUTH_M перед глазами (ближе камера оказывается в голове), чуть ниже взгляда
+        const reach = SMILE_MODEL.pounce.reach + VICTIM_MOUTH_M;
+        const tgt = new Vector3(c.x + d.x * reach, c.y - SMILE_MODEL.pounce.mouthY - 0.06, c.z + d.z * reach);
         const from = vc.from ?? new Vector3(c.x + d.x * 3, vc.floor, c.z + d.z * 3);
         const k = smooth(pounce);
         pos = new Vector3(from.x + (tgt.x - from.x) * k, Math.max(vc.floor, from.y + (tgt.y - from.y) * k), from.z + (tgt.z - from.z) * k);
       } else {
         // над жертвой: шея жертвы — чуть впереди камеры на полу
         const nk = SMILE_MODEL.eat.neck;
-        const nx = c.x + d.x * 0.18, nz = c.z + d.z * 0.18;
+        const nx = c.x + d.x * VICTIM_NECK_M, nz = c.z + d.z * VICTIM_NECK_M;
         // она обращена к камере (−dir): шея жертвы — у неё впереди на eat.neck.z
         pos = new Vector3(nx + d.x * nk.z, vc.floor, nz + d.z * nk.z);
       }
@@ -1197,7 +1230,7 @@ export class SmileWalk {
     const root = mk('opacity:1;z-index:3;overflow:hidden;');
     root.className = 'smile-overlay';
     const pulse = mk('background:radial-gradient(ellipse at center, rgba(120,0,0,0) 38%, rgba(120,0,0,0.55) 72%, rgba(70,0,0,0.95) 100%);');
-    const veil = mk('background:radial-gradient(ellipse at center, rgba(160,0,0,0.25) 0%, rgba(110,0,0,0.75) 70%, rgba(40,0,0,0.98) 100%);mix-blend-mode:multiply;');
+    const veil = mk('background:radial-gradient(ellipse at center, rgba(150,0,0,0) 25%, rgba(110,0,0,0.6) 70%, rgba(40,0,0,0.95) 100%);');
     const black = mk('background:#000;');
     root.append(pulse, veil, black);
     parent.appendChild(root);
@@ -1220,14 +1253,15 @@ export class SmileWalk {
     const ph = (this.time * bpm) / 60;
     const f = ph - Math.floor(ph);
     const beat = Math.exp(-f * 9) + 0.6 * Math.exp(-Math.max(0, f - 0.18) * 11) * (f > 0.18 ? 1 : 0);
-    const amp = clamp01((heart - 0.3) / 0.7);
+    // жертва броска видит её в упор — пульсация слабее (не заливать лицо)
+    const amp = clamp01((heart - 0.3) / 0.7) * (victimMe ? 0.55 : 1);
     o.pulse.style.opacity = (amp * (0.25 + 0.75 * clamp01(beat))).toFixed(3);
     let veil = 0;
-    if (victimMe && v) veil = v.phase === 'eat' ? 0.55 + 0.35 * clamp01(v.u) : 0.25 * clamp01(v.u);
+    if (victimMe && v) veil = v.phase === 'eat' ? 0.45 + 0.4 * clamp01(v.u) : 0.3 * clamp01(v.u);
     o.veil.style.opacity = veil.toFixed(3);
     let black = 0;
     if (tr?.ph === 'choke') black = SMILE.trapChokeS > 0 ? smooth(tr.t / SMILE.trapChokeS) * 0.92 : 0.92;
-    if (victimMe && v?.phase === 'eat') black = Math.max(black, 0.85 * smooth((clamp01(v.u) - 0.55) / 0.45));
+    if (victimMe && v?.phase === 'eat') black = Math.max(black, 0.9 * smooth((clamp01(v.u) - 0.7) / 0.3));
     o.black.style.opacity = black.toFixed(3);
   }
 
@@ -1337,7 +1371,9 @@ export class SmileWalk {
         const map = self.lastMap, room = self.obsh.room();
         if (!map || !room) return [];
         const c = self.cam.position, yaw = self.cam.rotation.y;
-        return smileSpots(map, { p: { x: c.x, y: -c.z, room }, fx: Math.sin(yaw), fy: -Math.cos(yaw) });
+        const s = self.cur();
+        // как у механики: двери, запертые не ею (ключ), — не её
+        return smileSpots(map, { p: { x: c.x, y: -c.z, room }, fx: Math.sin(yaw), fy: -Math.cos(yaw) }, { locked: (id) => !!self.obsh.lockedMsg(id) && !(s && smileLocked(s, id)) });
       },
       model: () => (self.model ? { visible: self.model.visible, root: self.model.root.position.asArray(), yaw: self.model.root.rotation.y, head: self.model.visible ? self.model.headPos().asArray() : null, rooms: [...self.draw.keys()] } : null),
       audio: () => ({ ...self.audio.counters, running: self.audio.running }),
@@ -1371,5 +1407,3 @@ export class SmileWalk {
     this.overlay = null;
   }
 }
-
-void TAU;

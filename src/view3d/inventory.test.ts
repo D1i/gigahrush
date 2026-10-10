@@ -197,19 +197,19 @@ describe('руки: контроллер', () => {
     const { inv, frames, engine } = setup();
     frames(2);
     expect(inv.hotbar.slots[0]).toMatchObject({ item: 'it_flashlight', on: true });
-    expect(inv.flashlight.held).toBe(true);
-    expect(inv.flashlight.on).toBe(true);
+    expect(inv.qa().flash().held).toBe(true);
+    expect(inv.qa().flash().on).toBe(true);
     expect(inv.torchOn).toBe(true);
     // пустая ячейка — фонарь убран
     inv.select(1);
     frames(1);
-    expect(inv.flashlight.held).toBe(false);
+    expect(inv.qa().flash().held).toBe(false);
     expect(inv.torchOn).toBe(false);
     inv.select(0);
     // F: выкл — сохранилось в ячейке и в localStorage
     expect(inv.toggleLight()).toBe(true);
     frames(1);
-    expect(inv.flashlight.on).toBe(false);
+    expect(inv.qa().flash().on).toBe(false);
     expect(loadHotbar(store.get('qa-world/hotbar') ?? null).slots[0]).toMatchObject({ item: 'it_flashlight', on: false });
     inv.dispose();
     engine.dispose();
@@ -231,7 +231,7 @@ describe('руки: контроллер', () => {
     expect(op.d).toMatchObject({ item: 'it_flashlight', inst: 'i1', on: true });
     expect(Math.hypot(op.d.x, op.d.z)).toBeGreaterThan(0.3);
     frames(3);
-    expect(inv.flashlight.held).toBe(false);
+    expect(inv.qa().flash().held).toBe(false);
     expect(inv.items.size).toBe(1);
     expect(inv.aimed?.id).toBe(op.d.id);
     expect(await inv.pickUp()).toBe(true);
@@ -295,10 +295,10 @@ describe('руки: контроллер', () => {
     frames(2);
     expect(inv.hotbar.sel).toBe(1);
     expect(inv.lampHeld).toBe(true);
-    expect(inv.lantern.shown).toBe(true);
-    expect(inv.lantern.light.isEnabled()).toBe(true);
-    expect(inv.lantern.light.intensity).toBeGreaterThan(0.5);
-    expect(inv.flashlight.held).toBe(false);
+    expect(inv.qa().lamp().shown).toBe(true);
+    expect(inv.qa().lamp().light).toBe(true);
+    expect(inv.qa().lamp().intensity).toBeGreaterThan(0.5);
+    expect(inv.qa().flash().held).toBe(false);
     expect(inv.torchOn).toBe(false);
     // хотбар — сразу в localStorage
     expect(loadHotbar(store.get('qa-world/hotbar') ?? null)).toMatchObject({ sel: 1, slots: [{ item: 'it_flashlight' }, { item: KEROLAMP_ITEM }, null, null, null] });
@@ -306,16 +306,16 @@ describe('руки: контроллер', () => {
     inv.select(0);
     frames(2);
     expect(inv.lampHeld).toBe(false);
-    expect(inv.lantern.shown).toBe(false);
-    expect(inv.lantern.light.isEnabled()).toBe(false);
-    expect(inv.flashlight.held).toBe(true);
-    expect(inv.flashlight.handSide).toBe(1);
+    expect(inv.qa().lamp().shown).toBe(false);
+    expect(inv.qa().lamp().light).toBe(false);
+    expect(inv.qa().flash().held).toBe(true);
+    expect(inv.qa().flash().hand).toBe(1);
     // погиб (общага: чёрный экран) — лампы не видно, но она по-прежнему выбрана
     inv.select(1);
     down = true;
     frames(1);
     expect(inv.lampHeld).toBe(true);
-    expect(inv.lantern.shown).toBe(false);
+    expect(inv.qa().lamp().shown).toBe(false);
     inv.dispose();
     engine.dispose();
   });
@@ -332,7 +332,7 @@ describe('руки: контроллер', () => {
     if (op.k === 'drop') expect('on' in op.d).toBe(false);
     expect(inv.lampHeld).toBe(false);
     frames(3);
-    expect(inv.lantern.shown).toBe(false);
+    expect(inv.qa().lamp().shown).toBe(false);
     expect(inv.aimed?.item).toBe(KEROLAMP_ITEM);
     expect(await inv.pickUp()).toBe(true);
     // горела в руке — керосин и фитиль чуть убыли (q, w); на полу не тратится

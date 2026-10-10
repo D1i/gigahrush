@@ -30,6 +30,11 @@ import metroUrl from './assets/metro_props.glb?url';
 import cellarUrl from './assets/cellar_props.glb?url';
 // catacombs: реквизит из набора Petersburg_Catacombs и из примитивов, кирпич сводов — текстурой (tools/make-catacombs-props.mjs, p_cat_*)
 import catacombsUrl from './assets/catacombs_props.glb?url';
+// sanatorium: мебель и предметы помещений из примитивов, кафель/панно/надпись — текстурами (tools/make-sanatorium-rooms.mjs, p_san_*)
+import sanatoriumRoomsUrl from './assets/sanatorium_rooms.glb?url';
+// sanatorium: архитектура, коридор, вестибюль, бассейн из примитивов; дорожка, кафель, мозаика, рябь воды (альфа-тест),
+// тюль — текстурами (tools/make-sanatorium-props.mjs, p_san_*)
+import sanatoriumPropsUrl from './assets/sanatorium_props.glb?url';
 
 /** Поля PBR-материала glTF, которые переносятся (без импорта класса — он тянет весь PBR). */
 interface PbrLike extends Material {
@@ -51,7 +56,7 @@ export class PropModels {
   readonly loaded: Promise<void>;
   private disposed = false;
 
-  constructor(readonly scene: Scene, urls: string[] = [basementUrl, barnUrl, factoryUrl, obshagaUrl, metroUrl, cellarUrl, catacombsUrl]) {
+  constructor(readonly scene: Scene, urls: string[] = [basementUrl, barnUrl, factoryUrl, obshagaUrl, metroUrl, cellarUrl, catacombsUrl, sanatoriumRoomsUrl, sanatoriumPropsUrl]) {
     this.loaded = (async () => {
       for (const u of urls) {
         try {

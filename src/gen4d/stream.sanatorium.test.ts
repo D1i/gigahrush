@@ -134,13 +134,13 @@ function enterFrom(seed: string, biomes: Biome[], target: string, kind: 'landing
         const ex = roomOf(w.run(), i.id).connectors.find((c) => w.doorState(i.id, c.id) === 'exit');
         if (!ex) continue;
         const id = w.openDoor(i.id, ex.id);
-        if (id && w.clusterAt(id)?.biome?.id === target) return { w, entry: id };
+        if (id && w.clusterAt(id)?.biome?.id === target && w.clusterAt(id)!.tunnels) return { w, entry: id };
       }
       if (kind === 'stair' && (loc === 'stairwell' || loc === 'lift')) {
         tried.add(i.id);
         const L = w.locationOf(i.id)!;
         const id = L.kind === 'lift' ? w.ascend(i.id, L.roll.floors >= 1 ? 1 : -1, 'straight') : w.descend(i.id);
-        if (w.clusterAt(id)?.biome?.id === target) return { w, entry: id };
+        if (w.clusterAt(id)?.biome?.id === target && w.clusterAt(id)!.tunnels) return { w, entry: id };
       }
     }
     const ex = exitsOf(w).filter(([i]) => !w.clusterAt(i)?.gate && w.clusterAt(i)?.biome?.id === 'khrush');
@@ -307,6 +307,19 @@ describe('санаторий: сеть', { timeout: 600000 }, () => {
     }
     for (const k of ['коридор', 'палата', 'процедурная']) expect(found.get(k) ?? 0, k).toBe(4);
     expect(found.get('бассейн') ?? 0, 'бассейн').toBeGreaterThanOrEqual(2);
+  });
+
+  it('здание не замыкается само в себе: за куском хода есть куда идти, палаты не встают перед нерешёнными проходами', () => {
+    // b, c, w — сиды, на которых без этих правил сеть глохла на 24–170 комнатах (коридор упирался в свою же палату)
+    for (const seed of ['b', 'c', 'w', 'x1', 'x2', 'x3']) {
+      const w = sanatorium(seed);
+      walk(w, 260);
+      expect(w.run().instances.length, seed).toBeGreaterThanOrEqual(260);
+      expect(w.stats().overlaps, seed).toBe(0);
+      // боковых помещений по-прежнему много: палаты, процедурные
+      const side = w.run().instances.filter((i) => tunnelKind(roomOf(w.run(), i.id)) === null || tunnelKind(roomOf(w.run(), i.id)) === 'storage');
+      expect(side.length, seed).toBeGreaterThan(50);
+    }
   });
 
   it('настройки «Прогулки» проекта (walkStreamSettings): тот же евклидов санаторий', () => {

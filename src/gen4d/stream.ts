@@ -50,6 +50,7 @@ import {
 // sanatorium: евклидовы сети ходов без 4D (Biome.flat)
 import { isFlat } from './biomes';
 import { layerKey } from './foldcore';
+import { rectCells } from '../model/cells';
 import type { Body } from './space';
 import { computePvs, viewHorizonM } from './pvs';
 export { viewHorizonM } from './pvs';
@@ -768,6 +769,8 @@ class Stream implements StreamWorld {
   private readonly fctx: Ctx;
   /** sanatorium: id flat-биомов мира (сети ходов) */
   private readonly flatB: ReadonlySet<string>;
+  /** sanatorium: пробные куски aheadFree по ширине прохода */
+  private readonly probes = new Map<number, Room>();
   /** метры хода от прошлого хаба (order → м; −1 — не ход) */
   private readonly tdist: number[] = [];
   /** завод: влажность куска и метка, через которую в него вошли (order → …; null — без влажности) */
@@ -1549,6 +1552,61 @@ class Stream implements StreamWorld {
   }
 
   /**
+   * Есть ли куда идти дальше за куском info сети flat-биома, поставленным телом body (метка стыковки bi) в слой w этажа
+   * floor: хоть за одним другим его проходом сети в слое свободно место под самый короткий кусок (квадрат во всю ширину
+   * прохода). Без других проходов — да (проверять нечего). Иначе кусок, упёршийся в свою же палату, глушит ход.
+   */
+  private aheadFree(info: Info, bi: number, body: Body, w: number, floor: number): boolean {
+    let any = false;
+    for (let k = 0; k < info.room.connectors.length; k++) {
+      const c = info.room.connectors[k];
+      if (k === bi || c.len < 1 || !TUNNEL_PASS_TAGS.has(c.tag)) continue;
+      any = true;
+      const s = body.sh.conns[k];
+      const pb = this.probeAt({ ...s, cx: s.cx + body.dx, cy: s.cy + body.dy });
+      if (!this.ctx.shapes.conflict(pb, body) && layerFree(this.fctx, this.lay, w, pb, floor)) return true;
+    }
+    return !any;
+  }
+
+  /** Пробный кусок за мировой меткой A: квадрат во всю её ширину, пристыкованный через зазор (aheadFree, keepsPasses). */
+  private probeAt(A: SegGeom): Body {
+    const sh = this.ctx.shapes.get(this.probeRoom(A.len), rotFor('S', OPPOSITE[A.side]));
+    const t = dockTarget(A, sh.conns[0].len, this.settings.gap);
+    return { sh, dx: t.cx - sh.conns[0].cx, dy: t.cy - sh.conns[0].cy };
+  }
+
+  /**
+   * Боковое помещение сети flat-биома (тело body в слое w этажа floor) не встаёт перед ещё не решённым проходом сети
+   * этого слоя (место под самый короткий кусок за ним — probeAt): иначе палата глушит коридор, к которому пристроена, и
+   * здание замыкается само в себе. Не встало — дверь остаётся стеной, как при отказе по месту.
+   */
+  private keepsPasses(body: Body, w: number, floor: number): boolean {
+    const g = this.lay.grid?.get(layerKey(floor, w));
+    if (!g) return true;
+    const sh = body.sh, M = 256;
+    return !g.some(sh.x0 + body.dx - M, sh.y0 + body.dy - M, sh.x1 + body.dx + M, sh.y1 + body.dy + M, 0, (x) => {
+      const i = x.inst.order;
+      for (let k = 0; k < x.conns.length; k++) {
+        const c = x.conns[k];
+        if (c.len < 1 || x.linked[k] || !TUNNEL_PASS_TAGS.has(c.tag) || this.dead.has(dk(i, k)) || this.exitDoors.has(dk(i, k))) continue;
+        if (this.ctx.shapes.conflict(body, this.probeAt(c))) return true;
+      }
+      return false;
+    });
+  }
+
+  /** Пробный кусок len × len клеток с меткой на южной стене (aheadFree; кэш по len). */
+  private probeRoom(len: number): Room {
+    let r = this.probes.get(len);
+    if (!r) {
+      r = { id: `@probe${len}`, cells: rectCells(0, 0, len, len), connectors: [{ id: 'p', name: '', tag: '', side: 'S', cx: 0, cy: len - 1, len }] } as unknown as Room;
+      this.probes.set(len, r);
+    }
+    return r;
+  }
+
+  /**
    * Свежий слой W этажа floor для первой комнаты сети flat-биома: на нём нет ни одной комнаты (здание растёт в пустом
    * пространстве и не упирается в чужие квартиры). Ближайший к w0: сам w0, затем w0 ± 1, ± 2… (при равном |ΔW| — сначала
    * к 0), |W| ≤ maxLayer — детерминированно по состоянию мира. null — свободных слоёв нет.
@@ -1648,7 +1706,10 @@ class Stream implements StreamWorld {
     this.liftBy.set(`${L.inst.order}:${floor}:${side}`, n);
     if (dest) {
       // режим квартир: за выходом — квартира другого биома / богатая квартира; логово — тупик в биоме, откуда пришли
-      const cl = lair ? this.newCluster(dest.home, dest.home, false, false) : this.newCluster(dest.biome, dest.home, dest.rich);
+      // sanatorium: у flat-биома квартир нет (его комнаты — только евклидовой сетью) — логово за лифтом в него ведёт в
+      // квартиры биома лифта
+      const lh = lair && this.flatB.has(dest.home) ? this.clusters[this.clusterOf[L.inst.order] ?? -1]?.home ?? dest.home : dest.home;
+      const cl = lair ? this.newCluster(lh, lh, false, false) : this.newCluster(dest.biome, dest.home, dest.rich);
       this.onPlaced(n, L, childAddr(addr, liftConn(floor, side)), false, cl);
       this.beginCluster(cl);
       return n;
@@ -2848,7 +2909,7 @@ class Stream implements StreamWorld {
   }
 
   /** Стыковка куска хода вида kind к двери ci (без предела обзора). */
-  private growKind(P: Node, ci: number, D: Rng, pool: Pool, win: Map<Info, number>, fails: Fails): Node | null {
+  private growKind(P: Node, ci: number, D: Rng, pool: Pool, win: Map<Info, number>, fails: Fails, look: 'ahead' | 'keep' | null = null): Node | null {
     const A = P.conns[ci];
     const match = this.settings.match;
     // сарай: за выходом кусок встаёт входом, за входом — выходом (стойла по всему ходу — по одну руку)
@@ -2861,8 +2922,11 @@ class Stream implements StreamWorld {
     const list = pool.list.filter((info) => info.room.connectors.some((b) => okB(info, b)));
     if (!list.length) return null;
     const skip = (info: Info) => (info.room.unique && this.uniqueUsed.has(info)) || (win.get(info) ?? 0) >= info.effMax;
-    // sanatorium: сеть flat-биома — слой родителя (dw = 0), занятость — все комнаты слоя
-    return growFrom(this.netCtx(this.clusters[this.clusterOf[P.inst.order] ?? -1], this.tctx), this.lay, P, ci, [list], okB, D, fails, { weightOf: pool.weightOf, skip, stick: true });
+    // sanatorium: сеть flat-биома — слой родителя (dw = 0), занятость — все комнаты слоя; look 'ahead' — только куски, за
+    // которыми есть куда идти дальше (aheadFree), 'keep' — помещения, не встающие перед нерешёнными проходами (keepsPasses)
+    const accept = look === 'ahead' ? (info: Info, bi: number, body: Body) => this.aheadFree(info, bi, body, P.w, P.floor)
+      : look === 'keep' ? (_: Info, __: number, body: Body) => this.keepsPasses(body, P.w, P.floor) : undefined;
+    return growFrom(this.netCtx(this.clusters[this.clusterOf[P.inst.order] ?? -1], this.tctx), this.lay, P, ci, [list], okB, D, fails, { weightOf: pool.weightOf, skip, stick: true, ...(accept ? { accept } : {}) });
   }
 
   /**
@@ -2911,8 +2975,8 @@ class Stream implements StreamWorld {
       const fails: Fails = { space: 0, rule: 0, sight: 0, seam: 0 };
       let child: Node | null = null;
       if (TUNNEL_SIDE_TAGS.has(tag)) {
-        if (D.next() < T.storage) child = this.growKind(P, ci, D, this.tunPool(cl.biome, 'storage'), win, fails);
-      } else child = this.growKind(P, ci, D, this.biomePool(cl.biome), win, fails);
+        if (D.next() < T.storage) child = this.growKind(P, ci, D, this.tunPool(cl.biome, 'storage'), win, fails, this.flatCl(cl) ? 'keep' : null);
+      } else child = this.growKind(P, ci, D, this.biomePool(cl.biome), win, fails, this.flatCl(cl) ? 'keep' : null);
       if (!child) {
         this.markDead(P, ci, 'cluster');
         continue;
@@ -2973,8 +3037,12 @@ class Stream implements StreamWorld {
         : ['straight', 'turn', 'branch'];
     }
     const fails: Fails = { space: 0, rule: 0, sight: 0, seam: 0 };
-    for (const k of kinds) {
-      const child = this.growKind(P, ci, D, this.tunPool(cl.biome, k, level), win, fails);
+    // sanatorium: у flat-биома сначала куски, за которыми есть куда идти дальше (здание не замыкается само в себе), затем
+    // любые
+    const steps: [TunKind, 'ahead' | null][] = kinds.map((k) => [k, this.flatCl(cl) ? 'ahead' : null]);
+    if (this.flatCl(cl)) for (const k of kinds) steps.push([k, null]);
+    for (const [k, look] of steps) {
+      const child = this.growKind(P, ci, D, this.tunPool(cl.biome, k, level), win, fails, look);
       if (!child) continue;
       this.grown++;
       this.onPlaced(child, P, daddr, true, cl);

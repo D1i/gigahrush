@@ -1879,6 +1879,14 @@ export const PROP_COVER: Readonly<Record<string, { cover: PropCoverKind; clear: 
   // catacombs: трубы поперёк хода — низ трубы (ось − 0.22), высота — теги «подлаз» / «пригнуться» в PROP_HEIGHTS
   p_cat_pipe_mid: { cover: 'table', clear: 0.83 },
   p_cat_pipe_high: { cover: 'table', clear: 1.43 },
+  // sanatorium: кровати (низ царги 0.34, покрывало до 0.38) и кушетка (рама 0.42…0.48) — лёжа; столы (царга от 0.64,
+  // скатерть до 0.63) — на четвереньках (tools/make-sanatorium-rooms.mjs)
+  p_san_bed: { cover: 'bed', clear: BED_CLEAR_M },
+  p_san_bed_frame: { cover: 'bed', clear: BED_CLEAR_M },
+  p_san_couch: { cover: 'bed', clear: BED_CLEAR_M },
+  p_san_table: { cover: 'table', clear: TABLE_CLEAR_M },
+  p_san_desk: { cover: 'table', clear: TABLE_CLEAR_M },
+  p_san_dining_table: { cover: 'table', clear: TABLE_CLEAR_M },
 };
 
 /** Укрытие предмета по id (PROP_COVER) или null — сплошной до пола. */

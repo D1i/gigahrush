@@ -33,6 +33,9 @@
 //  • Камера Babylon: центр эллипсоида = позиция − ellipsoid.y + ellipsoidOffset; глаз над ногами eye, низ эллипсоида
 //    на lift над ногами ⇒ ellipsoidOffset.y = lift + 2·ellipsoid.y − eye. Стоя lift = 0 (пол — гравитацией Babylon);
 //    низко lift ≈ 0.2 м — как «шаг» у контроллера персонажа: эллипсоид не цепляет пол, горки и склоны до ~40° не мешают.
+//  • Крен (rotation.z: roll позы, качание бега, «лежит», шаг боком в погребе): Babylon пересчитывает «верх» камеры
+//    (upVector) только когда rotation.z меняется — с поворотом и наклоном взгляда того кадра; крен прошёл, глядя вниз, —
+//    дальше поворот мышью валил горизонт (до десятков градусов). Поэтому updateUpVectorFromRotation: верх — каждый кадр.
 //  • Скорость: cam.speed = скорость позы (при подъёме — плавно) × speedMul (бег — src/view3d/sprint.ts); засыпало — 0.
 //  • Погреб (src/view3d/cellarWalk.ts, src/locations/cellarSqueeze.ts): body — тело-эллипс по взгляду (радиусы x/z
 //    эллипсоида — от поворота камеры, в любой позе), side — протискивается боком (скорость × SIDE_SPEED); тело снято —
@@ -193,6 +196,8 @@ export class Posture {
     /** поза действует (от первого лица, без своей сцены поверх) */
     private readonly live: () => boolean,
   ) {
+    // верх камеры — от поворота каждый кадр (см. шапку: иначе крен, однажды бывший, валит горизонт при повороте)
+    cam.updateUpVectorFromRotation = true;
     this.obs = scene.onBeforeRenderObservable.add(() => this.frame());
   }
 

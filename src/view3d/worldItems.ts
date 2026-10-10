@@ -443,8 +443,8 @@ export class WorldItems {
           oy = k * h * 1.02;
           yaw = j(3) * 0.8;
         } else if (k > 0) {
-          // россыпь: спираль Фогеля, шаг — чуть больше габарита, повороты — любые
-          const r = Math.max(w, dp) * 0.66 * Math.sqrt(k);
+          // россыпь: спираль Фогеля, первая — посередине, соседи не друг в друге (≥ 1.05 габарита), повороты — любые
+          const r = Math.max(w, dp) * (0.55 + 0.5 * Math.sqrt(k));
           const a = k * 2.39996 + hash01(d.id, 5) * 6.283;
           ox = Math.cos(a) * r;
           oz = Math.sin(a) * r;

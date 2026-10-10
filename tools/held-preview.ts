@@ -8,7 +8,7 @@
 //                   walk=1 — на ходу (фаза шага); pitch=° — взгляд вниз (по умолчанию 8)
 //      floor=1    — предметы на полу сеткой 6 × 4 (стопки: копейки 40, батарейки 4, лампочки 3…), взгляд вниз;
 //                   eye=1 — глазами игрока издалека (мелочь видна?), held=… — с чем в руке
-//    lit=… — свет сцены 0…0.85 (по умолчанию 0.25).
+//    lit=… — свет сцены 0…0.85 (по умолчанию 0.25); cam=x,y,z — где камера; yaw=° — куда смотрит.
 // Скриншоты: node tools/held-preview-shots.mjs
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
@@ -154,6 +154,8 @@ async function show(qs: string) {
   if (isFloor && q.get('eye') !== '1') cam.position.set(0, 1.6, -0.9);
   else if (isFloor) cam.position.set(0.2, 1.6, -1.8);
   else cam.position.set(0, 1.6, -1);
+  const cp = q.get('cam')?.split(',').map(Number);
+  if (cp && cp.length === 3 && cp.every(Number.isFinite)) cam.position.set(cp[0], cp[1], cp[2]);
   cam.rotation.set(pitch, Number(q.get('yaw') ?? 0) * D, 0);
   const side = q.get('side') === '-1' ? -1 : 1;
   const walk = q.get('walk') === '1';

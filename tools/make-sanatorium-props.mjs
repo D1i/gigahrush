@@ -159,7 +159,7 @@ function rippleSvg() {
   for (const axis of [0, 1]) {
     for (let k = 0; k < 4; k++) {
       const c0 = ((k + rr(0.1, 0.7)) * W) / 4, a = rr(5, 10), f = 1 + (k % 3), ph = rr(0, 2 * PI), a2 = rr(2, 5), f2 = f + 2, ph2 = rr(0, 2 * PI);
-      const w = rr(1.3, 2.3);
+      const w = rr(1.1, 1.9);
       for (const off of [-W, 0, W]) {
         const pts = [];
         for (let t = 0; t <= W; t += 4) {
@@ -249,7 +249,7 @@ const TX = {
   tileWhite: await texture('san_tile_white', tileSvg(4, 32, ['#EEEEE8', '#EAEAE3', '#F1F1EC', '#E7E7E0'], '#C6C5BD')),
   poolTile: await texture('san_pool_tile', tileSvg(4, 32, ['#9ACFD7', '#A3D5DC', '#93C9D2', '#A9D9DF'], '#D9EEEF')),
   mosaic: await texture('san_pool_mosaic', mosaicSvg()),
-  ripple: await texture('san_pool_water', rippleSvg(), [196, 238, 240]),
+  ripple: await texture('san_pool_water', rippleSvg(), [182, 230, 234]),
   tulle: await texture('san_tulle', tulleSvg()),
   board: await texture('san_noticeboard', boardSvg()),
   dial: await texture('san_clock_dial', dialSvg()),
@@ -299,6 +299,7 @@ const C = {
   leafDark: mat('san_leaf_dark', '#234726', { rough: 0.7, two: true }),
   frond: mat('san_frond', '#4D7E3A', { rough: 0.7, two: true }),
   stem: mat('san_stem', '#6A5A3C', { rough: 0.8 }),
+  frondStem: mat('san_frond_stem', '#55702F', { rough: 0.8 }),
   // пластик стульев, матовое стекло перегородки, хрусталь люстры, зелёный абажур, бумага
   plastic: mat('san_plastic_white', '#F0F0EB', { rough: 0.5, two: true }),
   glass: mat('san_glass_frosted', '#A9C0BD', { rough: 0.15 }),
@@ -814,24 +815,24 @@ function drawFoliage(M, ops, base, top, rmax) {
     const a = (k / NF) * 2 * PI + rr(-0.25, 0.25);
     const tall = [1, 0.86, 0.74][k % 3] * rr(0.95, 1.05);
     const reach = rr(0.3, 0.4) * (1.15 - 0.4 * (tall - 0.74));
-    const P0 = [0.02, base], P1 = [reach * 0.3, base + 1.35 * tall], P2 = [reach, base + 0.7 * tall];
+    const P0 = [0.02, base], P1 = [reach * 0.45, base + 1.2 * tall], P2 = [reach, base + 0.55 * tall];
     const at = (t) => [lerp(lerp(P0[0], P1[0], t), lerp(P1[0], P2[0], t), t), lerp(lerp(P0[1], P1[1], t), lerp(P1[1], P2[1], t), t)];
     const W = (q) => [q[0] * Math.cos(a), q[1], q[0] * Math.sin(a)];
     const rach = [];
     for (let i = 0; i <= 12; i++) rach.push(W(at(i / 12)));
-    ops.push({ m: C.stem, r: 0.008, pts: rach });
+    ops.push({ m: C.frondStem, r: 0.006, pts: rach });
     const side = [-Math.sin(a), 0, Math.cos(a)];
     for (let i = 0; i < 22; i++) {
       const t = 0.16 + (0.82 * i) / 21;
       const p = W(at(t)), tg = norm(sub(W(at(t + 0.01)), p));
       const len = 0.05 + 0.17 * Math.sin((PI * (t - 0.1)) / 0.95);
       for (const s of [-1, 1]) {
-        const dir = add(add(mul(side, s * 0.85), mul(tg, 0.5)), [0, -0.32, 0]);
+        const dir = add(add(mul(side, s * 0.9), mul(tg, 0.5)), [0, -0.18, 0]);
         ops.push({ m: C.frond, pts: leafQuad(p, dir, len, 0.032) });
       }
     }
   }
-  drawFoliage(M, ops, base, 1.7, 0.4);
+  drawFoliage(M, ops, base, 1.7, 0.41);
 }
 
 // ── плоский круглый плафон под потолком (подвесной: верх — 0, низ — −0.12): эмалированное основание, хромированный
@@ -887,7 +888,7 @@ function drawFoliage(M, ops, base, top, rmax) {
   }
   M.box(C.woodDark, -X + 0.04, 0.96, ZF - 0.015, X - 0.04, 0.99, ZF, 'pz');
   M.box(C.woodDark, -X + 0.04, 0.08, ZF - 0.01, X - 0.04, 0.1, ZF, 'pz');
-  M.picture(C.plaque, -0.55, 0.8, 0.55, 0.92, ZF - 0.004);
+  M.picture(C.plaque, -0.55, 0.8, 0.55, 0.92, ZF - 0.0105);
   M.box(C.woodDark, -0.57, 0.785, ZF - 0.008, 0.57, 0.935, ZF - 0.002, 'pz');
   // барьер и стол
   M.box(C.wood, -X - 0.02, 1.05, -0.44, X + 0.02, 1.1, -0.12);
@@ -1010,15 +1011,16 @@ function drawFoliage(M, ops, base, top, rmax) {
   }
 }
 
-// ── свод-оболочка зала бассейна 3.2 × 14.0 (подвесной: верх — 0, низ — −2.6; реф. 2): тонкая бетонная оболочка
+// ── свод-оболочка зала бассейна 4.2 × 14.0 (подвесной: верх — 0, низ — −2.6; реф. 2): тонкая бетонная оболочка
 //    параболического сечения поперёк X, снизу профнастил (гофры вдоль свода), поперечные рёбра через 1.75 м, торцевые
-//    рёбра 0.22 (обрамляют арочные окна), три продольных ребра, бортовые балки по низу
+//    рёбра 0.22 (обрамляют арочные окна), три продольных ребра, бортовые балки по низу. Ширина 4.2 = шаг окон зала:
+//    соседние оболочки смыкаются пятами над ногами p_san_vault_leg (раскладка ROOMS: центры над окнами через 4.2)
 {
   const M = new Model('p_san_vault', { ceil: true });
   const L = 7, NU = 28;
-  const Po = (u) => [1.6 * u, -2.6 * u * u];
-  const Pi = (u) => [1.5 * u, -0.12 - 2.48 * u * u];
-  const Pr = (u) => [1.42 * u, -0.2 - 2.4 * u * u];
+  const Po = (u) => [2.1 * u, -2.6 * u * u];
+  const Pi = (u) => [2.0 * u, -0.12 - 2.48 * u * u];
+  const Pr = (u) => [1.92 * u, -0.2 - 2.4 * u * u];
   /** Нормаль профиля к залу (вниз-внутрь). */
   const nIn = (P, u) => {
     const e = 1e-4, a = P(u - e), b = P(u + e);
@@ -1060,14 +1062,14 @@ function drawFoliage(M, ops, base, top, rmax) {
     const p = Pi(u), n = nIn(Pi, u), c = [p[0] + n[0] * 0.03, p[1] + n[1] * 0.03];
     M.beam(C.concrete, [c[0], c[1], -L + 0.22], [c[0], c[1], L - 0.22], 0.07, 0.06, n, 'pz nz');
   }
-  for (const s of [-1, 1]) M.box(C.concrete, s < 0 ? -1.6 : 1.4, -2.6, -L, s < 0 ? -1.4 : 1.6, -2.42, L);
+  for (const s of [-1, 1]) M.box(C.concrete, s < 0 ? -2.1 : 1.88, -2.6, -L, s < 0 ? -1.88 : 2.1, -2.42, L);
 }
 
 // ── наклонная опора свода 0.6 × 0.6 (выс. 7.0): бетонный столб, внизу узкий (0.26), к пятам свода (4.4) расширяется и
-//    наклоняется к стене (+Z); цоколь
+//    чуть наклоняется к стене (+Z); цоколь
 {
   const M = new Model('p_san_vault_leg');
-  const S = [[0, -0.1, 0.13, 0.13], [4.4, 0.06, 0.3, 0.22], [7.0, 0.08, 0.3, 0.22]]; // y, cz, hx, hz
+  const S = [[0, -0.04, 0.13, 0.13], [4.4, 0.04, 0.3, 0.24], [7.0, 0.05, 0.3, 0.24]]; // y, cz, hx, hz
   const ring = ([y, cz, hx, hz]) => [[-hx, y, cz - hz], [hx, y, cz - hz], [hx, y, cz + hz], [-hx, y, cz + hz]];
   for (let s = 0; s + 1 < S.length; s++) {
     const A = ring(S[s]), B = ring(S[s + 1]);
@@ -1080,12 +1082,13 @@ function drawFoliage(M, ops, base, top, rmax) {
       M.quad(C.concrete, A[j], A[j1], B[j1], B[j], n);
     }
   }
-  M.box(C.concrete, -0.17, 0, -0.27, 0.17, 0.12, 0.07, 'ny');
+  M.box(C.concrete, -0.17, 0, -0.21, 0.17, 0.12, 0.13, 'ny');
 }
 
-// ── бассейн-«почка» 12.0 × 7.0 (выс. 0.3, реф. 2): контур — суперэллипс с вмятиной на северной (+Z) стороне; белый
+// ── бассейн-«почка» 12.0 × 7.0 (выс. 0.3, реф. 2): контур — суперэллипс с вмятиной на южной (−Z) стороне; белый
 //    кафельный бортик 0.4 со скруглёнными кромками (верх 0.3), внутри — голубой кафель стенок, мозаика дна (0.02) и
-//    вода (0.22): сетка бликов с альфа-тестом, сквозь просветы — дно
+//    вода (0.22): сетка бликов с альфа-тестом, сквозь просветы — дно. Вмятина «почки» — с юга (−Z, перед): северный
+//    край ровный и касается грани габарита — там встают лесенки (раскладка ROOMS: x центр ∓ 2.1)
 {
   const M = new Model('p_san_pool');
   const A = 5.6, BL = 3.1, NE = 4, DENT = 0.95, SD = 1.9, CURB = 0.4;
@@ -1095,15 +1098,15 @@ function drawFoliage(M, ops, base, top, rmax) {
     for (let k = 0; k < 2400; k++) {
       const t = (k / 2400) * 2 * PI, c = Math.cos(t), s = Math.sin(t);
       const x = A * Math.sign(c) * Math.abs(c) ** (2 / NE);
-      let z = (s > 0 ? BH : BL) * Math.sign(s) * Math.abs(s) ** (2 / NE);
-      if (z > 0) z -= DENT * Math.exp(-((x / SD) ** 2)) * (z / BH) ** 2;
+      let z = (s < 0 ? BH : BL) * Math.sign(s) * Math.abs(s) ** (2 / NE);
+      if (z < 0) z += DENT * Math.exp(-((x / SD) ** 2)) * (z / BH) ** 2;
       pts.push([x, z]);
     }
     return pts;
   };
-  // северная половина: подобрать полуось так, чтобы с вмятиной контур доходил до 3.1 (габарит 7.0 по Z)
+  // южная половина: подобрать полуось так, чтобы с вмятиной контур доходил до −3.1 (габарит 7.0 по Z)
   let BH = BL;
-  for (let it = 0; it < 10; it++) BH += BL - Math.max(...outline(BH).map((p) => p[1]));
+  for (let it = 0; it < 10; it++) BH += BL + Math.min(...outline(BH).map((p) => p[1]));
   const dense = outline(BH);
   // равномерно по длине
   const K = 180, cum = [0];
@@ -1142,7 +1145,7 @@ function drawFoliage(M, ops, base, top, rmax) {
     }
   }
   // дно и вода — веером из точки, из которой виден весь контур
-  const O = [0, -0.6];
+  const O = [0, 0.6];
   for (let k = 0; k < K; k++) {
     const a = P[k], b = P[(k + 1) % K];
     M.poly(C.mosaic, [[O[0], YB, O[1]], [a[0], YB, a[1]], [b[0], YB, b[1]]], [0, 1, 0]);
@@ -1151,23 +1154,23 @@ function drawFoliage(M, ops, base, top, rmax) {
 }
 
 // ── лесенка бассейна 0.7 × 0.5 (выс. 1.1): два поручня-дуги из нержавейки с фланцами у пола, ступень в воде. Центр
-//    лесенки — на середине бортика (0.4), зад (+Z) — к воде: поручни встают с пола перед бортиком (z −0.22),
-//    перекидываются через него и уходят в воду у внутренней кромки (z +0.2)
+//    лесенки — на середине бортика (0.4), перед (−Z) — к воде: поручни встают с пола за бортиком (z +0.22),
+//    перекидываются через него и уходят в воду у внутренней кромки (z −0.24)
 {
   const M = new Model('p_san_pool_ladder');
   const R = 0.022;
   for (const x of [-0.3, 0.3]) {
-    const rc = 0.21, yc = 1.1 - R - rc, zc = -0.01;
-    const pts = [[x, 0.0, -0.22]];
+    const rc = 0.23, yc = 1.1 - R - rc, zc = -0.01;
+    const pts = [[x, 0.0, 0.22]];
     for (let k = 0; k <= 12; k++) {
-      const f = PI - (PI * k) / 12;
+      const f = (PI * k) / 12;
       pts.push([x, yc + rc * Math.sin(f), zc + rc * Math.cos(f)]);
     }
-    pts.push([x, 0.6, 0.2], [x, 0.03, 0.2]);
+    pts.push([x, 0.6, -0.24], [x, 0.03, -0.24]);
     M.tube(C.chrome, pts, R, { seg: 8, caps: 'end' });
-    M.lathe(C.chrome, [[0.045, 0], [0.045, 0.01], [0.024, 0.022]], { c: [x, 0, -0.22], seg: 10 });
+    M.lathe(C.chrome, [[0.045, 0], [0.045, 0.01], [0.024, 0.022]], { c: [x, 0, 0.22], seg: 10 });
   }
-  M.box(C.chrome, -0.29, 0.1, 0.12, 0.29, 0.12, 0.25);
+  M.box(C.chrome, -0.29, 0.1, -0.27, 0.29, 0.12, -0.2);
 }
 
 // ── белый пластиковый стул-моноблок 0.55 × 0.55 (выс. 0.8): сиденье со скруглёнными углами, расставленные ножки,
@@ -1223,7 +1226,7 @@ const EXPECT = {
   p_san_clock: [0.4, 0.06, 2.4],
   p_san_glass_screen: [0.9, 0.12, 3.3],
   p_san_arch_window: [3.0, 0.3, 6.6],
-  p_san_vault: [3.2, 14.0, 2.6],
+  p_san_vault: [4.2, 14.0, 2.6],
   p_san_vault_leg: [0.6, 0.6, 7.0],
   p_san_pool: [12.0, 7.0, 0.3],
   p_san_pool_ladder: [0.7, 0.5, 1.1],

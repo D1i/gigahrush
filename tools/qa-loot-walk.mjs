@@ -91,6 +91,18 @@ const st = (page) =>
     };
   });
 
+/** Ждать, пока состояние st не станет pred (не дольше maxMs): в headless-рендере 4–10 к/с, а dt игры обрезан до 0.1 с —
+ *  игровое время отстаёт от настоящего, поэтому таймеры (спичка 6 с, обморок 10 с) ждём по состоянию, а не по часам. */
+async function until(page, pred, maxMs) {
+  const t0 = Date.now();
+  let s = await st(page);
+  while (!pred(s) && Date.now() - t0 < maxMs) {
+    await page.waitForTimeout(250);
+    s = await st(page);
+  }
+  return s;
+}
+
 /** Пройти с зажатой W secs секунд: путь по кадрам (переносы — не путь), разворот на конце отрезка leg. */
 const walkW = (page, secs, leg = 3) =>
   page.evaluate(
@@ -228,9 +240,8 @@ try {
   await page.screenshot({ path: out + 'loot-3-match.png' });
   ok('F: спичка чиркнута — коробок ×4, свет у руки', m1.tr.match?.item === 'it_matches' && m1.hotbar.slots[2]?.n === 4 && m1.light?.kind === 'point', JSON.stringify({ match: m1.tr.match, light: m1.light }));
   ok('свет: П-2 ярче спички, спичка ярче темноты', lP2 > lMatch && lMatch > lDark + 0.5, `П-2 ${lP2.toFixed(1)} · спичка ${lMatch.toFixed(1)} · темно ${lDark.toFixed(1)}`);
-  await page.waitForTimeout(6000);
-  const m2 = await st(page);
-  ok('спичка догорела за 6 с', !m2.tr.match && !m2.light, JSON.stringify(m2.tr));
+  const m2 = await until(page, (s) => !s.tr.match, 40000);
+  ok('спичка догорела за 6 с (игровых)', !m2.tr.match && !m2.light && m2.tr.t - m1.tr.t < 7.5, JSON.stringify({ dt: m2.tr.t - m1.tr.t, tr: m2.tr }));
 
   // ═════════ ЛКМ: хлеб ═════════
   await page.keyboard.press('Digit4');
@@ -305,7 +316,8 @@ try {
   await page.waitForTimeout(4000);
   await page.screenshot({ path: out + 'loot-6z-faint-dark.png' });
   await page.keyboard.up('KeyW');
-  await page.waitForTimeout(5600);
+  await until(page, (s) => !s.fx.down && !s.veil, 60000);
+  await page.waitForTimeout(400);
   const y2 = await st(page);
   await page.screenshot({ path: out + 'loot-7-faint-up.png' });
   ok('через 10 с встал: взгляд тот же, пелены нет, ход снова есть', !y2.fx.down && !y2.veil && Math.abs(y2.rot[0] - y0.rot[0]) < 1e-3 && Math.abs(y2.rot[1] - y0.rot[1]) < 1e-3 && Math.abs(y2.rot[2]) < 1e-3 && y2.extraMul > 0.8, JSON.stringify({ before: y0.rot, after: y2.rot, mul: y2.extraMul }));
@@ -332,7 +344,7 @@ try {
   await page.keyboard.up('KeyW');
   ok('второй пузырь: валяется (ход 0, пелена), с W не ползёт', p2.fx.down && p2.veil && p2.extraMul === 0 && Math.hypot(p2.pos[0] - p0.pos[0], p2.pos[2] - p0.pos[2]) < 0.15, JSON.stringify({ fx: p2.fx, d: Math.hypot(p2.pos[0] - p0.pos[0], p2.pos[2] - p0.pos[2]) }));
   // встать (15 с), дальше — лут
-  await page.waitForFunction(() => !window.__rfInv.fx().down, null, { timeout: 30000 });
+  await page.waitForFunction(() => !window.__rfInv.fx().down, null, { timeout: 90000 });
   const p3 = await st(page);
   ok('после падения встал: взгляд тот же', Math.abs(p3.rot[0] - p0.rot[0]) < 1e-3 && Math.abs(p3.rot[1] - p0.rot[1]) < 1e-3 && Math.abs(p3.rot[2]) < 1e-3, JSON.stringify({ before: p0.rot, after: p3.rot }));
 

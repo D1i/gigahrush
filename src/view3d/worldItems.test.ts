@@ -1,5 +1,6 @@
 // Предметы на полу (./worldItems.ts) на NullEngine: сборка по списку (новые / пропавшие / сдвинутые), без изменений —
 // без работы, видимость по комнатам, свет горящих фонарей (не больше двух), выбор предмета под взглядом, подсветка;
+// виды лута (./itemLooks.ts: модели — подменой setLootModels, позы, стопки, мелочь, навесное, реестр и значки);
 // фонарь в руке (./flashlight.ts): свет только в руке, предел источников у материалов поднят.
 import { describe, expect, it, vi } from 'vitest';
 
@@ -15,13 +16,17 @@ import { MultiMaterial } from '@babylonjs/core/Materials/multiMaterial';
 import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { PointLight } from '@babylonjs/core/Lights/pointLight';
 import { SpotLight } from '@babylonjs/core/Lights/spotLight';
+import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
+import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { WorldDrop } from '../gen4d/stream';
-import { FLASHLIGHT_ITEM, WorldItems, dropPose, itemLook } from './worldItems';
+import { FLASHLIGHT_ITEM, WorldItems, dropPose, itemLook, pileCount } from './worldItems';
 import { KEROLAMP_ITEM } from '../locations/obshaga';
 import { Flashlight, FlashlightModel, LIGHT_SLOTS } from './flashlight';
-import { LANTERN_COLOR } from './obshagaScene';
+import { KEROLAMP_COLOR } from '../game/itemUse';
+import { LOOT_ANCHORS, lootIconUrl, lootPropId } from './lootAssets';
+import { LOOK_ITEMS, SMALL_MAX_SCALE, itemIconOf, itemLookOf, lookRev, registerItemIcon, registerItemLook, setLootModels } from './itemLooks';
 
 function setup() {
   const engine = new NullEngine();
@@ -33,6 +38,36 @@ function setup() {
 
 const drop = (id: string, item: string, x: number, z: number, o: Partial<WorldDrop> = {}): WorldDrop => ({ id, item, inst: 'r1', x, y: 0, z, yaw: 0, ...o });
 const dropMeshes = (scene: Scene) => scene.meshes.filter((m) => m.name.startsWith('drop:') && !m.name.endsWith('Tpl') && m.name !== 'drop:glow');
+
+/** Подмена моделей лута сцены: коробки габаритом модели (пивот — центр низа), у П-2 — MultiMaterial со стеклом (альфа,
+ *  проход задних граней); ready.v = false — «набор ещё грузится». */
+function fakeLoot(scene: Scene, ready = { v: true }) {
+  const tpls = new Map<string, Mesh>();
+  const mat = new StandardMaterial('propModel:loot_test', scene);
+  const glass = new StandardMaterial('propModel:loot_glass_smoked', scene);
+  glass.alpha = 0.3;
+  glass.separateCullingPass = true;
+  const multi = new MultiMaterial('propModel:loot_multi', scene);
+  multi.subMaterials = [mat, glass];
+  for (const id of LOOK_ITEMS) {
+    const sz = itemLookOf(id).size!;
+    const b = CreateBox('propModel:' + lootPropId(id), { width: sz[0], height: sz[1], depth: sz[2] }, scene);
+    b.position.y = sz[1] / 2;
+    b.bakeCurrentTransformIntoVertices();
+    b.material = id === FLASHLIGHT_ITEM ? multi : mat;
+    b.setEnabled(false);
+    tpls.set(lootPropId(id)!, b);
+  }
+  setLootModels(scene, { get: (id) => (ready.v ? (tpls.get(id) ?? null) : null) });
+  return { tpls, mat, glass, multi, ready };
+}
+
+/** Мировой габарит меша. */
+const worldBox = (m: Mesh) => {
+  m.computeWorldMatrix(true);
+  return m.getBoundingInfo().boundingBox;
+};
+
 
 describe('WorldItems.sync', () => {
   it('строит, удаляет, двигает на месте; тот же массив / та же версия — без работы', T, () => {
@@ -149,18 +184,35 @@ describe('WorldItems.sync', () => {
     scene.dispose();
   });
 
-  it('подсвеченный фонарь включили (тот же id) — линза горит и под подсветкой, и после неё', T, () => {
+
+  it('подсвеченный П-2 включили (тот же id) — стекло светится и под подсветкой, и после неё; подсветка — и стеклу', T, () => {
     const { scene } = setup();
+    const { multi } = fakeLoot(scene);
     const items = new WorldItems(scene);
     items.sync([drop('f', FLASHLIGHT_ITEM, 0, 1, { on: false })]);
+    items.update();
     items.highlight('f');
-    const lens = scene.getMeshByName('drop:f:flash:lens')!;
-    expect(lens.material!.name).toBe('flash:lensOff:hl');
+    const model = scene.getMeshByName('drop:f:model')!;
+    const lens = scene.getMeshByName('drop:f:lens')!;
+    expect(lens.isEnabled()).toBe(false);
+    // копия MultiMaterial: стекло — с той же прозрачностью и проходом задних граней
+    const hl = model.material as MultiMaterial;
+    expect(hl.name).toBe('propModel:loot_multi:hl');
+    const g = hl.subMaterials[1] as StandardMaterial;
+    expect(g.alpha).toBeCloseTo(0.3, 6);
+    expect(g.separateCullingPass).toBe(true);
     items.sync([drop('f', FLASHLIGHT_ITEM, 0, 1, { on: true })]);
     expect(items.highlighted).toBe('f');
-    expect(lens.material!.name).toBe('flash:lensOn:hl');
+    expect(lens.isEnabled()).toBe(true);
+    expect(model.material!.name).toBe('propModel:loot_multi:hl');
     items.highlight(null);
-    expect(lens.material!.name).toBe('flash:lensOn');
+    expect(model.material).toBe(multi);
+    expect(lens.isEnabled()).toBe(true);
+    // сели батарейки — на полу не светит
+    items.sync([drop('f', FLASHLIGHT_ITEM, 0, 1, { on: true, q: 0 })]);
+    items.update();
+    expect(lens.isEnabled()).toBe(false);
+    expect(items.litCount).toBe(0);
     items.dispose();
     scene.dispose();
   });
@@ -198,52 +250,46 @@ describe('WorldItems.sync', () => {
   });
 });
 
-describe('Керосиновая лампа на полу (ITEM_LOOKS)', () => {
-  /** «летучая мышь» 0.35 м: пивот — центр низа */
-  const lampTpl = (scene: Scene) => {
-    const m = CreateCylinder('tplLamp', { height: 0.35, diameter: 0.2 }, scene);
-    m.position.y = 0.175;
-    m.bakeCurrentTransformIntoVertices();
-    m.setEnabled(false);
-    return m;
-  };
+describe('Керосиновая лампа на полу', () => {
   const lamps = (scene: Scene) => scene.lights.filter((l) => l.name.startsWith('drop:lamp') && l.isEnabled() && l.intensity > 0);
 
-  it('стоит, светит тёплым точечным с дрожью; on: false — не светит; модель догрузилась — коробка пересобрана', T, async () => {
+  it('стоит, светит тёплым точечным из пламени с дрожью; on: false — не светит; модель догрузилась — коробка пересобрана', T, async () => {
     expect(itemLook(KEROLAMP_ITEM)).toMatchObject({ pose: 'stand', light: { kind: 'point' } });
-    expect(itemLook(FLASHLIGHT_ITEM)).toMatchObject({ pose: 'lie', light: { kind: 'spot' } });
+    expect(itemLook(FLASHLIGHT_ITEM)).toMatchObject({ front: 'along', light: { kind: 'spot', floorBeam: true } });
     expect(itemLook('it_canned').light).toBeNull();
     const { scene } = setup();
-    let tpl: Mesh | null = null;
-    const items = new WorldItems(scene, { itemModel: (i) => (i === KEROLAMP_ITEM ? tpl : null) });
+    const { ready } = fakeLoot(scene, { v: false });
+    const items = new WorldItems(scene);
     const k: WorldDrop = { id: 'k', item: KEROLAMP_ITEM, inst: 'r1', x: 0, y: 0, z: 1.5, yaw: 0 };
-    // модели ещё нет (наборы PropModels грузятся) — коробка, но светит
+    // модели ещё нет (набор лута грузится) — коробка, но светит
     items.sync([k]);
     items.update();
     expect(scene.getMeshByName('drop:k:box')).toBeTruthy();
+    expect(items.modelOf('k')).toBe(false);
     expect(items.litIds).toEqual(['k']);
     // догрузилась — через MODEL_RETRY_MS коробка пересобрана моделью
-    tpl = lampTpl(scene);
+    ready.v = true;
     const real = performance.now.bind(performance);
     const spy = vi.spyOn(performance, 'now').mockImplementation(() => real() + 5000);
     items.update();
     expect(scene.getMeshByName('drop:k:box')).toBeNull();
-    const model = scene.getMeshByName('drop:k:model')!;
-    expect(model).toBeTruthy();
+    expect(items.modelOf('k')).toBe(true);
+    const model = scene.getMeshByName('drop:k:model') as Mesh;
     // стоит: не повёрнута, низ — на полу, высота — своя
     const pose = scene.getTransformNodeByName('drop:k:pose')!;
     expect(pose.rotation.x).toBe(0);
     expect(pose.rotation.z).toBe(0);
-    model.computeWorldMatrix(true);
-    const bb = model.getBoundingInfo().boundingBox;
+    const bb = worldBox(model);
     expect(bb.minimumWorld.y).toBeCloseTo(0, 3);
-    expect(bb.maximumWorld.y).toBeCloseTo(0.35, 3);
+    expect(bb.maximumWorld.y).toBeCloseTo(itemLookOf(KEROLAMP_ITEM).size![1], 3);
+    // язычок пламени в колбе — горит
+    expect(scene.getMeshByName('drop:k:flame:outer')!.isEnabled()).toBe(true);
     items.update();
     const [l] = lamps(scene);
     expect(l).toBeInstanceOf(PointLight);
-    expect(l.diffuse.equals(LANTERN_COLOR)).toBe(true);
-    expect((l as PointLight).position.y).toBeCloseTo(0.15, 3);
-    expect((l as PointLight).position.z).toBeCloseTo(1.5, 3);
+    expect(l.diffuse.equals(Color3.FromHexString(KEROLAMP_COLOR))).toBe(true);
+    expect((l as PointLight).position.y).toBeCloseTo(LOOT_ANCHORS.kerolamp.flame[1], 3);
+    expect((l as PointLight).position.z).toBeCloseTo(1.5, 1);
     // дрожь пламени
     const seen = new Set<number>();
     for (let i = 0; i < 4; i++) {
@@ -253,10 +299,11 @@ describe('Керосиновая лампа на полу (ITEM_LOOKS)', () => {
     }
     expect(seen.size).toBeGreaterThan(1);
     for (const v of seen) expect(v / 1e4).toBeGreaterThan(0.6);
-    // погашена — не светит
+    // погашена — не светит, пламени нет
     items.sync([{ ...k, on: false }]);
     items.update();
     expect(items.litCount).toBe(0);
+    expect(scene.getMeshByName('drop:k:flame:outer')!.isEnabled()).toBe(false);
     spy.mockRestore();
     items.dispose();
     scene.dispose();
@@ -264,8 +311,8 @@ describe('Керосиновая лампа на полу (ITEM_LOOKS)', () => {
 
   it('предел источников — общий с фонарями: светят два ближайших; вид источника — по предмету', T, () => {
     const { scene } = setup();
-    const tpl = lampTpl(scene);
-    const items = new WorldItems(scene, { itemModel: (i) => (i === KEROLAMP_ITEM ? tpl : null) });
+    fakeLoot(scene);
+    const items = new WorldItems(scene);
     const lamp = (id: string, z: number): WorldDrop => ({ id, item: KEROLAMP_ITEM, inst: 'r1', x: 0, y: 0, z, yaw: 0 });
     items.sync([drop('f1', FLASHLIGHT_ITEM, 0, 2, { on: true }), lamp('k1', 3), drop('f2', FLASHLIGHT_ITEM, 0, 5, { on: true })]);
     items.update();
@@ -278,6 +325,148 @@ describe('Керосиновая лампа на полу (ITEM_LOOKS)', () => {
     items.update();
     expect(items.litIds.sort()).toEqual(['f1', 'f2']);
     expect(scene.lights.filter((l) => l.name.startsWith('drop:lamp') && l.isEnabled()).length).toBeLessThanOrEqual(2);
+    items.dispose();
+    scene.dispose();
+  });
+});
+
+
+describe('Лут на полу: виды из реестра', () => {
+  it('модели лута: позы (на боку, лицом вверх), перед к бросившему, П-2 — линзой по yaw; точка лута — как выброшенный', T, () => {
+    const { scene } = setup();
+    fakeLoot(scene);
+    const items = new WorldItems(scene);
+    items.sync([
+      drop('r7:L0', 'it_matches', 0, 1),
+      drop('r7:L1', 'it_batteries', 0.5, 1),
+      drop('r7:L2', 'it_bread', -0.5, 1),
+      drop('f', FLASHLIGHT_ITEM, 1, 1, { yaw: Math.PI / 2 }),
+    ]);
+    items.update();
+    for (const id of ['r7:L0', 'r7:L1', 'r7:L2', 'f']) expect(items.modelOf(id)).toBe(true);
+    // коробок — лицом вверх: высота = толщина (2 см), низ на полу
+    const m = worldBox(scene.getMeshByName('drop:r7:L0:model') as Mesh);
+    expect(m.maximumWorld.y - m.minimumWorld.y).toBeCloseTo(itemLookOf('it_matches').size![2], 3);
+    expect(m.minimumWorld.y).toBeCloseTo(0, 3);
+    // батарейка — на боку: высота = диаметр
+    const b = worldBox(scene.getMeshByName('drop:r7:L1:model') as Mesh);
+    expect(b.maximumWorld.y - b.minimumWorld.y).toBeCloseTo(itemLookOf('it_batteries').size![0], 3);
+    expect(b.minimumWorld.y).toBeCloseTo(0, 3);
+    // хлеб — как стоит
+    const br = worldBox(scene.getMeshByName('drop:r7:L2:model') as Mesh);
+    expect(br.maximumWorld.y).toBeCloseTo(itemLookOf('it_bread').size![1], 3);
+    // П-2: перед модели (−Z) — по yaw (+X): линза — со стороны +X
+    const pose = scene.getTransformNodeByName('drop:f:pose')!;
+    pose.computeWorldMatrix(true);
+    const [ax, ay, az] = LOOT_ANCHORS.flashlight.lens;
+    const lens = Vector3.TransformCoordinates(new Vector3(ax, ay, az), pose.getWorldMatrix());
+    expect(lens.x).toBeGreaterThan(1.08);
+    expect(Math.abs(lens.z - 1)).toBeLessThan(0.01);
+    items.dispose();
+    scene.dispose();
+  });
+
+  it('стопка n — горкой (копейки россыпью до 6, батарейки рядком до 4); n поменялось — пересборка; мелочь — крупнее и с бликом', T, () => {
+    expect([1, 2, 3, 5, 12, 40, 999].map((n) => pileCount(n, { max: 6, mode: 'scatter' }))).toEqual([1, 2, 3, 4, 5, 6, 6]);
+    expect(pileCount(40, null)).toBe(1);
+    expect(pileCount(undefined, { max: 6, mode: 'scatter' })).toBe(1);
+    const { scene } = setup();
+    fakeLoot(scene);
+    const items = new WorldItems(scene);
+    items.sync([drop('c', 'it_kopeyki', 0, 1, { n: 40 }), drop('b', 'it_batteries', 1, 1, { n: 6 }), drop('m', 'it_matches', -1, 1, { n: 40 })]);
+    expect(items.copiesOf('c')).toBe(6);
+    expect(items.copiesOf('b')).toBe(4);
+    // спички: n — спичек в коробке, коробок один
+    expect(items.copiesOf('m')).toBe(1);
+    // монеты не друг в друге: середины — дальше диаметра (с масштабом) друг от друга
+    const s = SMALL_MAX_SCALE;
+    const cs = [0, 1, 2, 3, 4, 5].map((k) => {
+      const bb = worldBox(scene.getMeshByName(`drop:c:model:${k}`) as Mesh);
+      return bb.centerWorld.clone();
+    });
+    const dia = itemLookOf('it_kopeyki').size![0] * s;
+    for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) expect(Vector3.Distance(cs[i], cs[j])).toBeGreaterThan(dia * 0.95);
+    // мелочь крупнее (копейка 2.4 см → ×1.6), не мелочь — как есть
+    expect(scene.getTransformNodeByName('drop:c:pose:0')!.scaling.x).toBeCloseTo(s, 6);
+    expect(scene.getTransformNodeByName('drop:b:pose:0')!.scaling.x).toBeCloseTo(1, 6);
+    // след горки — шире одной монеты
+    expect(itemLookOf('it_kopeyki').foot).toBeLessThan(0.07);
+    // взяли часть — пересобрано (меньше штук)
+    const before = items.stats.created;
+    items.sync([drop('c', 'it_kopeyki', 0, 1, { n: 2 }), drop('b', 'it_batteries', 1, 1, { n: 6 }), drop('m', 'it_matches', -1, 1, { n: 39 })]);
+    expect(items.copiesOf('c')).toBe(2);
+    expect(items.stats.created).toBe(before + 1);
+    // блик: у копеек есть, у батареек нет; в темноте не виден, на свету — да
+    const glint = scene.getMeshByName('drop:c:glint')!;
+    expect(glint).toBeTruthy();
+    expect(scene.getMeshByName('drop:b:glint')).toBeNull();
+    items.update();
+    expect(glint.visibility).toBe(0);
+    const hemi = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
+    hemi.intensity = 0.85;
+    items.update();
+    expect(glint.visibility).toBeGreaterThan(0);
+    // подсветка — по модели (блик не подсвечивается)
+    items.highlight('c');
+    expect((scene.getMeshByName('drop:c:model:0') as Mesh).material!.name).toBe('propModel:loot_test:hl');
+    expect(glint.material!.name).toBe('loot:glint');
+    items.dispose();
+    expect(scene.meshes.some((x) => x.name.startsWith('drop:c:'))).toBe(false);
+    scene.dispose();
+  });
+
+  it('П-2 с удлинением тубуса (u) — навесная деталь; сняли — пересборка без неё', T, () => {
+    const { scene } = setup();
+    fakeLoot(scene);
+    const items = new WorldItems(scene);
+    items.sync([drop('f', FLASHLIGHT_ITEM, 0, 1, { u: 1 })]);
+    const part = scene.getMeshByName('drop:f:part:it_tube_ext') as Mesh;
+    expect(part).toBeTruthy();
+    // низ-центр детали — в точке tubeExt (за хвостом: перед П-2 по yaw = +Z, хвост — к −Z)
+    const bb = worldBox(part);
+    expect(bb.minimumWorld.z).toBeLessThan(1 - 0.1);
+    items.sync([drop('f', FLASHLIGHT_ITEM, 0, 1)]);
+    expect(scene.getMeshByName('drop:f:part:it_tube_ext')).toBeNull();
+    items.dispose();
+    scene.dispose();
+  });
+
+  it('реестр: вид, зарегистрированный после постройки, — пересборка; значки — свой svg / url, лут — WebP', T, () => {
+    const { scene } = setup();
+    fakeLoot(scene);
+    const items = new WorldItems(scene);
+    items.sync([drop('k', 'it_test_key', 0, 1)]);
+    items.update();
+    expect(items.modelOf('k')).toBe(false);
+    const tpl = CreateBox('tplKey', { width: 0.06, height: 0.025, depth: 0.004 }, scene);
+    tpl.position.y = 0.0125;
+    tpl.bakeCurrentTransformIntoVertices();
+    tpl.setEnabled(false);
+    const rev = lookRev();
+    const off = registerItemLook('it_test_key', { model: () => tpl, pose: 'flat', foot: 0.06 });
+    expect(lookRev()).toBe(rev + 1);
+    expect(itemLookOf('it_test_key')).toMatchObject({ pose: 'flat', foot: 0.06 });
+    items.update();
+    expect(items.modelOf('k')).toBe(true);
+    // лицом вверх: толщина 4 мм
+    const bb = worldBox(scene.getMeshByName('drop:k:model') as Mesh);
+    expect(bb.maximumWorld.y - bb.minimumWorld.y).toBeCloseTo(0.004, 4);
+    off();
+    items.update();
+    expect(items.modelOf('k')).toBe(false);
+    // значки
+    const svg = '<svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="8"/></svg>';
+    const un = registerItemIcon('it_test_key', svg);
+    expect(itemIconOf('it_test_key')).toEqual({ kind: 'svg', src: svg });
+    registerItemIcon('it_test_url', '/x.webp');
+    expect(itemIconOf('it_test_url')).toEqual({ kind: 'url', src: '/x.webp' });
+    un();
+    expect(itemIconOf('it_test_key')).toBeNull();
+    expect(itemIconOf('it_kopeyki')).toEqual(lootIconUrl('it_kopeyki') ? { kind: 'url', src: lootIconUrl('it_kopeyki') } : null);
+    // вид в руке: сумки не держат, лут — по таблице, прочее — на ладони
+    expect(itemLookOf('it_backpack').hold).toBeNull();
+    expect(itemLookOf('it_flashlight').hold?.hand).toBe('fist');
+    expect(itemLookOf('it_whatever').hold?.hand).toBe('palm');
     items.dispose();
     scene.dispose();
   });

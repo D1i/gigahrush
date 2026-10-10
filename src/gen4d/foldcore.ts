@@ -411,6 +411,9 @@ export interface GrowOpts {
   /** sanatorium: слой новой комнаты задан (вход во flat-биом на свежий слой W, stream.ts): кандидат пробует только его —
    *  без розыгрыша dwOrder и без предела maxShift; правила порогов 'never' (только dw = 0) и 'always' (dw ≠ 0) — как обычно */
   layer?: number;
+  /** sanatorium: кандидат (комната, её метка стыковки, пробное тело в 3D) подходит — иначе следующий (как «нет места»);
+   *  нет поля — все */
+  accept?: (info: Info, bi: number, body: Body) => boolean;
 }
 
 /** Кандидат стыковки, прошедший правила порогов и локальную проверку: тело в 3D и порядок проб dw. */
@@ -462,6 +465,8 @@ export function growFrom(ctx: Ctx, lay: Lay, parent: Node, ai: number, groups: I
         // localC клеток пути
         near ??= nearOf(ctx, parent, ai);
         if (near.some((x) => x.floor === parent.floor && ctx.shapes.conflict(body, x.body))) { fails.space++; continue; }
+        // sanatorium: свой отбор по пробному телу (евклидова сеть: «за куском есть куда идти дальше»)
+        if (opts.accept && !opts.accept(info, bi, body)) { fails.space++; continue; }
         // предел обзора и бесшовность — по пробной геометрии (комната + проём); слой на них не влияет,
         // поэтому отказ — повод пробовать следующего кандидата, а не другой dw
         let pvs: number[] | null = null;

@@ -31,6 +31,9 @@ import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Ray } from '@babylonjs/core/Culling/ray';
+import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
+import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder';
+import { CreateTorus } from '@babylonjs/core/Meshes/Builders/torusBuilder';
 import type { RunExport } from '../blockout/types';
 import { doorFlip } from '../blockout/doors';
 import { registerLootEntry, registerLootRoom, type LootRoomInfo, type LootRoomResult } from '../game/loot';
@@ -39,6 +42,7 @@ import { dormIndex, noteText, type DormMeta } from '../locations/obshagaRooms';
 import { SNOWDOOR_CONN } from '../locations/storyDoors';
 import { hashSeed, makeRng } from '../model/rng';
 import { PORTAL_LAYER, type PortalPiece, type PortalRenderer } from './portal';
+import { registerItemIcon, registerItemLook } from './itemLooks';
 import type { NavRoom, ObshDoor, ObshNav } from './obshagaNav';
 import type { ObshagaWalk } from './obshagaWalk';
 import type { WalkSession } from './walk';
@@ -109,6 +113,91 @@ export function registerDormLoot(): () => void {
 
 // регистрация — при загрузке модуля (см. шапку): раньше первого розыгрыша лута
 registerDormLoot();
+
+// ───────────────────────── вид ключа (src/view3d/itemLooks.ts) ─────────────────────────
+
+const keyModels = new WeakMap<Scene, Mesh>();
+
+/** Латунный ключ с красной пластмассовой биркой на кольце — шаблон (выключен): пивот — центр низа (кончик бородки),
+ *  стержень вверх по +y, плоскость ключа — XY (лицом к −z: на полу в позе 'flat' — плашмя), метры. */
+export function keyModel(scene: Scene): Mesh | null {
+  const hit = keyModels.get(scene);
+  if (hit && !hit.isDisposed()) return hit;
+  const brass = new StandardMaterial('dorm:key:brass', scene);
+  brass.diffuseColor = new Color3(0.72, 0.56, 0.27);
+  brass.specularColor = new Color3(0.75, 0.62, 0.36);
+  brass.specularPower = 56;
+  const red = new StandardMaterial('dorm:key:tag', scene);
+  red.diffuseColor = new Color3(0.5, 0.13, 0.09);
+  red.specularColor = new Color3(0.22, 0.18, 0.16);
+  red.specularPower = 24;
+  const ring = new StandardMaterial('dorm:key:ring', scene);
+  ring.diffuseColor = new Color3(0.62, 0.62, 0.6);
+  ring.specularColor = new Color3(0.6, 0.6, 0.6);
+  const parts: Mesh[] = [];
+  const add = (m: Mesh, mat: StandardMaterial) => ((m.material = mat), parts.push(m), m);
+  const shaft = add(CreateCylinder('k:shaft', { diameter: 0.0052, height: 0.054, tessellation: 10 }, scene), brass);
+  shaft.position.y = 0.027;
+  // бородка с двумя вырезами — сбоку от кончика
+  const bit = add(CreateBox('k:bit', { width: 0.011, height: 0.017, depth: 0.0032 }, scene), brass);
+  bit.position.set(0.0075, 0.0115, 0);
+  const tooth = add(CreateBox('k:tooth', { width: 0.004, height: 0.005, depth: 0.0032 }, scene), brass);
+  tooth.position.set(0.0145, 0.016, 0);
+  const collar = add(CreateBox('k:collar', { width: 0.011, height: 0.0035, depth: 0.0045 }, scene), brass);
+  collar.position.y = 0.054;
+  const bow = add(CreateTorus('k:bow', { diameter: 0.019, thickness: 0.0048, tessellation: 18 }, scene), brass);
+  bow.rotation.x = Math.PI / 2;
+  bow.position.y = 0.066;
+  const split = add(CreateTorus('k:ring', { diameter: 0.016, thickness: 0.0014, tessellation: 16 }, scene), ring);
+  split.rotation.x = Math.PI / 2;
+  split.position.y = 0.083;
+  const tag = add(CreateBox('k:tagBody', { width: 0.022, height: 0.042, depth: 0.0045 }, scene), red);
+  tag.position.y = 0.111;
+  const hole = add(CreateCylinder('k:tagHole', { diameter: 0.006, height: 0.0052, tessellation: 10 }, scene), ring);
+  hole.rotation.x = Math.PI / 2;
+  hole.position.y = 0.0855 + 0.0105;
+  const m = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+  if (!m) return null;
+  m.name = 'dorm:key';
+  m.setEnabled(false);
+  m.isPickable = false;
+  m.checkCollisions = false;
+  keyModels.set(scene, m);
+  return m;
+}
+
+const KEY_ICON =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+  '<rect x="2.6" y="15.5" width="7.2" height="12" rx="2.2" transform="rotate(16 6.2 21.5)" fill="#8a2a1c" stroke="#3b130d" stroke-width="0.9"/>' +
+  '<circle cx="7.4" cy="14.4" r="1.9" fill="none" stroke="#c8c3b4" stroke-width="1"/>' +
+  '<g transform="rotate(-45 16 16)"><circle cx="16" cy="6.2" r="4.4" fill="none" stroke="#d8b65e" stroke-width="2.5"/>' +
+  '<rect x="14.9" y="10.2" width="2.2" height="17.4" rx="0.7" fill="#d8b65e"/>' +
+  '<path d="M17.1 21.2h3.6v2.1h-1.7v1.5h1.7v2.6h-3.6z" fill="#d8b65e"/><rect x="13.6" y="10.4" width="4.8" height="1.3" fill="#b8963f"/></g>' +
+  '</svg>';
+
+const LOOK_REG = '__rfDormKeyLook';
+/** Вид ключа на полу и в руке и значок хотбара (повтор / HMR — прежняя регистрация снимается). */
+export function registerKeyLook(): () => void {
+  const g = globalThis as unknown as Record<string, (() => void) | undefined>;
+  g[LOOK_REG]?.();
+  const offLook = registerItemLook(KEY_ITEM, {
+    pose: 'flat',
+    size: [0.026, 0.132, 0.0052],
+    glint: true,
+    model: keyModel,
+    hold: { hand: 'pinch', at: [0.17, -0.15, 0.37], grip: [0, 0.066, 0], rot: [0.3, 0.35, -0.3] },
+  });
+  const offIcon = registerItemIcon(KEY_ITEM, KEY_ICON);
+  const off = () => {
+    offLook();
+    offIcon();
+    if (g[LOOK_REG] === off) g[LOOK_REG] = undefined;
+  };
+  g[LOOK_REG] = off;
+  return off;
+}
+
+registerKeyLook();
 
 /** Дверь жилой комнаты: полотно в самой комнате (dd.inst === dd.room), не «в снег», метаданные есть. */
 export function dormDoor(nav: Pick<ObshNav, 'doorById'>, metas: ReadonlyMap<string, DormMeta>, doorId: string): { door: ObshDoor; meta: DormMeta } | null {
@@ -806,7 +895,8 @@ export class ObshagaRoomsView {
       if (meta.plate) for (const d of doorsOfDorm(nav, room)) this.plateFrame(d, meta.plate, portal, now);
       if (meta.note != null) this.noteFrame(meta, nav, portal, now);
     }
-    this.aim(nav, cur);
+    // погиб (панель «Ещё раз») — ни подсказки, ни листка
+    this.aim(nav, this.obsh.dead ? null : cur);
     this.gc(now);
   }
 

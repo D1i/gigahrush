@@ -18,7 +18,7 @@ const ITEMS = [
   'it_bread', 'it_flashlight', 'it_tube_ext', 'it_bulb', 'it_bug_flash', 'it_batteries', 'it_zippo', 'it_kerolamp', 'it_preserves',
   'it_bubble', 'it_yuzgram', 'it_unknown_thing',
 ];
-const TW = 480, TH = 300;
+const TW = 640, TH = 400;
 const T0 = Date.now();
 const server = await createServer({
   configFile: fileURLToPath(new URL('./vite.qa.config.ts', import.meta.url)),
@@ -39,8 +39,17 @@ page.on('console', (m) => m.type() === 'error' && console.log('console', m.text(
 const name = (s) => s.replace(/[^a-z0-9.-]+/gi, '_');
 let loaded = false;
 async function load(first) {
-  await page.goto(`http://localhost:${PORT}/tools/held-preview.html?${first}`, { timeout: 180000 });
-  await page.waitForFunction(() => !!window.__held, null, { timeout: 180000 });
+  // первая загрузка: vite может пересобрать зависимости и перезагрузить страницу (ERR_ABORTED) — ещё раз
+  for (let k = 0; ; k++) {
+    try {
+      await page.goto(`http://localhost:${PORT}/tools/held-preview.html?${first}`, { timeout: 180000 });
+      await page.waitForFunction(() => !!window.__held, null, { timeout: 180000 });
+      break;
+    } catch (e) {
+      if (k >= 2) throw e;
+      console.log('  повтор загрузки:', String(e.message).split(/\r?\n/)[0]);
+    }
+  }
   loaded = true;
 }
 try {

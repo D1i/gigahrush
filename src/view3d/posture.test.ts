@@ -199,3 +199,32 @@ describe('поза: подъём', () => {
     expect(maxStep).toBeLessThan(0.01);
   });
 });
+
+describe('поза: горизонт', () => {
+  /** крен горизонта в кадре, рад: «право» камеры из обратной матрицы вида — его подъём по y */
+  const horizon = (cam: UniversalCamera) => {
+    const r = Vector3.TransformNormal(new Vector3(1, 0, 0), cam.getViewMatrix(true).clone().invert());
+    return Math.asin(r.y / r.length());
+  };
+
+  it('крен был (тряска, качание бега) и прошёл — поворот мышью с наклоном взгляда горизонт не валит', () => {
+    const w = world();
+    const { P, cam } = w;
+    cam.rotation.set(0.5, 0, 0); // смотрит вниз
+    P.roll = 0.03;
+    w.tick(1);
+    cam.getViewMatrix(true);
+    P.roll = 0;
+    w.tick(1);
+    cam.getViewMatrix(true);
+    for (const yaw of [0.5, Math.PI / 2, 2.5]) {
+      cam.rotation.y = yaw;
+      w.tick(1);
+      expect(Math.abs(horizon(cam))).toBeLessThan(1e-4);
+    }
+    // крен позы — ровно roll (вокруг оси взгляда: «право» поднято на sin(roll)·cos(наклона)), с любым поворотом
+    P.roll = 0.03;
+    w.tick(1);
+    expect(horizon(cam)).toBeCloseTo(Math.asin(Math.sin(0.03) * Math.cos(0.5)), 5);
+  });
+});

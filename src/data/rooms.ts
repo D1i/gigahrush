@@ -18,6 +18,8 @@ import { buildMetroRooms } from './roomsMetro';
 import { buildCellarRooms } from './roomsCellar';
 // catacombs
 import { buildCatacombRooms } from './roomsCatacombs';
+// sanatorium
+import { buildSanatoriumRooms } from './roomsSanatorium';
 
 // Цвета групп спотов
 const C_SEAT = '#e9c46a';
@@ -960,6 +962,8 @@ export function buildRooms(): Room[] {
     ...buildCellarRooms(),
     // catacombs
     ...buildCatacombRooms(),
+    // sanatorium
+    ...buildSanatoriumRooms(),
   ];
 }
 

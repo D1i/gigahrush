@@ -14,7 +14,9 @@
 //    (hemi, sun, лампа биома 'mood:lamp', лампы общаги, фонарь, лежащие горящие фонари) — лишние источники молча
 //    отбрасываются, и какой именно — зависит от порядка включения (Babylon дописывает включённый источник в конец списка
 //    меша). ensureLightSlots поднимает предел у всех материалов сцены, в том числе созданных потом.
-//  • Модель для лежащего на полу фонаря (./worldItems.ts) — та же: FlashlightModel, размеры — FLASH.
+//  • FlashlightModel (размеры — FLASH) — фонарь у аватаров кооп (src/coop/presence.ts). Фонарь П-2 в руке игрока и на
+//    полу — модель лута (./heldItem.ts, ./worldItems.ts; конус, спад и яркость по сцене — отсюда: FLASH_*,
+//    flashIntensity, sceneLitness), щелчок — switchClick.
 //
 // ИНТЕГРАЦИЯ:
 //   const f = new Flashlight(viewer.scene, viewer.fps);

@@ -1,5 +1,5 @@
 // Руки игрока «Прогулки»: хотбар и сумка (src/game/hotbar.ts), поведение предметов (src/game/itemUse.ts), эффекты еды
-// (src/game/effects.ts), предмет в руке (./flashlight.ts, лампа общаги) и предметы на полу (./worldItems.ts) — одним
+// (src/game/effects.ts), предмет в руке (./heldItem.ts) и предметы на полу (./worldItems.ts) — одним
 // контроллером (Babylon + DOM-события, без React; HUD — через onHud, только когда изменился).
 //  • Хотбар: HOTBAR_SIZE ячеек (стеки, заряд q, износ w, апгрейды u), в руке — выбранная; на спине — сумка (back, Tab).
 //    Сохраняется в localStorage `${walk.key}/hotbar` (v: 2; у каждого мира и лобби — свой); нет или мусор — START_KIT
@@ -12,8 +12,10 @@
 //    захлопывается — onDrop); E — подобрать подсвеченный предмет или точку лута.
 //  • Кадр: stepHand (заряд, износ, спичка гаснет на бегу / в воде) — события вспышкой; stepFx (таймеры еды); скорость —
 //    Sprint.extraMul = эффекты × сумка; «лежит» (обморок юзграма 10 с, пьяное падение 15 с) — камера на полу (DownCam,
-//    ./inventoryFx.ts), пелена, ход 0; пьяное падение — стоны. Свет в руке — itemUse.lightOf: П-2 — Flashlight
-//    (яркость по заряду), керосинка — HeldLantern, остальное (спичка, зиппа, «Жучок») — пока свой точечный / луч у камеры
+//    ./inventoryFx.ts), пелена, ход 0; пьяное падение — стоны. В руке — HeldItem (./heldItem.ts): модель предмета,
+//    кисть и рукав, свет по itemUse.lightOf (луч П-2 / «Жучка», огонёк спички / зиппы / керосинки), горящая спичка —
+//    в руке она; жесты — съесть / выпить (ЛКМ), чиркнуть / качнуть (F), перезарядить (R). Вид на полу и в руке — реестр
+//    ./itemLooks.ts
 //    без модели (модели рук — heldItem.ts агента C1).
 //  • Мир меняется только операциями (кооп-журнал): выбросить — request({k:'drop'}) (ячейка пустеет сразу, не легло —
 //    вернуть), подобрать — request({k:'pick'}), точка лута комнаты (id «<inst>:L<k>», host.loot) — request({k:'loot'})
@@ -32,9 +34,6 @@
 //  • Старое сохранение общаги (`${key}/obsh-lamp` = '1' — лампа была в руке до хотбара): лампа — в хотбар и в руку,
 //    ключ стирается (один раз, в конструкторе).
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { Color3 } from '@babylonjs/core/Maths/math.color';
-import { PointLight } from '@babylonjs/core/Lights/pointLight';
-import { SpotLight } from '@babylonjs/core/Lights/spotLight';
 import type { Observer } from '@babylonjs/core/Misc/observable';
 import type { Scene } from '@babylonjs/core/scene';
 import type { WorldDrop } from '../gen4d/stream';
@@ -46,20 +45,21 @@ import {
 } from '../game/hotbar';
 import { addNoise, applyFood, fxView, newFx, stepFx, type Fx, type FxView } from '../game/effects';
 import {
-  BUG, KEROLAMP, KEROLAMP_INTENSITY, KEROSENE, MATCH_DEFS, P2, TUBE, UP_TUBE, ZIPPO, collapseMul, isLit,
+  BUG, KEROLAMP, KEROSENE, MATCH_DEFS, P2, TUBE, UP_TUBE, ZIPPO, collapseMul, isLit,
   lightLeftS, lightOf, newHandTr, onDrop, pressF, reload, stepHand, useHeld, type HandTr, type Light, type UseCtx,
   type UseEvent,
 } from '../game/itemUse';
 import { KEROLAMP_ITEM } from '../locations/obshaga';
-import { FLASH_ANGLE, Flashlight, flashIntensity, sceneLitness } from './flashlight';
+import { HeldItem, type HeldGesture } from './heldItem';
 import { DownCam, VoiceAudio, type DownPose } from './inventoryFx';
-import { HeldLantern } from './obshagaScene';
 import type { PortalRenderer } from './portal';
 import { RUN_MUL } from './sprint';
 import type { BlockoutViewer } from './viewer';
 import type { WorldOp } from './walk';
 import { FLASHLIGHT_ITEM, WorldItems, dropPose } from './worldItems';
 
+/** Что пьют (жест «выпить»), остальное из еды — едят. */
+const DRINKS: ReadonlySet<string> = new Set(['it_bubble', 'it_yuzgram']);
 /** Подобрать — не дальше, м (по горизонтали, от глаза). */
 const PICK_M = 1.6;
 /** Как часто искать предмет под взглядом, мс. */
@@ -498,9 +498,8 @@ const hasDoc = typeof document !== 'undefined';
 const locked = (): boolean => hasDoc && !!document.pointerLockElement;
 
 export class Inventory {
-  readonly flashlight: Flashlight;
-  /** керосиновая лампа общаги в руке (модель у камеры и тёплый свет) */
-  readonly lantern: HeldLantern;
+  /** предмет в руке: модель у камеры, кисть, свет, жесты */
+  readonly hand: HeldItem;
   readonly items: WorldItems;
   private h: Hotbar;
   /** мгновенное состояние руки (спичка, «Жучок») — не сохраняется */
@@ -510,9 +509,6 @@ export class Inventory {
   private fxv: FxView = fxView(newFx(), 1);
   private readonly down: DownCam;
   private readonly voice = new VoiceAudio();
-  /** свет предметов без модели (спичка, зиппа, «Жучок») — пока нет heldItem.ts */
-  private handPoint: PointLight | null = null;
-  private handSpot: SpotLight | null = null;
   /** свет в руке в этом кадре */
   private light: Light | null = null;
   private readonly scene: Scene;
@@ -571,8 +567,7 @@ export class Inventory {
         localStorage.removeItem(lk);
       }
     } catch {}
-    this.flashlight = new Flashlight(v.scene, v.fps);
-    this.lantern = new HeldLantern(v.scene, v.fps, () => v.props?.get('p_obsh_lantern') ?? null);
+    this.hand = new HeldItem(v);
     this.down = new DownCam(v.scene, v.fps, v.posture);
     const live = () => this.live;
     this.items = new WorldItems(v.scene, {
@@ -580,8 +575,7 @@ export class Inventory {
       roomShown: host.roomShown,
       shown: live,
       camera: () => v.fps,
-      // лампа общаги на полу — её модель (фонарик — своя)
-      itemModel: (item) => (item === KEROLAMP_ITEM ? (v.props?.get('p_obsh_lantern') ?? null) : null),
+      // модели (лут, керосинка, фонарь) — реестр видов ./itemLooks.ts
     });
     this.obs = v.scene.onBeforeRenderObservable.add(() => this.frame());
     window.addEventListener('pagehide', this.onHide);
@@ -708,6 +702,11 @@ export class Inventory {
     if (!s && !this.tr.match) return false;
     const r = pressF(this.h, this.ctx(), this.tr);
     const acted = r.h !== this.h || r.tr !== this.tr || r.staminaCost > 0;
+    // жест: чиркнул спичкой / зажёг зиппу — «чирк», качнул «Жучка» — «качнуть»
+    const after = held(r.h);
+    const g: HeldGesture | null =
+      r.tr.match && r.tr.match !== this.tr.match && !this.tr.match ? 'strike' : s?.item === ZIPPO && isLit(after) && !isLit(s) ? 'strike' : s?.item === BUG && r.staminaCost > 0 ? 'pump' : null;
+    if (g) this.hand.gesture(g);
     this.tr = r.tr;
     if (r.staminaCost > 0) this.v.sprint?.spend(r.staminaCost);
     if (r.noise > 0) {
@@ -731,6 +730,7 @@ export class Inventory {
     const r = reload(this.h);
     this.set(r.h);
     if (r.done.length) {
+      this.hand.gesture('reload');
       const t = r.done.map((d) => RELOADED[d]).join(', ');
       this.say(t[0].toUpperCase() + t.slice(1) + (r.msg ? ` · ${r.msg}` : ''), C_GOOD);
     } else if (r.msg) this.say(r.msg, C_WARN);
@@ -747,6 +747,7 @@ export class Inventory {
     }
     this.set(u.h);
     if (u.fx) {
+      this.hand.gesture(DRINKS.has(u.fx) ? 'drink' : 'eat');
       const was = this.fxs.collapseT;
       const e = applyFood(this.fxs, u.fx);
       if (e) {
@@ -1114,20 +1115,10 @@ export class Inventory {
     const hands = live && !this.down.active;
     const light = hands ? lightOf(s, ctx, this.tr) : null;
     this.light = light;
-    const flash = hands && s?.item === P2;
-    const f = this.flashlight;
-    if (flash) f.setOn(isLit(s));
-    f.setHeld(flash);
-    f.update(dt, { speed: step / dt, sprint: (v.sprint.state.mul - 1) / (RUN_MUL - 1), crawl: v.posture.pose === 'crawl' ? 1 : v.posture.side ? 0.45 : 0 }); // side — боком в щели погреба: фонарь ниже
-    if (flash && light) {
-      // П-2: яркость и дальность — по заряду (ниже 12 % мигает)
-      f.light.intensity *= light.intensity;
-      f.light.range = light.range;
-    }
-    this.lantern.show(hands && s?.item === KEROLAMP_ITEM && !this.host.handsDown?.());
-    this.lantern.update(dt, this.speed);
-    if (this.lantern.shown) this.lantern.light.intensity *= light ? light.intensity / KEROLAMP_INTENSITY : 0;
-    this.handLight(hands && s?.item !== P2 && s?.item !== KEROLAMP ? light : null);
+    // в руке — предмет ячейки (сумка — ничего) или горящая спичка; общага: погиб (handsDown) — рука не видна
+    const shown = hands && !this.host.handsDown?.();
+    this.hand.set(shown ? s : null, shown ? light : null, { match: shown ? (this.tr.match?.item ?? null) : null });
+    this.hand.update(dt, { speed: step / dt, sprint: (v.sprint.state.mul - 1) / (RUN_MUL - 1), crawl: v.posture.pose === 'crawl' ? 1 : v.posture.side ? 0.45 : 0 }); // side — боком в щели погреба: рука ниже
     // предметы на полу и точки лута; под взглядом — подсветка и подсказка
     // по массиву, не по номеру версии: у пересобранной копии мира (кооп) dropsRev снова с 0
     const changed = this.items.sync(this.worldItems());
@@ -1146,34 +1137,6 @@ export class Inventory {
     if (changed) this.aimAt = 0;
     if (this.dirty && now - this.savedAt >= SAVE_MS) this.persist();
     this.emit();
-  }
-
-  /** Свет предмета без модели (спичка, зиппа — круговой у руки, «Жучок» — луч); null — погасить. */
-  private handLight(l: Light | null) {
-    const pt = l?.kind === 'point' ? l : null;
-    const sp = l?.kind === 'spot' ? l : null;
-    if (pt && !this.handPoint) {
-      const p = (this.handPoint = new PointLight('inv:handPoint', new Vector3(0.16, -0.18, 0.42), this.scene));
-      p.parent = this.v.fps;
-      p.specular = Color3.Black();
-    }
-    if (sp && !this.handSpot) {
-      const p = (this.handSpot = new SpotLight('inv:handSpot', new Vector3(0.2, -0.2, 0.2), new Vector3(0, 0.02, 1), FLASH_ANGLE * 0.85, 18, this.scene));
-      p.parent = this.v.fps;
-    }
-    const apply = (light: PointLight | SpotLight | null, x: Light | null, base: number) => {
-      if (!light) return;
-      if (!x) {
-        if (light.isEnabled()) light.setEnabled(false);
-        return;
-      }
-      if (!light.isEnabled()) light.setEnabled(true);
-      light.diffuse = Color3.FromHexString(x.color);
-      light.intensity = x.intensity * base;
-      light.range = x.range;
-    };
-    apply(this.handPoint, pt, 1.6);
-    apply(this.handSpot, sp, flashIntensity(sceneLitness(this.scene)));
   }
 
   /** HUD — только когда изменился (onHud зовёт setState страницы). */
@@ -1208,8 +1171,20 @@ export class Inventory {
       inv: this,
       hotbar: () => this.h,
       hud: () => JSON.parse(this.hudKey || 'null') as InventoryHud | null,
-      flash: () => ({ held: this.flashlight.held, on: this.flashlight.on, hand: this.flashlight.handSide, intensity: this.flashlight.light.intensity }),
-      lamp: () => ({ held: this.lampHeld, shown: this.lantern.shown, light: this.lantern.light.isEnabled(), intensity: this.lantern.light.intensity }),
+      /** П-2 в руке: держит, включён, рука, яркость луча */
+      flash: () => {
+        const s = held(this.h);
+        const sp = this.hand.spotLight;
+        return { held: this.hand.shown === P2, on: s?.item === P2 && isLit(s), hand: this.hand.handSide, intensity: sp?.isEnabled() ? sp.intensity : 0 };
+      },
+      /** керосинка в руке: держит (и горит), видна, огонёк светит, яркость */
+      lamp: () => {
+        const pt = this.hand.pointLight;
+        const on = this.hand.shown === KEROLAMP && !!pt?.isEnabled() && pt.intensity > 0;
+        return { held: this.lampHeld, shown: this.hand.shown === KEROLAMP, light: on, intensity: on ? pt!.intensity : 0 };
+      },
+      /** что в руке (id, 'match:<id>'), видна ли модель, идёт ли жест */
+      hand: () => ({ shown: this.hand.shown, visible: this.hand.visible, gesture: this.hand.gesturing }),
       aimed: () => this.aimed,
       fx: () => ({ ...this.fxv, timers: { ...this.fxs }, down: this.down.active, pose: this.down.now }),
       light: () => this.light,
@@ -1241,10 +1216,7 @@ export class Inventory {
     if (hasDoc) document.removeEventListener('pointerlockchange', this.onLock);
     this.down.dispose();
     this.voice.dispose();
-    this.handPoint?.dispose();
-    this.handSpot?.dispose();
     this.items.dispose();
-    this.flashlight.dispose();
-    this.lantern.dispose();
+    this.hand.dispose();
   }
 }

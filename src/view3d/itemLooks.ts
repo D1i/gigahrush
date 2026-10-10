@@ -67,6 +67,8 @@ export interface HoldPose {
   scale?: number;
   /** сколько штук стопки показать (копейки на ладони) */
   pile?: number;
+  /** полуширина предмета в кулаке ('grip'), м: кулак — сбоку от него, пальцы — спереди */
+  r?: number;
 }
 
 /** Вид предмета: на полу, в руке, свет. */
@@ -216,10 +218,10 @@ const PALM: HoldPose = { hand: 'palm', at: [0.19, -0.2, 0.44], grip: [0, 0, 0], 
 /** Лут: поза, свет, в руке (что не задано — по умолчанию). */
 const LOOT_LOOKS: Readonly<Record<string, Partial<ItemLook>>> = {
   it_kopeyki: { pile: { max: 6, mode: 'scatter' }, glint: true, hold: { hand: 'palm', at: [0.17, -0.17, 0.36], grip: [0, 0, 0], rot: [-0.55, 0.3, 0], pile: 3 } },
-  it_radiolamp: { pose: 'lie', pile: { max: 3, mode: 'row' }, hold: { hand: 'grip', at: [0.18, -0.17, 0.4], grip: [0, 0.022, 0], rot: [0, 0.4, -0.12] } },
+  it_radiolamp: { pose: 'lie', pile: { max: 3, mode: 'row' }, hold: { hand: 'grip', at: [0.18, -0.17, 0.4], grip: [0, 0.022, 0], rot: [0, 0.4, -0.12], r: 0.018 } },
   it_cards: { pose: 'flat', hold: { hand: 'palm', at: [0.18, -0.19, 0.42], grip: [0, 0.07, 0.0095], rot: [PI / 2 - 0.75, 0.25, 0] } },
   it_wick: { pile: { max: 2, mode: 'stack' }, hold: { hand: 'palm', at: [0.18, -0.19, 0.42], grip: [0, 0, 0], rot: [-0.5, 0.3, 0] } },
-  it_kerosene: { hold: { hand: 'hang', at: [0.25, -0.06, 0.52], grip: [0, 0.232, 0], rot: [0, 0.35, 0] } },
+  it_kerosene: { hold: { hand: 'hang', at: [0.28, -0.08, 0.6], grip: [0, 0.232, 0], rot: [0, 0.35, 0] } },
   it_sticker: { pile: { max: 3, mode: 'stack' }, hold: { hand: 'palm', at: [0.17, -0.18, 0.38], grip: [0, 0, 0], rot: [-0.6, 0.2, 0] } },
   it_matches: { pose: 'flat', hold: { hand: 'palm', at: [0.18, -0.18, 0.4], grip: [0, 0.019, 0.01], rot: [PI / 2 - 0.7, 0.3, 0] } },
   it_hunt_matches: { pose: 'flat', hold: { hand: 'palm', at: [0.18, -0.19, 0.41], grip: [0, 0.045, 0.01], rot: [PI / 2 - 0.7, 0.3, 0] } },
@@ -240,16 +242,16 @@ const LOOT_LOOKS: Readonly<Record<string, Partial<ItemLook>>> = {
     lens: { at: A.bug_flash.lens, r: 0.02, dir: A.bug_flash.lensDir },
     hold: { hand: 'fist', at: [0.21, -0.18, 0.44], grip: [0.004, 0.035, 0.004], rot: [0, PI - 0.08, 0] },
   },
-  it_batteries: { pose: 'lie', pile: { max: 4, mode: 'row' }, hold: { hand: 'grip', at: [0.18, -0.18, 0.4], grip: [0, 0.03, 0], rot: [0, 0.5, -0.15] } },
-  it_zippo: { pose: 'flat', flame: { at: A.zippo.flame, h: 0.022 }, hold: { hand: 'grip', at: [0.18, -0.17, 0.4], grip: [0, 0.02, 0], rot: [0, 0.35, 0] } },
+  it_batteries: { pose: 'lie', pile: { max: 4, mode: 'row' }, hold: { hand: 'grip', at: [0.18, -0.18, 0.4], grip: [0, 0.03, 0], rot: [0, 0.5, -0.15], r: 0.017 } },
+  it_zippo: { pose: 'flat', flame: { at: [A.zippo.flame[0], A.zippo.flame[1] + 0.004, A.zippo.flame[2]], h: 0.03 }, hold: { hand: 'grip', at: [0.16, -0.14, 0.36], grip: [0, 0.018, 0], rot: [0, 0.4, 0], r: 0.012 } },
   it_kerolamp: {
     light: { kind: 'point', at: A.kerolamp.flame, base: 0.9 / KEROLAMP_INTENSITY, rangeAdd: 0.5, flicker: 1 },
     flame: { at: A.kerolamp.flame, h: 0.026 },
-    hold: { hand: 'hang', at: [0.27, -0.03, 0.6], grip: [0, 0.405, 0], rot: [0, 0.5, 0] },
+    hold: { hand: 'hang', at: [0.29, -0.06, 0.68], grip: [0, 0.405, 0], rot: [0, 0.5, 0], scale: 0.9 },
   },
   it_preserves: { hold: { hand: 'palm', at: [0.19, -0.23, 0.48], grip: [0, 0, 0], rot: [-0.2, 0.4, 0] } },
-  it_bubble: { hold: { hand: 'grip', at: [0.2, -0.2, 0.46], grip: [0, 0.075, 0], rot: [0, 0.3, -0.1] } },
-  it_yuzgram: { hold: { hand: 'grip', at: [0.18, -0.18, 0.42], grip: [0, 0.04, 0], rot: [0, 0.4, -0.1] } },
+  it_bubble: { hold: { hand: 'grip', at: [0.2, -0.2, 0.46], grip: [0, 0.075, 0], rot: [0, 0.3, -0.1], r: 0.037 } },
+  it_yuzgram: { hold: { hand: 'grip', at: [0.18, -0.18, 0.42], grip: [0, 0.04, 0], rot: [0, 0.4, -0.1], r: 0.023 } },
 };
 
 const BASE: ItemLook = { pose: 'stand', foot: 0.13, light: null, hold: PALM };

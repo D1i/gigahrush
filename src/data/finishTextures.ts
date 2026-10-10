@@ -1033,16 +1033,20 @@ function smoothstep(a: number, b: number, x: number): number {
   return k * k * (3 - 2 * k);
 }
 
-/** Пятна: к цвету col с силой alpha там, где шум n выше порога (мягкий край lo..hi). */
-function blotch(t: T, n: Float32Array, lo: number, hi: number, col: string, alpha: number): void {
-  const id = t.c.getImageData(0, 0, t.W, t.H);
-  const d = id.data;
+/** Пятна по готовым пикселям: к цвету col с силой alpha там, где шум n выше порога (мягкий край lo..hi). */
+function blotchData(d: Uint8ClampedArray, n: Float32Array, lo: number, hi: number, col: string, alpha: number): void {
   const c = hex(col);
   for (let p = 0, i = 0; p < n.length; p++, i += 4) {
+    if (n[p] <= lo) continue;
     const k = alpha * smoothstep(lo, hi, n[p]);
-    if (k <= 0) continue;
     for (let ch = 0; ch < 3; ch++) d[i + ch] += (c[ch] - d[i + ch]) * k;
   }
+}
+
+/** Пятна на холсте (см. blotchData). */
+function blotch(t: T, n: Float32Array, lo: number, hi: number, col: string, alpha: number): void {
+  const id = t.c.getImageData(0, 0, t.W, t.H);
+  blotchData(id.data, n, lo, hi, col, alpha);
   t.c.putImageData(id, 0, 0);
 }
 
@@ -1157,23 +1161,24 @@ function drawPaintPanel(t: T, o: FinishTexOpts): void {
 function drawPlasterCracked(t: T, o: FinishTexOpts): void {
   const base = o.base ?? '#e6e3da';
   const { W, H } = t;
+  const R = Math.max(1, Math.round(H / W)); // картинка 1 : R (высокая — на всю стену, реже повтор трещин)
   t.fill(base);
-  t.modulate(t.fbm(3, 3, 4), 0.05);
-  t.modulate(t.fbm(8, 8, 2), 0.02); // мелкая неровность затирки
-  t.modulate(t.fbm(2, 2, 3), 0.22, '#cfc6b0'); // желтоватые пятна
-  for (let k = 0; k < 7; k++) drip(t, t.u(0, W), t.u(0, H), t.u(H * 0.15, H * 0.5), t.u(3, 14), t.r() < 0.6 ? '#b3a88f' : '#9c9a92', t.u(0.1, 0.22), true);
+  t.modulate(t.fbm(3, 3 * R, 4), 0.05);
+  t.modulate(t.fbm(8, 8 * R, 2), 0.02); // мелкая неровность затирки
+  t.modulate(t.fbm(2, 2 * R, 3), 0.22, '#cfc6b0'); // желтоватые пятна
+  for (let k = 0; k < 6 * R; k++) drip(t, t.u(0, W), t.u(0, H), t.u(W * 0.15, W * 0.5), t.u(3, 14), t.r() < 0.6 ? '#b3a88f' : '#9c9a92', t.u(0.08, 0.2), true);
   // трещины: тёмная линия, светлая кромка снизу-справа, ответвления
-  for (let k = 0; k < 3; k++) {
+  for (let k = 0; k < 2 * R; k++) {
     const pts = wander(t, t.u(0, W), t.u(0, H), t.u(0, Math.PI * 2), Math.round(t.u(10, 24)), W * 0.022, 0.3);
-    strokeWrapped(t, pts.map(([x, y]) => [x + 1, y + 1] as [number, number]), rgba('#ffffff', 0.35), 1);
-    strokeWrapped(t, pts, rgba('#5a5448', 0.55), t.u(0.7, 1.1));
+    strokeWrapped(t, pts.map(([x, y]) => [x + 1, y + 1] as [number, number]), rgba('#ffffff', 0.25), 1);
+    strokeWrapped(t, pts, rgba('#5a5448', 0.34), t.u(0.7, 1.1));
     for (let j = 3; j < pts.length - 2; j += 3) {
       if (t.r() < 0.55) continue;
       const side = wander(t, pts[j][0], pts[j][1], t.u(0, Math.PI * 2), Math.round(t.u(3, 8)), W * 0.012, 0.7);
-      strokeWrapped(t, side, rgba('#5a5448', 0.4), 0.6);
+      strokeWrapped(t, side, rgba('#5a5448', 0.25), 0.6);
     }
   }
-  t.specks(120, ['#8f897c', '#c9c3b5'], 0.4, 1.2, 0.3);
+  t.specks(120 * R, ['#8f897c', '#c9c3b5'], 0.4, 1.2, 0.3);
 }
 
 /**
@@ -1372,9 +1377,9 @@ function drawLathBrick(t: T, o: FinishTexOpts): void {
     for (let i = 0; i < a.length; i++) a[i] = a[i] * (1 - k) + g[i] * k;
     return a;
   };
-  blotch(t, gritty(t.fbm(6, 6 * R, 3), 48, 0.35), 0.59, 0.62, '#b4ad9f', 0.6); // серые мазки раствора
-  blotch(t, gritty(t.fbm(8, 8 * R, 3), 64, 0.3), 0.675, 0.69, white, 0.85); // клочки побелки
-  const brick = c.getImageData(0, 0, W, H);
+  const brick = c.getImageData(0, 0, W, H); // дальше — только пиксели слоя (холст нужен под следующий слой)
+  blotchData(brick.data, gritty(t.fbm(6, 6 * R, 3), 48, 0.35), 0.59, 0.62, '#b4ad9f', 0.6); // серые мазки раствора
+  blotchData(brick.data, gritty(t.fbm(8, 8 * R, 2), 64, 0.3), 0.675, 0.69, white, 0.85); // клочки побелки
   // ── слой 2: дранка
   t.fill('#21180f');
   const nb = 10, sb = W / nb, board = mix(wood, '#8a6a4c', 0.3);
@@ -1416,28 +1421,30 @@ function drawLathBrick(t: T, o: FinishTexOpts): void {
   };
   strips(1);
   strips(-1);
-  t.modulate(t.noise(96, 96 * R), 0.05);
-  blotch(t, gritty(t.fbm(4, 4 * R, 2), 64, 0.4), 0.56, 0.62, '#cfc9bb', 0.4); // известковая пыль на дранке
   const lath = c.getImageData(0, 0, W, H);
+  blotchData(lath.data, gritty(t.fbm(4, 4 * R, 2), 64, 0.4), 0.56, 0.62, '#cfc9bb', 0.4); // известковая пыль на дранке
   // ── слой 3: серая штукатурка (побелка поверх — по зонам ниже)
   t.fill(plaster);
-  t.modulate(t.fbm(4, 4 * R, 3), 0.1);
+  t.modulate(t.fbm(4, 4 * R, 2), 0.1);
   trowel(t, 40 * R, W * 0.03, W * 0.1);
   t.specks(Math.round((W * H) / 160), [shade(plaster, -0.3), shade(plaster, 0.2)], 0.5, 1.4, 0.45);
   const plast = c.getImageData(0, 0, W, H);
   // ── зоны: 0 — побелка, 3 — серая штукатурка у скола, 1 — кирпич, 2 — дранка; мелкий шум jag рвёт края
-  const zn = t.fbm(3, 3 * R, 3), zb = t.fbm(2, 2 * R, 3), jag = t.fbm(20, 20 * R, 3), isl = t.fbm(5, 5 * R, 3), yel = t.fbm(2, 2 * R, 2);
+  const zn = t.fbm(3, 3 * R, 2), zb = t.fbm(2, 2 * R, 3), jag = t.fbm(20, 20 * R, 3), isl = t.fbm(5, 5 * R, 2);
   const zone = new Uint8Array(W * H);
+  let zMean = 0;
+  for (let q = 0; q < zb.length; q++) zMean += zb[q];
+  zMean /= zb.length; // кирпича и дранки — примерно поровну, как бы ни лёг шум
   for (let y = 0, q = 0; y < H; y++) {
     const h = 1 - y / H; // доля высоты от пола
     for (let x = 0; x < W; x++, q++) {
       const j2 = jag[q] - 0.5, n2 = zn[q] - 0.5;
-      const z = zb[q] - 0.53 + 0.12 * j2; // > 0 — кирпич, < 0 — дранка
+      const z = zb[q] - zMean + 0.01 + 0.1 * j2; // > 0 — кирпич, < 0 — дранка
       const depth = Math.max(
-        (h - 0.73) * 0.8 + 0.25 * n2 + 0.3 * j2, // поверху
-        (0.08 - h) * 0.8 - 0.15 * n2 + 0.3 * j2, // понизу
-        0.04 - Math.abs(z) + 0.3 * j2, // между кирпичом и дранкой
-        isl[q] - 0.7 + 0.3 * j2, // островки
+        (h - 0.74) * 1.2 + 0.2 * n2 + 0.17 * j2, // поверху
+        (0.045 - h) * 1.2 - 0.1 * n2 + 0.17 * j2, // понизу
+        0.035 - Math.abs(z) + 0.17 * j2, // между кирпичом и дранкой
+        isl[q] - 0.73 + 0.17 * j2, // островки
       );
       zone[q] = depth > 0.03 ? 0 : depth > 0 ? 3 : z > 0 ? 1 : 2;
     }
@@ -1450,7 +1457,7 @@ function drawLathBrick(t: T, o: FinishTexOpts): void {
       const zq = zone[q], i = q * 4;
       if (solid(zq)) {
         if (zq === 0) {
-          const yk = 0.6 * Math.max(0, 2 * yel[q] - 1); // желтизна побелки
+          const yk = 0.6 * Math.max(0, 2 * zn[q] - 1); // желтизна побелки
           for (let ch = 0; ch < 3; ch++) {
             const v = P[i + ch] + (wc[ch] - P[i + ch]) * 0.8;
             P[i + ch] = v + (yc[ch] - v) * yk;
@@ -1475,7 +1482,6 @@ function drawLathBrick(t: T, o: FinishTexOpts): void {
   }
   c.putImageData(plast, 0, 0);
   t.specks(Math.round((W * H) / 400), ['#efece4', '#8a8478'], 0.5, 1.6, 0.4); // пыль, крошка
-  t.modulate(t.noise(5, 5 * R), 0.05);
 }
 
 /**

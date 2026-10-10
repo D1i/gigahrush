@@ -178,9 +178,8 @@ try {
     const b0 = await st(page);
     ok('B без ключа: подсказка обычная', b0.nearDoor === lk.id && /открыть дверь/.test(b0.prompt ?? ''), JSON.stringify({ near: b0.nearDoor, prompt: b0.prompt }));
     await pressE(page);
-    await page.waitForTimeout(250);
+    const flash = await waitFor(() => page.evaluate(() => document.querySelector('.v3-flash')?.textContent ?? null), 2500, 100);
     await page.screenshot({ path: out + 'rooms-locked.png' });
-    const flash = await page.evaluate(() => document.querySelector('.v3-flash')?.textContent ?? null);
     await page.waitForTimeout(1500);
     const b1 = await st(page);
     ok('B без ключа: E — «Заперто. Нужен ключ», не открылась', /Нужен ключ/.test(flash ?? '') && !(b1.doors[lk.id] > 0), JSON.stringify({ flash, open: b1.doors[lk.id] ?? 0 }));
@@ -189,6 +188,23 @@ try {
     const b2 = await st(page);
     ok('B ключ в руках: «E — отпереть ключом»', gave && /отпереть ключом/.test(b2.prompt ?? ''), JSON.stringify({ gave, prompt: b2.prompt }));
     await page.screenshot({ path: out + 'rooms-key-prompt.png' });
+    // ключ в руку (его ячейка), выбросить (G) — лежит плашмя; подобрать (E) — снова в хотбаре
+    const slot = await page.evaluate(() => window.__rfInv.hotbar().slots.findIndex((s) => s?.item === 'it_key'));
+    await page.evaluate((i) => window.dispatchEvent(new KeyboardEvent('keydown', { code: `Digit${i + 1}`, key: String(i + 1) })), slot);
+    await page.waitForTimeout(900);
+    await page.screenshot({ path: out + 'rooms-key-held.png' });
+    await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyG', key: 'g' })));
+    await page.waitForTimeout(1200);
+    await page.evaluate(() => (window.__rf3d.fps.rotation.x = 0.95));
+    await page.waitForTimeout(1200);
+    await page.screenshot({ path: out + 'rooms-key-floor.png' });
+    const dropped = await page.evaluate(() => window.__rfDorm.keys());
+    const aimed = await waitFor(() => page.evaluate(() => window.__rfInv.aimed()?.item ?? null), 3000);
+    await pressE(page);
+    const back = await waitFor(() => page.evaluate(() => window.__rfDorm.keys() || null), 3000);
+    ok('B ключ: выбросил — на полу, подобрал — снова в руках', dropped === 0 && aimed === 'it_key' && back === 1, JSON.stringify({ dropped, aimed, back }));
+    await facePlate(page, lk, 1.0);
+    await page.waitForTimeout(900);
     await pressE(page);
     await page.waitForTimeout(300);
     const flash2 = await page.evaluate(() => document.querySelector('.v3-flash')?.textContent ?? null);
@@ -223,6 +239,14 @@ try {
       const dx = nd.x - X, dy = nd.y + Z, l = Math.hypot(dx, dy) || 1;
       await standLook(page, nd.room, X + (dx / l) * 0.85, -Z + (dy / l) * 0.85, X, Y, Z);
       await page.waitForTimeout(1200);
+      // предмет под взглядом (лут на столе) E подбирает раньше записки — сперва собрать
+      for (let k = 0; k < 6; k++) {
+        const a = await page.evaluate(() => window.__rfInv.aimed()?.item ?? null);
+        if (!a) break;
+        await pressE(page);
+        await page.waitForTimeout(900);
+      }
+      await page.waitForTimeout(600);
       const c0 = await dorm(page);
       await page.screenshot({ path: out + 'rooms-note-mesh.png' });
       ok('C «E — прочитать записку»', c0.target === nd.room && c0.prompt, JSON.stringify({ target: c0.target, prompt: c0.prompt }));

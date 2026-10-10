@@ -1,11 +1,14 @@
 // Комнаты общаги — чистые помощники вида (src/view3d/obshagaRoomsView.ts): хук лута, чья дверь, замок, табличка
 // на полотне, место записки, взгляд на записку.
 import { describe, expect, it } from 'vitest';
+import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
+import { Scene } from '@babylonjs/core/scene';
+import { itemIconOf, itemLookOf } from './itemLooks';
 import type { RunExport, RunInstance } from '../blockout/types';
 import { rollRoomLoot } from '../game/loot';
 import { DORM, dormIndex } from '../locations/obshagaRooms';
 import {
-  KEY_ITEM, PLATE_D, PLATE_Y, dormDoor, dormLoot, doorsOfDorm, lockAct, noteAimed, noteParts, notePlace, plateLocal, plateSize,
+  KEY_ITEM, PLATE_D, PLATE_Y, dormDoor, dormLoot, doorsOfDorm, keyModel, lockAct, noteAimed, noteParts, notePlace, plateLocal, plateSize,
   registerDormLoot, unlockFlag,
 } from './obshagaRoomsView';
 import type { NavProp, NavRoom, ObshDoor } from './obshagaNav';
@@ -85,6 +88,25 @@ describe('лут: хук комнат общаги', () => {
       n += rollRoomLoot({ seed: 's', inst: `x${i}`, addr: `a${i}`, biome: 'obshaga', areaM2: 14, tunnels: true, tier: 4, rx: null }).filter((x) => x.item === KEY_ITEM && x.src === 'random').length;
     }
     expect(n).toBeGreaterThan(0);
+  });
+});
+
+describe('вид ключа', () => {
+  it('зарегистрирован: на полу плашмя, модель — латунь и бирка (шаблон выключен, низ — в нуле), значок — svg', () => {
+    const look = itemLookOf(KEY_ITEM);
+    expect(look.pose).toBe('flat');
+    expect(itemIconOf(KEY_ITEM)?.kind).toBe('svg');
+    const scene = new Scene(new NullEngine());
+    const m = look.model!(scene)!;
+    expect(m).toBe(keyModel(scene));
+    expect(m.isEnabled()).toBe(false);
+    m.computeWorldMatrix(true);
+    const { min, max } = m.getHierarchyBoundingVectors(true);
+    expect(min.y).toBeCloseTo(0, 3);
+    expect(max.y).toBeGreaterThan(0.12);
+    expect(max.y).toBeLessThan(0.14);
+    expect(max.z - min.z).toBeLessThan(0.02);
+    scene.dispose();
   });
 });
 

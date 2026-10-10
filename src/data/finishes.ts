@@ -163,43 +163,45 @@ const CATACOMBS_FINISHES: FinishDef[] = [
 // sanatorium
 /** Отделки санатория (src/data/roomsSanatorium.ts; цвета — по референсам tmp/sanatorium-wip/ref): коридоры, кабинеты,
  *  часть палат — приглушённо-бирюзовая масляная панель 1.2 м с бордюром и деревянным плинтусом (картинка на всю высоту
- *  панели), выше побелка; палаты, вестибюль, столовая — белая штукатурка с волосяными трещинами и потёками; водолечебница —
+ *  панели), выше побелка; палаты, вестибюль, столовая — белая штукатурка с волосяными трещинами и потёками (картинка
+ *  1.5 × 3 м — трещины не повторяются сеткой); водолечебница —
  *  светлый шпон панелями 0.6 м; душ, грязелечебница — белый кафель 15×15 с ржавыми подтёками и сколами; бассейн —
  *  бледно-голубой кафель 10×10 панелью 1.6 м с синим бордюрным рядом (выше 1.6 dado не бывает — инвариант пресетов), выше
- *  побелка, на полу голубой кафель партиями; комната в ремонте — ободранная стена (кирпич, дранка, остатки штукатурки и
- *  побелки; повтор 1.5 м) и жёлтые крашеные доски, вытертые до дерева, в шпаклёвке; полы — паркет «ёлочкой» (медовый дуб,
+ *  побелка, на полу голубой кафель партиями; комната в ремонте — ободранная стена (картинка 1.5 × 3 м на всю высоту
+ *  палаты: поверху держится побелённая штукатурка, ниже кирпич и дранка с рваными остатками штукатурки) и жёлтые крашеные
+ *  доски, вытертые до дерева, в шпаклёвке; полы — паркет «ёлочкой» (медовый дуб,
  *  лак вытерт до серо-бежевого; два периода узора — 1.4 м), в вестибюле — терраццо с латунными жилами по квадрату 1.2 м.
  *  В биоме «Санаторий» — правила биома по второму тегу (src/gen4d/biomes.ts), у проекта — правила тегов, которых нет у
  *  других групп. */
 const SANATORIUM_FINISHES: FinishDef[] = [
   {
-    id: 'f_san_teal_panel', name: 'Санаторий: бирюзовая масляная панель 1.2 м (бордюр, плинтус)', surface: 'wall', color: '#5c968c',
+    id: 'f_san_teal_panel', name: 'Санаторий: бирюзовая масляная панель 1.2 м (бордюр, плинтус)', surface: 'wall', color: '#5e978d',
     tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'краска'], tex: { kind: 'paint_panel', w: 512, h: 512, opts: { base: '#5f9e94', accent: '#3e6b64', low: '#4d3a2c' } },
   },
   {
     id: 'f_san_wall_teal', name: 'Санаторий: бирюзовая панель 1.2 м + побелка', surface: 'wall', color: '#e8e6dc', tileW: 1, tileH: 1,
     tags: ['санаторий', 'двухцветная'], tex: { kind: 'whitewash', w: 256, h: 256, opts: { base: '#e8e6dc' } }, dado: { finishId: 'f_san_teal_panel', heightM: 1.2 },
   },
-  { id: 'f_san_plaster', name: 'Санаторий: белая штукатурка, волосяные трещины, потёки', surface: 'wall', color: '#e2dfd6', tileW: 1.5, tileH: 1.5, tags: ['санаторий', 'штукатурка'], tex: { kind: 'plaster_cracked', w: 512, h: 512, opts: { base: '#e6e3da' } } },
-  { id: 'f_san_wood_panel', name: 'Санаторий: светлый шпон панелями 0.6 м', surface: 'wall', color: '#c19f68', tileW: 1.2, tileH: 1.5, tags: ['санаторий', 'панели'], tex: { kind: 'veneer', w: 512, h: 640, opts: { base: '#c8a66c', n: 2 } } },
-  { id: 'f_san_tile_white', name: 'Санаторий: белый кафель 15×15, ржавые подтёки, сколы', surface: 'wall', color: '#dfe3e2', tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'кафель'], tex: { kind: 'tile_worn', w: 512, h: 512, opts: { base: '#e9edee', accent: '#a2aaaa', n: 8 } } },
+  { id: 'f_san_plaster', name: 'Санаторий: белая штукатурка, волосяные трещины, потёки', surface: 'wall', color: '#e4e0d7', tileW: 1.5, tileH: 3, tags: ['санаторий', 'штукатурка'], tex: { kind: 'plaster_cracked', w: 384, h: 768, opts: { base: '#e6e3da' } } },
+  { id: 'f_san_wood_panel', name: 'Санаторий: светлый шпон панелями 0.6 м', surface: 'wall', color: '#c2a26c', tileW: 1.2, tileH: 1.5, tags: ['санаторий', 'панели'], tex: { kind: 'veneer', w: 512, h: 640, opts: { base: '#c8a66c', n: 2 } } },
+  { id: 'f_san_tile_white', name: 'Санаторий: белый кафель 15×15, ржавые подтёки, сколы', surface: 'wall', color: '#dce0df', tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'кафель'], tex: { kind: 'tile_worn', w: 512, h: 512, opts: { base: '#e9edee', accent: '#a2aaaa', n: 8 } } },
   {
-    id: 'f_san_reno_wall', name: 'Санаторий: ободранная стена — кирпич, дранка, остатки штукатурки', surface: 'wall', color: '#a88e78', tileW: 1.5, tileH: 3,
+    id: 'f_san_reno_wall', name: 'Санаторий: ободранная стена — кирпич, дранка, остатки штукатурки', surface: 'wall', color: '#baa38e', tileW: 1.5, tileH: 3,
     tags: ['санаторий', 'ремонт', 'кирпич'], tex: { kind: 'lath_brick', w: 512, h: 1024, opts: { base: '#e8e5dc', accent: '#a65a42', low: '#c48b55', high: '#b9b2a4' } },
   },
   {
-    id: 'f_san_pool_tile', name: 'Санаторий: бледно-голубой кафель 10×10 панелью 1.6 м', surface: 'wall', color: '#a5ccd4',
+    id: 'f_san_pool_tile', name: 'Санаторий: бледно-голубой кафель 10×10 панелью 1.6 м', surface: 'wall', color: '#aaccd3',
     tileW: 0.6, tileH: 1.6, tags: ['санаторий', 'кафель'], tex: { kind: 'tile_mix', w: 384, h: 1024, opts: { base: '#a9d0d8', accent: '#e3ecea', high: '#4e8fa3', n: 6 } },
   },
   {
     id: 'f_san_pool_wall', name: 'Санаторий: голубой кафель 1.6 м + побелка (бассейн)', surface: 'wall', color: '#e3e6e2', tileW: 1, tileH: 1,
     tags: ['санаторий', 'двухцветная'], tex: { kind: 'whitewash', w: 256, h: 256, opts: { base: '#e3e6e2' } }, dado: { finishId: 'f_san_pool_tile', heightM: 1.6 },
   },
-  { id: 'f_san_parquet', name: 'Санаторий: паркет ёлочкой, медовый дуб, вытертый', surface: 'floor', color: '#b0905f', tileW: 1.4, tileH: 1.4, tags: ['санаторий', 'паркет'], tex: { kind: 'parquet_worn', w: 768, h: 768, opts: { base: '#b39062', accent: '#c2b59b' } } },
-  { id: 'f_san_terrazzo', name: 'Санаторий: терраццо с латунными жилами (пол)', surface: 'floor', color: '#c6bcab', tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'терраццо'], tex: { kind: 'terrazzo', w: 512, h: 512, opts: { base: '#c8beac', accent: '#b48d3e', n: 1 } } },
-  { id: 'f_san_pool_floor', name: 'Санаторий: голубой кафель 10×10 партиями (пол бассейна)', surface: 'floor', color: '#a6cad0', tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'кафель'], tex: { kind: 'tile_mix', w: 576, h: 576, opts: { base: '#a3c8cf', accent: '#dfe9e7', n: 12 } } },
+  { id: 'f_san_parquet', name: 'Санаторий: паркет ёлочкой, медовый дуб, вытертый', surface: 'floor', color: '#ac9270', tileW: 1.4, tileH: 1.4, tags: ['санаторий', 'паркет'], tex: { kind: 'parquet_worn', w: 640, h: 640, opts: { base: '#b09068', accent: '#c3b8a0' } } },
+  { id: 'f_san_terrazzo', name: 'Санаторий: терраццо с латунными жилами (пол)', surface: 'floor', color: '#c3b9a7', tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'терраццо'], tex: { kind: 'terrazzo', w: 512, h: 512, opts: { base: '#c8beac', accent: '#b48d3e', n: 1 } } },
+  { id: 'f_san_pool_floor', name: 'Санаторий: голубой кафель 10×10 партиями (пол бассейна)', surface: 'floor', color: '#aecdd3', tileW: 1.2, tileH: 1.2, tags: ['санаторий', 'кафель'], tex: { kind: 'tile_mix', w: 576, h: 576, opts: { base: '#a3c8cf', accent: '#dfe9e7', n: 12 } } },
   {
-    id: 'f_san_boards_yellow', name: 'Санаторий: жёлтые крашеные доски, вытертые, в шпаклёвке (пол)', surface: 'floor', color: '#c69a4a', tileW: 1.5, tileH: 0.75,
+    id: 'f_san_boards_yellow', name: 'Санаторий: жёлтые крашеные доски, вытертые, в шпаклёвке (пол)', surface: 'floor', color: '#c59f53', tileW: 1.5, tileH: 0.75,
     tags: ['санаторий', 'доска', 'ремонт'], tex: { kind: 'boards_painted', w: 768, h: 384, opts: { base: '#c49428', accent: '#d2b48a', high: '#e7e2d5', n: 5 } },
   },
 ];
